@@ -1,0 +1,187 @@
+#include "common.h"
+
+#include "main.h"
+#include "PlayerSkin.h"
+#include "TxdStore.h"
+#include "rtbmp.h"
+#include "ClumpModelInfo.h"
+#include "VisibilityPlugins.h"
+#include "World.h"
+#include "PlayerInfo.h"
+#include "CdStream.h"
+#include "FileMgr.h"
+#include "Directory.h"
+#include "RwHelper.h"
+#include "Timer.h"
+#include "Lights.h"
+#include "MemoryMgr.h"
+
+RpClump *gpPlayerClump;
+float gOldFov;
+
+int CPlayerSkin::m_txdSlot;
+
+void
+FindPlayerDff(uint32 &offset, uint32 &size)
+{
+	int file;
+	CDirectory::DirectoryInfo info;
+
+	file = CFileMgr::OpenFile("models\\gta3.dir", "rb");
+
+	do {
+		if (!CFileMgr::Read(file, (char*)&info, sizeof(CDirectory::DirectoryInfo)))
+			return;
+	} while (strcasecmp("player.dff", info.name) != 0);
+
+#ifdef RW_BIG_ENDIAN
+	info.offset = ((info.offset & 0xFF000000) >> 24) |
+	              ((info.offset & 0x00FF0000) >> 8) |
+	              ((info.offset & 0x0000FF00) << 8) |
+	              ((info.offset & 0x000000FF) << 24);
+	info.size   = ((info.size & 0xFF000000) >> 24) |
+	              ((info.size & 0x00FF0000) >> 8) |
+	              ((info.size & 0x0000FF00) << 8) |
+	              ((info.size & 0x000000FF) << 24);
+#endif
+	offset = info.offset;
+	size = info.size;
+}
+
+void
+LoadPlayerDff(void)
+{
+	RwStream *stream;
+	RwMemory mem;
+	uint32 offset, size;
+	uint8 *buffer;
+	bool streamWasAdded = false;
+
+	if (CdStreamGetNumImages() == 0) {
+		CdStreamAddImage("models\\gta3.img");
+		streamWasAdded = true;
+	}
+
+	FindPlayerDff(offset, size);
+#ifdef WII
+	buffer = (uint8*)MemoryMgrMallocAlignMem2(size << 11, 2048);
+#else
+	buffer = (uint8*)RwMallocAlign(size << 11, 2048);
+#endif
+	CdStreamRead(0, buffer, offset, size);
+	CdStreamSync(0);
+
+	mem.start = buffer;
+	mem.length = size << 11;
+	stream = RwStreamOpen(rwSTREAMMEMORY, rwSTREAMREAD, &mem);
+
+	if (RwStreamFindChunk(stream, rwID_CLUMP, nil, nil)) {
+		gpPlayerClump = RpClumpStreamRead(stream);
+		printf("[SKIN] gpPlayerClump=%p stream OK\n", (void*)gpPlayerClump);
+	} else {
+		printf("[SKIN] rwID_CLUMP not found in DFF stream!\n");
+		gpPlayerClump = nil;
+	}
+
+	RwStreamClose(stream, &mem);
+#ifdef WII
+	MemoryMgrFreeAlignMem2(buffer);
+#else
+	RwFreeAlign(buffer);
+#endif
+
+	if (streamWasAdded)
+		CdStreamRemoveImages();
+}
+
+void
+CPlayerSkin::Initialise(void)
+{
+	// empty on PS2
+	m_txdSlot = CTxdStore::AddTxdSlot("skin");
+	CTxdStore::Create(m_txdSlot);
+	CTxdStore::AddRef(m_txdSlot);
+}
+
+void
+CPlayerSkin::Shutdown(void)
+{
+	// empty on PS2
+	CTxdStore::RemoveTxdSlot(m_txdSlot);
+}
+
+RwTexture *
+CPlayerSkin::GetSkinTexture(const char *texName)
+{
+	RwTexture *tex;
+	RwRaster *raster;
+	int32 width, height, depth, format;
+
+	CTxdStore::PushCurrentTxd();
+	CTxdStore::SetCurrentTxd(m_txdSlot);
+	tex = RwTextureRead(texName, NULL);
+	CTxdStore::PopCurrentTxd();
+	if (tex != nil) return tex;
+
+	if (strcmp(DEFAULT_SKIN_NAME, texName) == 0 || texName[0] == '\0')
+		sprintf(gString, "models\\generic\\player.bmp");
+	else
+		sprintf(gString, "skins\\%s.bmp", texName);
+
+	if (RwImage *image = RtBMPImageRead(gString)) {
+		RwImageFindRasterFormat(image, rwRASTERTYPETEXTURE, &width, &height, &depth, &format);
+		raster = RwRasterCreate(width, height, depth, format);
+		RwRasterSetFromImage(raster, image);
+
+		tex = RwTextureCreate(raster);
+		RwTextureSetName(tex, texName);
+		RwTextureSetFilterMode(tex, rwFILTERLINEAR);
+		RwTexDictionaryAddTexture(CTxdStore::GetSlot(m_txdSlot)->texDict, tex);
+
+		RwImageDestroy(image);
+	}
+	return tex;
+}
+
+void
+CPlayerSkin::BeginFrontendSkinEdit(void)
+{
+	LoadPlayerDff();
+	RpClumpForAllAtomics(gpPlayerClump, CClumpModelInfo::SetAtomicRendererCB, (void*)CVisibilityPlugins::RenderPlayerCB);
+	CWorld::Players[0].LoadPlayerSkin();
+	gOldFov = CDraw::GetFOV();
+	CDraw::SetFOV(30.0f);
+}
+
+void
+CPlayerSkin::EndFrontendSkinEdit(void)
+{
+	RpClumpDestroy(gpPlayerClump);
+	gpPlayerClump = NULL;
+	CDraw::SetFOV(gOldFov);
+}
+
+void
+CPlayerSkin::RenderFrontendSkinEdit(void)
+{
+	static float rotation = 0.0f;
+	RwRGBAReal AmbientColor = { 0.65f, 0.65f, 0.65f, 1.0f };
+	const RwV3d pos = { -1.35f, -0.15f, 7.725f };
+	const RwV3d axis = { 0.0f, 1.0f, 0.0f };
+	static uint32 LastFlash = 0;
+
+	RwFrame *frame = RpClumpGetFrame(gpPlayerClump);
+
+	if (CTimer::GetTimeInMillisecondsPauseMode() - LastFlash > 7) {
+		rotation += 2.0f;
+		if (rotation > 360.0f)
+			rotation -= 360.0f;
+		LastFlash = CTimer::GetTimeInMillisecondsPauseMode();
+	}
+	RwFrameTransform(frame, RwFrameGetMatrix(RwCameraGetFrame(Scene.camera)), rwCOMBINEREPLACE);
+	RwFrameTranslate(frame, &pos, rwCOMBINEPRECONCAT);
+	RwFrameRotate(frame, &axis, rotation, rwCOMBINEPRECONCAT);
+	RwFrameUpdateObjects(frame);
+	SetAmbientColours(&AmbientColor);
+	RpClumpRender(gpPlayerClump);
+}
