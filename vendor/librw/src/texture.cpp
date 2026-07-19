@@ -106,7 +106,9 @@ shouldLogGxTextureResult(const char *name)
 static bool
 shouldTraceTextureLookup(const char *name)
 {
-	return shouldLogGxTextureResult(name);
+	return shouldLogGxTextureResult(name) ||
+	       (name && (strcmp(name, "black") == 0 ||
+	                 strcmp(name, "black64") == 0));
 }
 #endif
 
@@ -404,31 +406,91 @@ defaultFindCB(const char *name)
 		return nil;
 
 	TexDictionary *current = TEXTUREGLOBAL(currentTexDict);
-	if(current){
-		Texture *tex = current->find(name);
+	Texture *tex = current ? current->find(name) : nil;
 #ifdef RW_GX
-		if(tex && shouldTraceTextureLookup(name))
-			printf("[TEX-FIND] current-hit name='%s' current=%p hit=%p\n",
-			       name, current, current);
+	if(shouldTraceTextureLookup(name))
+		printf("[TEX-FIND] current-%s name='%s' current=%p tex=%p raster=%p\n",
+		       tex ? "hit" : "miss", name, (void*)current, (void*)tex,
+		       tex ? (void*)tex->raster : nil);
 #endif
-		if(tex)
-			return tex;
-	}
 
-	// RW falls back to a broader search when the current dictionary misses.
+	// Texture references belong to the dictionary selected while their model is
+	// streamed. Searching every loaded dictionary lets an unrelated TXD satisfy
+	// a missing reference by name, which makes the result depend on load order.
+	// Keep lookup scoped to the current dictionary, matching the GX2 backend.
+	return tex;
+}
+
+#ifdef RW_GX
+static void
+considerGxTextureAlias(Texture *tex, TexDictionary *dict, const char *mask,
+                       Texture **match, TexDictionary **matchDict,
+                       uint32 *numMatches)
+{
+	if(tex == nil || tex->raster == nil || mask == nil || mask[0] == '\0' ||
+	   tex->mask[0] == '\0' || strncmp_ci(tex->mask, mask, 32) != 0)
+		return;
+	if(*match == tex)
+		return;
+	*match = tex;
+	*matchDict = dict;
+	(*numMatches)++;
+}
+
+static Texture*
+findGxTextureAlias(const char *name, const char *mask)
+{
+	static int s_aliasLogCount = 0;
+	static int s_aliasAmbiguousLogCount = 0;
+	TexDictionary *current = TEXTUREGLOBAL(currentTexDict);
+	if(current == nil || name == nil || name[0] == '\0' ||
+	   mask == nil || mask[0] == '\0')
+		return nil;
+
+	// Some converted GX assets keep a platform-resolution suffix while the DFF
+	// retains the source name. The source mask is part of the texture identity:
+	// accepting a suffix alone can bind an unrelated uniform shadow texture.
+	// Search all resident dictionaries only when the full name family + mask
+	// identifies exactly one texture, so list order cannot decide the result.
+	static const char *resolutionSuffixes[] = {
+		"64", "_64", "128", "_128", "32", "_32", "256", "_256"
+	};
+	char candidate[32];
+	size_t nameLen = strlen(name);
+	Texture *match = nil;
+	TexDictionary *matchDict = nil;
+	uint32 numMatches = 0;
 	FORLIST(lnk, TEXTUREGLOBAL(texDicts)){
 		TexDictionary *dict = TexDictionary::fromLink(lnk);
-		if(dict == current)
-			continue;
-		Texture *tex = dict->find(name);
-		if(tex){
-			printf("[TEX-FIND] global-hit name='%s' current=%p hit=%p\n",
-			       name, current, dict);
-			return tex;
+		considerGxTextureAlias(dict->find(name), dict, mask,
+		                       &match, &matchDict, &numMatches);
+		for(uint32 i = 0; i < sizeof(resolutionSuffixes)/sizeof(resolutionSuffixes[0]); i++){
+			size_t suffixLen = strlen(resolutionSuffixes[i]);
+			if(nameLen + suffixLen >= sizeof(candidate))
+				continue;
+			memcpy(candidate, name, nameLen);
+			memcpy(candidate + nameLen, resolutionSuffixes[i], suffixLen + 1);
+			considerGxTextureAlias(dict->find(candidate), dict, mask,
+			                       &match, &matchDict, &numMatches);
 		}
+	}
+	if(numMatches == 1){
+		if(s_aliasLogCount < 128){
+			printf("[TEX-ALIAS] exact-mask name='%s' mask='%s' -> '%s' candidates=%u current=%p hit=%p raster=%p\n",
+			       name, mask, match->name, (unsigned)numMatches,
+			       (void*)current, (void*)matchDict, (void*)match->raster);
+			s_aliasLogCount++;
+		}
+		return match;
+	}
+	if(numMatches > 1 && s_aliasAmbiguousLogCount < 64){
+		printf("[TEX-ALIAS] ambiguous-exact-mask name='%s' mask='%s' candidates=%u current=%p\n",
+		       name, mask, (unsigned)numMatches, (void*)current);
+		s_aliasAmbiguousLogCount++;
 	}
 	return nil;
 }
+#endif
 
 
 static Texture*
@@ -486,7 +548,6 @@ defaultReadCB(const char *name, const char *mask)
 Texture*
 Texture::read(const char *name, const char *mask)
 {
-	(void)mask;
 	Raster *raster = nil;
 	Texture *tex;
 
@@ -494,6 +555,12 @@ Texture::read(const char *name, const char *mask)
 		tex->addRef();
 		return tex;
 	}
+#ifdef RW_GX
+	if(tex = findGxTextureAlias(name, mask), tex){
+		tex->addRef();
+		return tex;
+	}
+#endif
 	if(TEXTUREGLOBAL(loadTextures)){
 		tex = Texture::readCB(name, mask);
 		if(tex == nil)
