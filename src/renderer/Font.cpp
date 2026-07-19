@@ -3,6 +3,9 @@
 #include "Sprite2d.h"
 #include "TxdStore.h"
 #include "Font.h"
+#ifdef CHINESE_FONT
+#include "Frontend.h"
+#endif
 #include "MemoryMgr.h"
 #ifdef BUTTON_ICONS
 #include "FileMgr.h"
@@ -79,18 +82,321 @@ CFontRenderState CFont::RenderState;
 struct CharPos { uint8 row, col; };
 static CharPos ChsTable[0x10000];
 CSprite2d CFont::ChsSprite;
+CSprite2d CFont::ChsSlantSprite;
 int32 CFont::ChsNumRows = 0;
+enum { CHS_MAX_PAGES = 4 };
+static CSprite2d ChsExtraPages[CHS_MAX_PAGES - 1];
+static CSprite2d ChsSlantExtraPages[CHS_MAX_PAGES - 1];
+static int32 ChsCellWidth = 32;
+static int32 ChsCellHeight = 32;
+static int32 ChsAsciiSampleWidth = 32;
+static int32 ChsAsciiSampleHeight = 32;
+static int32 ChsCjkSampleWidth = 32;
+static int32 ChsCjkSampleHeight = 32;
+static int32 ChsAsciiCols = 0;
+static int32 ChsAsciiPitchX = 0;
+static int32 ChsAsciiPitchY = 0;
+static int32 ChsCjkPitchX = 32;
+static int32 ChsCjkPitchY = 32;
+static int32 ChsCjkBaseRowOffset = 0;
+static float ChsRenderGlyphSize = 24.0f;
+static float ChsAdvanceSize = 24.0f;
+static int32 ChsAtlasWidth = 1024;
+static int32 ChsAtlasHeight = 1024;
+static int32 ChsAtlasBytes = 1024 * 1024;
+static int32 ChsRowsPerPage = 46;
+static int32 ChsNumPages = 0;
+static const uint8 ZbAsciiWidthTable[96] = {
+	7, 4, 10, 10, 10, 18, 14, 3, 5, 5, 7, 10, 4, 5, 4, 4,
+	10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 6, 6, 10, 10, 10, 11,
+	20, 16, 16, 16, 16, 15, 13, 18, 16, 5, 12, 16, 13, 19, 16, 18,
+	15, 18, 16, 15, 13, 16, 15, 22, 15, 15, 13, 5, 4, 5, 10, 10,
+	5, 12, 13, 12, 13, 12, 7, 13, 13, 6, 6, 12, 6, 20, 13, 13,
+	13, 13, 9, 12, 7, 13, 12, 18, 12, 12, 12, 7, 4, 7, 13, 22
+};
 
 // Chinese character detection — covers all CJK ranges + fullwidth punctuation.
 // Must be before any function that calls it (PrintChar, GetCharacterSize, RenderFontBuffer).
+static inline bool
+IsZbPrivateCodeCharacter(wchar c)
+{
+	return gChineseLanguageVariant == CHINESE_VARIANT_ZB && c >= 0x0120 && c < 0x08B0;
+}
+
 static inline bool IsCHSCharacter(wchar c)
 {
 	if (c < 0x80) return false;
+	if (IsZbPrivateCodeCharacter(c)) return true;
 	if (c >= 0x2E80 && c <= 0x9FFF) return true;   // CJK Radicals → CJK Unified
 	if (c >= 0xF900 && c <= 0xFAFF) return true;   // CJK Compat Ideographs
 	if (c >= 0xFF00 && c <= 0xFFEF) return true;   // Fullwidth Forms
 	if (c >= 0x2000 && c <= 0x206F) return true;   // General Punctuation
 	if (c == 0x00B7) return true;                  // Middle dot
+	return false;
+}
+
+static inline bool
+IsZbAsciiCodepoint(wchar c)
+{
+	return gChineseLanguageVariant == CHINESE_VARIANT_ZB && c >= '!' && c < 0x80;
+}
+
+static inline bool
+UseZbAsciiAtlas(wchar c, bool bFontHalfTexture, bool bUseOriginalAscii)
+{
+	if (!IsZbAsciiCodepoint(c))
+		return false;
+	if (bUseOriginalAscii)
+		return false;
+	// Keep stock HUD/icon placeholders on the original path.
+	if (c == '>' || c == '<' || c == '{')
+		return false;
+	(void)bFontHalfTexture;
+	return true;
+}
+
+static inline bool
+IsChineseAtlasCharacterForState(wchar c, bool bFontHalfTexture, bool bUseOriginalAscii)
+{
+	if (!CFont::IsChinese())
+		return false;
+	if (c == 0x00A0)
+		c = ' ';
+	if (UseZbAsciiAtlas(c, bFontHalfTexture, bUseOriginalAscii))
+		return true;
+	return IsCHSCharacter(c);
+}
+
+static inline bool
+IsChineseAtlasCharacter(wchar c)
+{
+	return IsChineseAtlasCharacterForState(c, CFont::Details.bFontHalfTexture, CFont::Details.bUseOriginalAscii);
+}
+
+static inline float
+GetZbAsciiAdvanceFromIndex(int32 index, float scaleX)
+{
+	if (index < 0 || index >= 96)
+		return scaleX * ChsAdvanceSize;
+	return scaleX * (float)ZbAsciiWidthTable[index];
+}
+
+static rw::Texture *
+LoadChineseFontAtlas(const char *fontBaseName, const char *poolTag, bool optional = false)
+{
+	if (fontBaseName == nil || *fontBaseName == '\0')
+		return nil;
+
+	char texDvdPath[64], texLocalPath[64], texLegacyDvdPath[64], texLegacyLocalPath[64], texBarePath[32], texLegacyBarePath[32];
+	snprintf(texDvdPath, sizeof(texDvdPath), "dvd:/models/%s.i8", fontBaseName);
+	snprintf(texLocalPath, sizeof(texLocalPath), "models/%s.i8", fontBaseName);
+	snprintf(texLegacyDvdPath, sizeof(texLegacyDvdPath), "dvd:/MODELS/%s.I8", fontBaseName);
+	snprintf(texLegacyLocalPath, sizeof(texLegacyLocalPath), "MODELS/%s.I8", fontBaseName);
+	snprintf(texBarePath, sizeof(texBarePath), "%s.i8", fontBaseName);
+	snprintf(texLegacyBarePath, sizeof(texLegacyBarePath), "%s.I8", fontBaseName);
+
+	FILE *texFile = fopen(texDvdPath, "rb");
+	if (!texFile) texFile = fopen(texLocalPath, "rb");
+	if (!texFile) texFile = fopen(texLegacyDvdPath, "rb");
+	if (!texFile) texFile = fopen(texLegacyLocalPath, "rb");
+	if (!texFile) texFile = fopen(texBarePath, "rb");
+	if (!texFile) texFile = fopen(texLegacyBarePath, "rb");
+	if (!texFile) {
+		if (!optional)
+			printf("[CHS-FONT] missing %s.i8\n", fontBaseName);
+		return nil;
+	}
+
+	rw::Raster *ras = rw::Raster::create(ChsAtlasWidth, ChsAtlasHeight, 8,
+	                                     rw::Raster::C8888 | rw::Raster::TEXTURE,
+	                                     rw::PLATFORM_GX);
+	if (!ras) {
+		fclose(texFile);
+		printf("[CHS-FONT] raster create failed for %s\n", fontBaseName);
+		return nil;
+	}
+
+	rw::gx::GxRaster *natras = PLUGINOFFSET(rw::gx::GxRaster, ras,
+	                                        rw::gx::nativeRasterOffset);
+	natras->gxFmt    = GX_TF_I8;
+	natras->dataSize = ChsAtlasBytes;
+	natras->gxData   = (uint8*)rw::gx::gxMemAlloc(ChsAtlasBytes, 32);
+	if (!natras->gxData) {
+		fclose(texFile);
+		ras->destroy();
+		printf("[CHS-FONT] gxMemAlloc failed for %s atlas\n", fontBaseName);
+		return nil;
+	}
+
+	size_t rd = fread(natras->gxData, 1, ChsAtlasBytes, texFile);
+	fclose(texFile);
+	if (rd != (size_t)ChsAtlasBytes) {
+		rw::gx::gxMemFree(natras->gxData);
+		natras->gxData = nil;
+		ras->destroy();
+		printf("[CHS-FONT] short read on %s.I8 (%u bytes)\n", fontBaseName, (unsigned)rd);
+		return nil;
+	}
+
+	DCFlushRange(natras->gxData, ChsAtlasBytes);
+	GX_InvalidateTexAll();
+
+	GX_InitTexObj(&natras->texObj, natras->gxData, ChsAtlasWidth, ChsAtlasHeight,
+	              GX_TF_I8, GX_CLAMP, GX_CLAMP, GX_FALSE);
+	GX_InitTexObjFilterMode(&natras->texObj, GX_NEAR, GX_NEAR);
+	natras->texObjValid = true;
+	rw::gx::texPoolRegister(ras, natras->gxData, natras->dataSize,
+	                        ChsAtlasWidth, ChsAtlasHeight, natras->gxFmt, poolTag);
+
+	rw::Texture *tex = rw::Texture::create(ras);
+	printf("[CHS-FONT] atlas %s ready raster=%p tex=%p\n",
+	       fontBaseName, (void*)ras, (void*)tex);
+	return tex;
+}
+
+static void
+ConfigureChineseFontProfile(const char *fontBaseName)
+{
+	ChsCellWidth = 32;
+	ChsCellHeight = 32;
+	ChsAsciiSampleWidth = ChsCellWidth;
+	ChsAsciiSampleHeight = ChsCellHeight;
+	ChsCjkSampleWidth = ChsCellWidth;
+	ChsCjkSampleHeight = ChsCellHeight;
+	ChsAsciiCols = 0;
+	ChsAsciiPitchX = 0;
+	ChsAsciiPitchY = 0;
+	ChsCjkPitchX = ChsCellWidth;
+	ChsCjkPitchY = ChsCellHeight;
+	ChsCjkBaseRowOffset = 0;
+	ChsRenderGlyphSize = 23.0f;
+	ChsAdvanceSize = 24.0f;
+	ChsAtlasWidth = 1024;
+	ChsAtlasHeight = 1024;
+	ChsAtlasBytes = ChsAtlasWidth * ChsAtlasHeight;
+	ChsRowsPerPage = ChsAtlasHeight / ChsCellHeight;
+
+	// Official font benefits from a slightly smaller on-screen size.
+	// The source atlas is rounded/thickened, so we keep it compact in-game.
+	if (fontBaseName != nil && strcmp(fontBaseName, "chinese_gf") == 0) {
+		ChsRenderGlyphSize = 22.0f;
+		ChsAdvanceSize = 23.5f;
+	}
+
+	if (fontBaseName != nil && strcmp(fontBaseName, "chinese_zb") == 0) {
+		ChsCellWidth = 42;
+		ChsCellHeight = 42;
+		ChsAsciiSampleWidth = 29;
+		ChsAsciiSampleHeight = 32;
+		ChsCjkSampleWidth = 40;
+		ChsCjkSampleHeight = 40;
+		ChsAsciiCols = 32;
+		ChsAsciiPitchX = 32;
+		ChsAsciiPitchY = 32;
+		ChsCjkPitchX = 42;
+		ChsCjkPitchY = 42;
+		ChsCjkBaseRowOffset = 3;
+		ChsRenderGlyphSize = 24.5f;
+		ChsAdvanceSize = 25.0f;
+		ChsRowsPerPage = ChsAtlasHeight / ChsCjkPitchY - ChsCjkBaseRowOffset;
+	}
+
+	// Wuming was already visually balanced at the original draw size.
+	// Keep the thicker atlas source, but render it at the previous in-game size.
+	if (fontBaseName != nil && strcmp(fontBaseName, "chinese_wm") == 0) {
+		ChsRenderGlyphSize = 21.0f;
+		ChsAdvanceSize = 23.0f;
+	}
+}
+
+static float
+GetChineseLineStep(void)
+{
+	float legacyStep = 32.0f * CFont::Details.scaleY * 0.5f + 2.0f * CFont::Details.scaleY;
+	float glyphAwareStep = (ChsRenderGlyphSize - 2.0f) * CFont::Details.scaleY;
+	return legacyStep > glyphAwareStep ? legacyStep : glyphAwareStep;
+}
+
+static void
+DeleteChineseAtlasSet(void)
+{
+	CFont::ChsSprite.Delete();
+	CFont::ChsSlantSprite.Delete();
+	for (int i = 0; i < CHS_MAX_PAGES - 1; i++) {
+		ChsExtraPages[i].Delete();
+		ChsSlantExtraPages[i].Delete();
+	}
+	ChsNumPages = 0;
+}
+
+static CSprite2d *
+GetChinesePageSprite(int32 page, bool slant)
+{
+	if (page < 0 || page >= CHS_MAX_PAGES)
+		return nil;
+	if (page == 0)
+		return slant ? &CFont::ChsSlantSprite : &CFont::ChsSprite;
+	return slant ? &ChsSlantExtraPages[page - 1] : &ChsExtraPages[page - 1];
+}
+
+static int32
+GetChineseCharPage(wchar c)
+{
+	if (UseZbAsciiAtlas(c, CFont::RenderState.bFontHalfTexture, CFont::RenderState.bUseOriginalAscii))
+		return 0;
+	if (ChsRowsPerPage <= 0)
+		return 0;
+	CharPos pos = ChsTable[c];
+	if (pos.row == 254 && pos.col == 254)
+		return 0;
+	return pos.row / ChsRowsPerPage;
+}
+
+static void
+BuildChineseAtlasBaseName(const char *fontBaseName, int32 page, char *outName, size_t outSize)
+{
+	if (page <= 0)
+		snprintf(outName, outSize, "%s", fontBaseName);
+	else
+		snprintf(outName, outSize, "%s_p%d", fontBaseName, page);
+}
+
+static RwTextureFilterMode
+GetChineseTextureFilter(void)
+{
+	if (gChineseLanguageVariant == CHINESE_VARIANT_ZB)
+		return rwFILTERNEAREST;
+	return rwFILTERLINEAR;
+}
+
+static RwTextureFilterMode
+GetChineseTextureFilterForChar(wchar c, bool bFontHalfTexture, bool bUseOriginalAscii)
+{
+	if (UseZbAsciiAtlas(c, bFontHalfTexture, bUseOriginalAscii))
+		return rwFILTERLINEAR;
+	return GetChineseTextureFilter();
+}
+
+static RwTextureFilterMode
+GetBaseFontTextureFilter(void)
+{
+	return rwFILTERLINEAR;
+}
+
+static float
+GetChineseOutlineOffset(float dropShadowPosition)
+{
+	float outlineOffset = dropShadowPosition > 1.0f ? dropShadowPosition * 0.5f : dropShadowPosition;
+#ifdef CHINESE_FONT
+	if (gChineseLanguageVariant == CHINESE_VARIANT_ZB)
+		outlineOffset = dropShadowPosition > 1.0f ? dropShadowPosition * 0.56f : dropShadowPosition * 0.78f;
+#endif
+	return outlineOffset;
+}
+
+static bool
+UseChineseEmbossShadow(void)
+{
 	return false;
 }
 #endif
@@ -100,9 +406,113 @@ uint8 CFont::LanguageSet = FONT_LANGSET_EFIGS;
 int32 CFont::Slot = -1;
 #define JAP_TERMINATION (0x8000 | '~')
 
+static inline wchar *SkipFontTokenBodySafe(wchar *s)
+{
+	while (*s != '\0' && *s != '~')
+		++s;
+	return s;
+}
+
+static inline wchar *SkipFontTokenBodySafeJap(wchar *s)
+{
+	while (*s != '\0' && *s != '~' && *s != JAP_TERMINATION)
+		++s;
+	return s;
+}
+
+static inline float GetGlyphAdvance(wchar c)
+{
+#ifdef CHINESE_FONT
+	if (IsChineseAtlasCharacter(c)) {
+		if (UseZbAsciiAtlas(c, CFont::Details.bFontHalfTexture, CFont::Details.bUseOriginalAscii))
+			return GetZbAsciiAdvanceFromIndex(c - ' ', CFont::Details.scaleX);
+		return ChsAdvanceSize * CFont::Details.scaleX;
+	}
+	if (CFont::IsChinese() && gChineseLanguageVariant == CHINESE_VARIANT_ZB &&
+	    (c == ' ' || c == 0x00A0))
+		return GetZbAsciiAdvanceFromIndex(0, CFont::Details.scaleX);
+#endif
+	return CFont::GetCharacterSize(c - ' ');
+}
+
+#ifdef CHINESE_FONT
+static float GetChineseWrapChunkWidth(wchar *s, wchar **outNext, bool *outHasSpace)
+{
+	float w = 0.0f;
+	wchar *p = s;
+
+	while (*p != '\0') {
+		if (*p == ' ')
+			break;
+
+		if (*p == '~') {
+			if (w != 0.0f)
+				break;
+
+			p++;
+#ifdef BUTTON_ICONS
+			switch (*p) {
+			case 'U':
+			case 'D':
+			case '<':
+			case '>':
+			case 'X':
+			case 'O':
+			case 'Q':
+			case 'T':
+			case 'K':
+			case 'M':
+			case 'A':
+			case 'J':
+			case 'V':
+			case 'C':
+			case '(':
+			case ')':
+				w += 17.0f * CFont::Details.scaleY;
+				break;
+			default:
+				break;
+			}
+#endif
+			p = SkipFontTokenBodySafe(p);
+			if (*p == '\0')
+				break;
+		} else if (*p < 0x80) {
+			w += GetGlyphAdvance(*p);
+		} else {
+			if (w == 0.0f) {
+				w += GetGlyphAdvance(*p);
+				++p; // consume one CJK/fullwidth glyph so callers always make progress
+			}
+			break;
+		}
+
+		p++;
+	}
+
+	if (outNext)
+		*outNext = p;
+	if (outHasSpace)
+		*outHasSpace = (*p == ' ');
+	return w;
+}
+#endif
+
 int16 CFont::Size[LANGSET_MAX][MAX_FONTS][210] = {
 	{
 #else
+static inline wchar *SkipFontTokenBodySafe(wchar *s)
+{
+	while (*s != '\0' && *s != '~')
+		++s;
+	return s;
+}
+
+static inline float GetGlyphAdvance(wchar c)
+{
+	return CFont::GetCharacterSize(c - ' ');
+}
+
 int16 CFont::Size[MAX_FONTS][210] = {
 #endif
 	{
@@ -335,7 +745,14 @@ union tFontRenderStatePointer
 };
 
 tFontRenderStatePointer FontRenderStatePointer;
+#if defined(WII) && defined(CHINESE_FONT)
+// Chinese Wii builds push much more text through the font staging buffer:
+// uint16 glyphs, shadow replays, and token expansion together make 1KB too
+// close to the edge for long subtitles/help messages.
+uint8 FontRenderStateBuf[8192];
+#else
 uint8 FontRenderStateBuf[1024];
+#endif
 
 #ifdef BUTTON_ICONS
 CSprite2d CFont::ButtonSprite[MAX_BUTTON_ICONS];
@@ -457,9 +874,9 @@ CFont::LoadButtons(const char *txdPath)
 
 #ifdef MORE_LANGUAGES
 void
-CFont::ReloadFonts(uint8 set)
+CFont::ReloadFonts(uint8 set, bool force)
 {
-	if (Slot != -1 && LanguageSet != set) {
+	if (Slot != -1 && (LanguageSet != set || force)) {
 		Sprite[0].Delete();
 		Sprite[1].Delete();
 
@@ -470,7 +887,7 @@ CFont::ReloadFonts(uint8 set)
 		}
 #ifdef CHINESE_FONT
 		if (IsChinese()) {
-			ChsSprite.Delete();  // free 512KB IA4 GX texture before switch
+			DeleteChineseAtlasSet();
 		}
 #endif
 
@@ -534,6 +951,9 @@ CFont::Shutdown(void)
 #endif
 	Sprite[0].Delete();
 	Sprite[1].Delete();
+#ifdef CHINESE_FONT
+	DeleteChineseAtlasSet();
+#endif
 #ifdef MORE_LANGUAGES
 	if (IsJapanese())
 		Sprite[3].Delete();
@@ -549,6 +969,7 @@ CFont::InitPerFrame(void)
 {
 	RenderState.style = -1;
 	Details.anonymous_25 = 0;
+	Details.bUseOriginalAscii = false;
 	FontRenderStatePointer.pRenderState = (CFontRenderState*)FontRenderStateBuf;
 	SetDropShadowPosition(0);
 	NewLine = false;
@@ -718,18 +1139,26 @@ CFont::RenderFontBuffer()
 {
 	if (FontRenderStatePointer.pRenderState == (CFontRenderState*)FontRenderStateBuf) return;
 
+	uint32 zTestEnabled = TRUE;
+	uint32 zWriteEnabled = TRUE;
+	RwRenderStateGet(rwRENDERSTATEZTESTENABLE, &zTestEnabled);
+	RwRenderStateGet(rwRENDERSTATEZWRITEENABLE, &zWriteEnabled);
+	RwRenderStateSet(rwRENDERSTATEZTESTENABLE, (void*)FALSE);
+	RwRenderStateSet(rwRENDERSTATEZWRITEENABLE, (void*)FALSE);
+
 	float textPosX;
 	float textPosY;
 	CRGBA color;
 	bool bBold = false;
 	bool bFlash = false;
 #ifdef CHINESE_FONT
-	bool chineseMode = false;
+	CSprite2d *activeChineseSprite = nil;
+	RwTextureFilterMode activeChineseFilter = GetChineseTextureFilter();
 #endif
 
+	RenderState = *(CFontRenderState*)&FontRenderStateBuf[0];
 	Sprite[RenderState.style].SetRenderState();
 	RwRenderStateSet(rwRENDERSTATEVERTEXALPHAENABLE, (void*)TRUE);
-	RenderState = *(CFontRenderState*)&FontRenderStateBuf[0];
 	textPosX = RenderState.fTextPosX;
 	textPosY = RenderState.fTextPosY;
 	color = RenderState.color;
@@ -774,39 +1203,53 @@ CFont::RenderFontBuffer()
 				RenderState.color = color;
 		}
 		wchar c = *pRenderStateBufPointer.pStr;
+		// Some imported UTF-16 texts use NBSP (U+00A0) instead of a plain
+		// ASCII space. Treat it as a normal space so names like "热浪 103"
+		// keep their visible gap in-game.
+		if (c == 0x00A0)
+			c = ' ';
 #ifdef CHINESE_FONT
 		// Chinese characters (>= 0x3000) use separate ChsSprite texture.
 		// Must flush the English vertex buffer before switching textures,
 		// otherwise Chinese UVs get sampled against the English font atlas
 		// -> pink/garbled blocks.
-			if (IsCHSCharacter(c)) {
-				if (!chineseMode) {
-					CSprite2d::RenderVertexBuffer(rwFILTERNEAREST);    // flush English batch with sharp sampling on GC
-					if (ChsSprite.m_pTexture) {
-						ChsSprite.SetRenderState();
-						RwRenderStateSet(rwRENDERSTATEVERTEXALPHAENABLE, (void*)TRUE);
-						RwRenderStateSet(rwRENDERSTATETEXTUREFILTER, (void*)rwFILTERNEAREST);
-					chineseMode = true;
+		if (IsChineseAtlasCharacterForState(c, RenderState.bFontHalfTexture, RenderState.bUseOriginalAscii)) {
+			int32 page = GetChineseCharPage(c);
+			bool wantSlant = RenderState.slant != 0.0f;
+			RwTextureFilterMode desiredChineseFilter =
+				GetChineseTextureFilterForChar(c, RenderState.bFontHalfTexture, RenderState.bUseOriginalAscii);
+			CSprite2d *desiredChineseSprite = GetChinesePageSprite(page, wantSlant);
+			if ((desiredChineseSprite == nil || desiredChineseSprite->m_pTexture == nil) && wantSlant)
+				desiredChineseSprite = GetChinesePageSprite(page, false);
+			if (activeChineseSprite != desiredChineseSprite || activeChineseFilter != desiredChineseFilter) {
+				CSprite2d::RenderVertexBuffer(activeChineseSprite != nil ? activeChineseFilter : GetBaseFontTextureFilter());
+				if (desiredChineseSprite != nil && desiredChineseSprite->m_pTexture) {
+					desiredChineseSprite->SetRenderState();
+					RwRenderStateSet(rwRENDERSTATEVERTEXALPHAENABLE, (void*)TRUE);
+					RwRenderStateSet(rwRENDERSTATETEXTUREFILTER, (void*)desiredChineseFilter);
+					activeChineseSprite = desiredChineseSprite;
+					activeChineseFilter = desiredChineseFilter;
+				} else {
+					activeChineseSprite = nil;
 				}
 			}
 			if (RenderState.slant != 0.0f)
 				textPosY = (RenderState.slantRefX - textPosX) * RenderState.slant + RenderState.slantRefY;
-			PrintChineseChar(textPosX, textPosY, c);
+			if (desiredChineseSprite != nil && desiredChineseSprite->m_pTexture)
+				PrintChineseChar(textPosX, textPosY, c);
 			textPosX += GetChineseCharWidth(c);
-			// Re-apply NEAREST: AddToBuffer may flush via RenderVertexBuffer
-			// which hardcodes LINEAR - must restore for next Chinese char.
-			if (chineseMode)
-				RwRenderStateSet(rwRENDERSTATETEXTUREFILTER, (void*)rwFILTERNEAREST);
+			if (activeChineseSprite != nil)
+				RwRenderStateSet(rwRENDERSTATETEXTUREFILTER, (void*)activeChineseFilter);
 			continue;
 		}
 		// Non-Chinese char after Chinese batch -> flush Chinese,
 		// restore English font texture
-		if (chineseMode) {
-			CSprite2d::RenderVertexBuffer(rwFILTERNEAREST);    // flush Chinese batch
+		if (activeChineseSprite != nil) {
+			CSprite2d::RenderVertexBuffer(activeChineseFilter);
 			Sprite[RenderState.style].SetRenderState();
 			RwRenderStateSet(rwRENDERSTATEVERTEXALPHAENABLE, (void*)TRUE);
-			RwRenderStateSet(rwRENDERSTATETEXTUREFILTER, (void*)rwFILTERNEAREST);
-			chineseMode = false;
+			RwRenderStateSet(rwRENDERSTATETEXTUREFILTER, (void*)GetBaseFontTextureFilter());
+			activeChineseSprite = nil;
 		}
 #endif
 		c -= ' ';
@@ -831,8 +1274,10 @@ CFont::RenderFontBuffer()
 		if (c == '\0')
 			textPosX += RenderState.fExtraSpace;
 	}
-	CSprite2d::RenderVertexBuffer(rwFILTERNEAREST);
+	CSprite2d::RenderVertexBuffer(activeChineseSprite != nil ? activeChineseFilter : GetBaseFontTextureFilter());
 	FontRenderStatePointer.pRenderState = (CFontRenderState*)FontRenderStateBuf;
+	RwRenderStateSet(rwRENDERSTATEZTESTENABLE, (void*)zTestEnabled);
+	RwRenderStateSet(rwRENDERSTATEZWRITEENABLE, (void*)zWriteEnabled);
 }
 
 #if 0 //def MORE_LANGUAGES
@@ -895,6 +1340,66 @@ CFont::PrintString(float x, float y, uint32, wchar *start, wchar *end, float spw
 		Details.color = Details.dropColor;
 		Details.dropShadowPosition = 0;
 		Details.bIsShadow = true;
+
+#ifdef CHINESE_FONT
+		if (IsChinese()) {
+			float outlineOffset = GetChineseOutlineOffset(dropShadowPosition);
+			if (gChineseLanguageVariant == CHINESE_VARIANT_ZB) {
+				float dx = SCREEN_SCALE_X(outlineOffset);
+				float dy = SCREEN_SCALE_Y(outlineOffset);
+				if (Details.slant != 0.0f) {
+					Details.slantRefX += dx;
+					Details.slantRefY += dy;
+					PrintString(x + dx, y + dy, Details.anonymous_25, start, end, spwidth);
+					Details.slantRefX -= dx;
+					Details.slantRefY -= dy;
+				} else {
+					PrintString(x + dx, y + dy, Details.anonymous_25, start, end, spwidth);
+				}
+			} else {
+				const float shadowOffsets[4][2] = {
+					{ -SCREEN_SCALE_X(outlineOffset), 0.0f },
+					{  SCREEN_SCALE_X(outlineOffset), 0.0f },
+					{ 0.0f, -SCREEN_SCALE_Y(outlineOffset) },
+					{ 0.0f,  SCREEN_SCALE_Y(outlineOffset) },
+				};
+
+				for (int i = 0; i < ARRAY_SIZE(shadowOffsets); i++) {
+					float dx = shadowOffsets[i][0];
+					float dy = shadowOffsets[i][1];
+					if (Details.slant != 0.0f) {
+						Details.slantRefX += dx;
+						Details.slantRefY += dy;
+						PrintString(x + dx, y + dy, Details.anonymous_25, start, end, spwidth);
+						Details.slantRefX -= dx;
+						Details.slantRefY -= dy;
+					} else {
+						PrintString(x + dx, y + dy, Details.anonymous_25, start, end, spwidth);
+					}
+				}
+			}
+
+			if (UseChineseEmbossShadow()) {
+				CRGBA embossColor = Details.color;
+				embossColor.alpha = Min((int)embossColor.alpha, 190);
+				Details.color = embossColor;
+
+				float dx = SCREEN_SCALE_X(dropShadowPosition * 0.78f);
+				float dy = SCREEN_SCALE_Y(dropShadowPosition * 0.78f);
+				if (Details.slant != 0.0f) {
+					Details.slantRefX += dx;
+					Details.slantRefY += dy;
+					PrintString(x + dx, y + dy, Details.anonymous_25, start, end, spwidth);
+					Details.slantRefX -= dx;
+					Details.slantRefY -= dy;
+				} else {
+					PrintString(x + dx, y + dy, Details.anonymous_25, start, end, spwidth);
+				}
+
+				Details.color = Details.dropColor;
+			}
+		} else {
+#endif
 		if (Details.slant != 0.0f) {
 			Details.slantRefX += SCREEN_SCALE_X(dropShadowPosition);
 			Details.slantRefY += SCREEN_SCALE_Y(dropShadowPosition);
@@ -904,6 +1409,9 @@ CFont::PrintString(float x, float y, uint32, wchar *start, wchar *end, float spw
 		} else {
 			PrintString(SCREEN_SCALE_X(dropShadowPosition) + x, SCREEN_SCALE_Y(dropShadowPosition) + y, Details.anonymous_25, start, end, spwidth);
 		}
+#ifdef CHINESE_FONT
+		}
+#endif
 		Details.color = color;
 		Details.dropShadowPosition = dropShadowPosition;
 		Details.bIsShadow = false;
@@ -921,6 +1429,7 @@ CFont::PrintString(float x, float y, uint32, wchar *start, wchar *end, float spw
 	pRenderState->slantRefX = Details.slantRefX;
 	pRenderState->slantRefY = Details.slantRefY;
 	pRenderState->bFontHalfTexture = Details.bFontHalfTexture;
+	pRenderState->bUseOriginalAscii = Details.bUseOriginalAscii;
 	pRenderState->proportional = Details.proportional;
 	pRenderState->style = Details.style;
 	pRenderState->bIsShadow = Details.bIsShadow;
@@ -987,6 +1496,73 @@ CFont::PrintString(float xstart, float ystart, wchar *s)
 		x = xstart;
 	y = ystart;
 	start = s;
+
+#ifdef CHINESE_FONT
+	if (IsChinese()) {
+		float xBound = Details.centre || Details.rightJustify ? 0.0f : xstart;
+		float yBound = ystart;
+		float strWidth, widthLimit;
+		float measuredLineLength = 0.0f;
+		float printX, justifyWrap;
+		wchar *ptext = s;
+		wchar *strHead = s;
+		bool emptyLine = true;
+		short numChineseSpaces = 0;
+
+		while (*ptext != '\0') {
+			wchar *chunkEnd = nil;
+			bool hasSpace = false;
+			strWidth = GetChineseWrapChunkWidth(ptext, &chunkEnd, &hasSpace);
+
+			widthLimit = Details.centre ? Details.centreSize :
+				Details.rightJustify ? xstart - Details.rightJustifyWrap :
+				Details.wrapX;
+
+			if ((xBound + strWidth) <= widthLimit || emptyLine) {
+				ptext = chunkEnd;
+				xBound += strWidth;
+
+				if (*ptext != '\0') {
+					if (hasSpace) {
+						if (*(ptext + 1) == '\0') {
+							*ptext = '\0';
+						} else {
+							if (!emptyLine)
+								++numChineseSpaces;
+							xBound += GetGlyphAdvance(' ');
+							++ptext;
+						}
+					}
+
+					emptyLine = false;
+					measuredLineLength = xBound;
+				} else {
+					printX = Details.centre ? xstart - xBound / 2.0f :
+						Details.rightJustify ? xstart - xBound :
+						xstart;
+					PrintString(printX, yBound, Details.anonymous_25, strHead, ptext, 0.0f);
+					return;
+				}
+			} else {
+				justifyWrap = Details.justify && !Details.centre && numChineseSpaces > 0 ?
+					(Details.wrapX - measuredLineLength) / numChineseSpaces :
+					0.0f;
+				printX = Details.centre ? xstart - xBound / 2.0f :
+					Details.rightJustify ? xstart - xBound :
+					xstart;
+				PrintString(printX, yBound, Details.anonymous_25, strHead, ptext, justifyWrap);
+
+				strHead = ptext;
+				xBound = Details.centre || Details.rightJustify ? 0.0f : xstart;
+				yBound += GetChineseLineStep();
+				measuredLineLength = 0.0f;
+				numChineseSpaces = 0;
+				emptyLine = true;
+			}
+		}
+		return;
+	}
+#endif
 
 	// This is super ugly, I blame R*
 	for(;;){
@@ -1108,6 +1684,58 @@ CFont::GetNumberLines(float xstart, float ystart, wchar *s)
 	wchar *t;
 	n = 0;
 
+#ifdef CHINESE_FONT
+	if (IsChinese()) {
+		bool emptyLine = true;
+
+		if (Details.centre || Details.rightJustify)
+			x = 0.0f;
+		else
+			x = xstart;
+		y = ystart;
+
+		while (*s) {
+			float f = Details.centre ? Details.centreSize :
+				Details.rightJustify ? xstart - Details.rightJustifyWrap :
+				Details.wrapX;
+			wchar *chunkEnd = nil;
+			bool hasSpace = false;
+			float strWidth = GetChineseWrapChunkWidth(s, &chunkEnd, &hasSpace);
+
+			if ((x + strWidth) <= f || emptyLine) {
+				x += strWidth;
+
+				if (*chunkEnd == '\0') {
+					n++;
+					s = chunkEnd;
+				} else if (hasSpace) {
+					if (*(chunkEnd + 1) == '\0') {
+						n++;
+						s = chunkEnd + 1;
+					} else {
+						x += GetGlyphAdvance(' ');
+						s = chunkEnd + 1;
+						emptyLine = false;
+					}
+				} else {
+					s = chunkEnd;
+					emptyLine = false;
+				}
+			} else {
+				if (Details.centre || Details.rightJustify)
+					x = 0.0f;
+				else
+					x = xstart;
+				n++;
+				y += GetChineseLineStep();
+				emptyLine = true;
+			}
+		}
+
+		return n;
+	}
+#endif
+
 #if 0//def MORE_LANGUAGES
 	bool bSomeJapBool = false;
 
@@ -1169,7 +1797,7 @@ CFont::GetNumberLines(float xstart, float ystart, wchar *s)
 				y += 32.0f * Details.scaleY / 2.75f + 2.0f * Details.scaleY;
 			else
 #endif
-				y += 32.0f * Details.scaleY * 0.5f + 2.0f * Details.scaleY;
+				y += GetChineseLineStep();
 		}else{
 			// still space in current line
 			t = GetNextSpace(s);
@@ -1211,6 +1839,87 @@ CFont::GetTextRect(CRect *rect, float xstart, float ystart, wchar *s)
 
 	maxlength = 0;
 	numLines = 0;
+
+#ifdef CHINESE_FONT
+	if (IsChinese()) {
+		bool emptyLine = true;
+
+		if (Details.centre || Details.rightJustify)
+			x = 0.0f;
+		else
+			x = xstart;
+		y = ystart;
+
+		float xEnd = Details.centre ? Details.centreSize :
+			Details.rightJustify ? xstart - Details.rightJustifyWrap :
+			Details.wrapX;
+
+		while (*s) {
+			wchar *chunkEnd = nil;
+			bool hasSpace = false;
+			float strWidth = GetChineseWrapChunkWidth(s, &chunkEnd, &hasSpace);
+
+			if ((x + strWidth) <= xEnd || emptyLine) {
+				x += strWidth;
+
+				if (*chunkEnd == '\0') {
+					if (x > maxlength)
+						maxlength = x;
+					numLines++;
+					s = chunkEnd;
+				} else if (hasSpace) {
+					if (*(chunkEnd + 1) == '\0') {
+						if (x > maxlength)
+							maxlength = x;
+						numLines++;
+						s = chunkEnd + 1;
+					} else {
+						x += GetGlyphAdvance(' ');
+						if (x > maxlength)
+							maxlength = x;
+						s = chunkEnd + 1;
+						emptyLine = false;
+					}
+				} else {
+					if (x > maxlength)
+						maxlength = x;
+					s = chunkEnd;
+					emptyLine = false;
+				}
+			} else {
+				if (x > maxlength)
+					maxlength = x;
+				if (Details.centre || Details.rightJustify)
+					x = 0.0f;
+				else
+					x = xstart;
+				numLines++;
+				y += GetChineseLineStep();
+				emptyLine = true;
+			}
+		}
+
+		if (Details.centre) {
+			if (Details.backgroundOnlyText) {
+				rect->left = xstart - maxlength / 2 - 4.0f;
+				rect->right = xstart + maxlength / 2 + 4.0f;
+				rect->bottom = GetChineseLineStep() * numLines + ystart + 2.0f;
+				rect->top = ystart - 2.0f;
+			} else {
+				rect->left = xstart - Details.centreSize * 0.5f - 4.0f;
+				rect->right = xstart + Details.centreSize * 0.5f + 4.0f;
+				rect->bottom = ystart + GetChineseLineStep() * numLines + 2.0f;
+				rect->top = ystart - 2.0f;
+			}
+		} else {
+			rect->left = xstart - 4.0f;
+			rect->right = Details.wrapX;
+			rect->bottom = ystart;
+			rect->top = GetChineseLineStep() * numLines + ystart + 4.0f;
+		}
+		return;
+	}
+#endif
 
 #ifdef MORE_LANGUAGES
 	if (IsJapanese()) {
@@ -1363,7 +2072,7 @@ CFont::GetCharacterSize(wchar c)
 #ifdef CHINESE_FONT_16
 		return 34.0f * Details.scaleX;  // 16px-cell: 32 render + 2px right bearing
 #else
-		return 24.0f * Details.scaleX;  // 22px-cell: 22 render + 2px right bearing
+		return ChsAdvanceSize * Details.scaleX;
 #endif
 	}
 #endif
@@ -1430,9 +2139,68 @@ CFont::GetCharacterSize(wchar c)
 float
 CFont::GetStringWidth(wchar *s, bool spaces)
 {
+	if (!s)
+		return 0.0f;
+
 	float w;
 
 	w = 0.0f;
+#ifdef CHINESE_FONT
+	if (IsChinese())
+	{
+		while (*s != '\0')
+		{
+			if (*s == ' ' || *s == 0x00A0) {
+				if (spaces)
+					w += GetGlyphAdvance(' ');
+				else
+					break;
+			} else if (*s == '~') {
+				if (w == 0.0f || spaces) {
+					s++;
+#ifdef BUTTON_ICONS
+					switch (*s) {
+					case 'U':
+					case 'D':
+					case '<':
+					case '>':
+					case 'X':
+					case 'O':
+					case 'Q':
+					case 'T':
+					case 'K':
+					case 'M':
+					case 'A':
+					case 'J':
+					case 'V':
+					case 'C':
+					case '(':
+					case ')':
+						w += 17.0f * Details.scaleY;
+						break;
+					default:
+						break;
+					}
+#endif
+					s = SkipFontTokenBodySafe(s);
+					if (*s == '\0')
+						return w;
+				} else {
+					break;
+				}
+			} else if (*s < 0x80) {
+				w += GetGlyphAdvance(*s);
+			} else {
+				if (w == 0.0f || spaces)
+					w += GetGlyphAdvance(*s);
+				if (!spaces)
+					break;
+			}
+			++s;
+		}
+		return w;
+	}
+#endif
 #ifdef MORE_LANGUAGES
 	if (IsJapanese())
 	{
@@ -1466,10 +2234,12 @@ CFont::GetStringWidth(wchar *s, bool spaces)
 							break;
 						}
 #endif
-						while (!(*s == '~' || *s == JAP_TERMINATION)) s++;
+						s = SkipFontTokenBodySafeJap(s);
+						if (*s == '\0')
+							return w;
 						s++;
 					}
-					w += GetCharacterSize(*s - ' ');
+					w += GetGlyphAdvance(*s);
 					++s;
 				} while (*s == '~' || *s == JAP_TERMINATION);
 			}
@@ -1477,7 +2247,7 @@ CFont::GetStringWidth(wchar *s, bool spaces)
 	} else
 #endif
 	{
-		for (wchar c = *s; (c != ' ' || spaces) && c != '\0'; c = *(++s)) {
+		for (wchar c = *s; ((c != ' ' && c != 0x00A0) || spaces) && c != '\0'; c = *(++s)) {
 			if (c == '~') {
 				s++;
 #ifdef BUTTON_ICONS
@@ -1504,12 +2274,12 @@ CFont::GetStringWidth(wchar *s, bool spaces)
 					break;
 				}
 #endif
-				while (*s != '~') {
-					s++;
-				}
+				s = SkipFontTokenBodySafe(s);
+				if (*s == '\0')
+					break;
 			}
 			else {
-				w += GetCharacterSize(c - ' ');
+				w += GetGlyphAdvance(c);
 			}
 		}
 	}
@@ -1521,6 +2291,9 @@ CFont::GetStringWidth(wchar *s, bool spaces)
 float
 CFont::GetStringWidth_Jap(wchar* s)
 {
+	if (!s)
+		return 0.0f;
+
 	float w;
 
 	w = 0.0f;
@@ -1528,10 +2301,12 @@ CFont::GetStringWidth_Jap(wchar* s)
 		do {
 			while (*s == '~' || *s == JAP_TERMINATION) {
 				s++;
-				while (!(*s == '~' || *s == JAP_TERMINATION)) s++;
+				s = SkipFontTokenBodySafeJap(s);
+				if (*s == '\0')
+					return w;
 				s++;
 			}
-			w += GetCharacterSize(*s - ' ');
+			w += GetGlyphAdvance(*s);
 			++s;
 		} while (*s == '~' || *s == JAP_TERMINATION);
 	}
@@ -1542,6 +2317,17 @@ CFont::GetStringWidth_Jap(wchar* s)
 wchar*
 CFont::GetNextSpace(wchar *s)
 {
+	if (!s)
+		return nil;
+
+#ifdef CHINESE_FONT
+	if (IsChinese()) {
+		wchar *next = nil;
+		GetChineseWrapChunkWidth(s, &next, nil);
+		return next;
+	}
+#endif
+
 #ifdef MORE_LANGUAGES
 	if (IsJapanese()) {
 		do
@@ -1550,7 +2336,9 @@ CFont::GetNextSpace(wchar *s)
 				do {
 					while (*s == '~' || *s == JAP_TERMINATION) {
 						s++;
-						while (!(*s == '~' || *s == JAP_TERMINATION)) s++;
+						s = SkipFontTokenBodySafeJap(s);
+						if (*s == '\0')
+							return s;
 						s++;
 					}
 					++s;
@@ -1563,7 +2351,9 @@ CFont::GetNextSpace(wchar *s)
 		for(; *s != ' ' && *s != '\0'; s++)
 			if(*s == '~'){
 				s++;
-				while(*s != '~') s++;
+				s = SkipFontTokenBodySafe(s);
+				if (*s == '\0')
+					return s;
 			}
 	}
 	return s;
@@ -1572,8 +2362,13 @@ CFont::GetNextSpace(wchar *s)
 wchar*
 CFont::ParseToken(wchar* str, CRGBA &color, bool &flash, bool &bold)
 {
+	if (!str || *str == '\0')
+		return str;
+
 	Details.anonymous_23 = false;
 	wchar *s = str + 1;
+	if (*s == '\0')
+		return s;
 	if (Details.color.r || Details.color.g || Details.color.b)
 	{
 		switch (*s)
@@ -1676,8 +2471,9 @@ CFont::ParseToken(wchar* str, CRGBA &color, bool &flash, bool &bold)
 			break;
 		}
 	}
-	while (*s != '~')
-		++s;
+	s = SkipFontTokenBodySafe(s);
+	if (*s == '\0')
+		return s;
 	if (*(++s) == '~')
 		s = ParseToken(s, color, flash, bold);
 	return s;
@@ -1737,8 +2533,13 @@ CFont::ParseToken(wchar *s, bool japShit)
 wchar*
 CFont::ParseToken(wchar *s)
 {
+	if (!s || *s == '\0')
+		return s;
+
 	Details.anonymous_23 = false;
 	s++;
+	if (*s == '\0')
+		return s;
 	if(Details.color.r || Details.color.g || Details.color.b)
 		switch(*s){
 		case 'B':
@@ -1852,7 +2653,9 @@ CFont::ParseToken(wchar *s)
 		case ')': PS2Symbol = BUTTON_RSTICK_RIGHT; break;
 #endif
 		}
-	while(*s != '~') s++;
+	s = SkipFontTokenBodySafe(s);
+	if (*s == '\0')
+		return s;
 	if (*(++s) == '~')
 		s = ParseToken(s);
 	return s;
@@ -1862,14 +2665,24 @@ CFont::ParseToken(wchar *s)
 void
 CFont::FilterOutTokensFromString(wchar *str)
 {
+	if (!str)
+		return;
+
 	int newIdx = 0;
-	wchar copy[256], *c;
-	UnicodeStrcpy(copy, str);
+	wchar copy[512], *c;
+	int copyIdx = 0;
+	while (copyIdx < (int)ARRAY_SIZE(copy) - 1 && str[copyIdx] != '\0') {
+		copy[copyIdx] = str[copyIdx];
+		copyIdx++;
+	}
+	copy[copyIdx] = '\0';
 
 	for (c = copy; *c != '\0'; c++) {
 		if (*c == '~') {
 			c++;
-			while (*c != '~') c++;
+			c = SkipFontTokenBodySafe(c);
+			if (*c == '\0')
+				break;
 		} else {
 			str[newIdx++] = *c;
 		}
@@ -2029,6 +2842,12 @@ CFont::SetFontStyle(int16 style)
 }
 
 void
+CFont::SetUseOriginalAscii(bool enable)
+{
+	Details.bUseOriginalAscii = enable;
+}
+
+void
 CFont::SetRightJustifyWrap(float wrap)
 {
 	Details.rightJustifyWrap = wrap;
@@ -2085,21 +2904,42 @@ CFont::character_code(uint8 c)
 void
 CFont::LoadChineseFont(void)
 {
-	ChsSprite.Delete();
+	DeleteChineseAtlasSet();
 	FILE *f;
+	const char *fontBaseName = GetChineseVariantFontBaseName();
+	const char *slantFontBaseName = GetChineseVariantSlantFontBaseName();
+	char datDvdPath[64], datLocalPath[64], datLegacyDvdPath[64], datLegacyLocalPath[64], datBarePath[32], datLegacyBarePath[32];
+
+	ConfigureChineseFontProfile(fontBaseName);
+	snprintf(datDvdPath, sizeof(datDvdPath), "dvd:/data/%s.dat", fontBaseName);
+	snprintf(datLocalPath, sizeof(datLocalPath), "data/%s.dat", fontBaseName);
+	snprintf(datLegacyDvdPath, sizeof(datLegacyDvdPath), "dvd:/MODELS/%s.DAT", fontBaseName);
+	snprintf(datLegacyLocalPath, sizeof(datLegacyLocalPath), "MODELS/%s.DAT", fontBaseName);
+	snprintf(datBarePath, sizeof(datBarePath), "%s.dat", fontBaseName);
+	snprintf(datLegacyBarePath, sizeof(datLegacyBarePath), "%s.DAT", fontBaseName);
+
+	memset(ChsTable, 0, sizeof(ChsTable));
+	ChsNumRows = 0;
 
 	// 1. Load character mapping table (128KB)
-	f = fopen("dvd:/wm_vcchs/wm_vcchs.dat", "rb");
-	if (f) {
-		fread(ChsTable, sizeof(ChsTable), 1, f);
-		fclose(f);
-	} else {
-		f = fopen("wm_vcchs.dat", "rb");
-		if (f) {
-			fread(ChsTable, sizeof(ChsTable), 1, f);
-			fclose(f);
-		}
+	f = fopen(datDvdPath, "rb");
+	if (!f) f = fopen(datLocalPath, "rb");
+	if (!f) f = fopen(datLegacyDvdPath, "rb");
+	if (!f) f = fopen(datLegacyLocalPath, "rb");
+	if (!f) f = fopen(datBarePath, "rb");
+	if (!f) f = fopen(datLegacyBarePath, "rb");
+	if (!f) {
+		printf("[CHS-FONT] missing %s.dat\n", fontBaseName);
+		return;
 	}
+
+	if (fread(ChsTable, sizeof(ChsTable), 1, f) != 1) {
+		fclose(f);
+		memset(ChsTable, 0, sizeof(ChsTable));
+		printf("[CHS-FONT] short read on %s.dat\n", fontBaseName);
+		return;
+	}
+	fclose(f);
 
 	// 2. Count content rows from DAT table
 	{
@@ -2112,50 +2952,40 @@ CFont::LoadChineseFont(void)
 				contentRows = (int)ChsTable[i].row + 1;
 		}
 		if (contentRows < 1) contentRows = 1;
-		ChsNumRows = 1;
-		while (ChsNumRows < contentRows)
-			ChsNumRows <<= 1;
+		ChsNumRows = contentRows;
+		ChsNumPages = (contentRows + ChsRowsPerPage - 1) / ChsRowsPerPage;
+		if (ChsNumPages < 1)
+			ChsNumPages = 1;
+		if (ChsNumPages > CHS_MAX_PAGES)
+			ChsNumPages = CHS_MAX_PAGES;
 	}
 
-	// 3. Load I8 font texture (1024x1024, 1MB, 256 grayscale)
-	{
-		FILE *texFile = fopen("dvd:/wm_vcchs/wm_vcchs.i8", "rb");
-		if (!texFile) texFile = fopen("wm_vcchs.i8", "rb");
-		if (!texFile) return;
-
-		rw::Raster *ras = rw::Raster::create(1024, 1024, 8,
-		                                     rw::Raster::C8888 | rw::Raster::TEXTURE,
-		                                     rw::PLATFORM_GX);
-		if (!ras) { fclose(texFile); return; }
-
-		rw::gx::GxRaster *natras = PLUGINOFFSET(rw::gx::GxRaster, ras,
-		                                        rw::gx::nativeRasterOffset);
-		natras->gxFmt    = GX_TF_I8;
-		natras->dataSize = 1048576;
-		natras->gxData   = (uint8*)rw::gx::gxMemAlloc(1048576, 32);
-		if (!natras->gxData) { fclose(texFile); ras->destroy(); return; }
-
-		size_t rd = fread(natras->gxData, 1, 1048576, texFile);
-		fclose(texFile);
-		if (rd != 1048576) {
-			rw::gx::gxMemFree(natras->gxData);
-			natras->gxData = nil;
-			ras->destroy();
-			return;
+	for (int page = 0; page < ChsNumPages; page++) {
+		char pageBaseName[64];
+		BuildChineseAtlasBaseName(fontBaseName, page, pageBaseName, sizeof(pageBaseName));
+		CSprite2d *baseSprite = GetChinesePageSprite(page, false);
+		if (baseSprite == nil)
+			break;
+		baseSprite->m_pTexture = LoadChineseFontAtlas(pageBaseName, "wm_vcchs_font_i8");
+		if (baseSprite->m_pTexture == nil) {
+			if (page == 0)
+				return;
+			ChsNumPages = page;
+			break;
 		}
 
-		DCFlushRange(natras->gxData, 1048576);
-		GX_InvalidateTexAll();
-
-		GX_InitTexObj(&natras->texObj, natras->gxData, 1024, 1024,
-		              GX_TF_I8, GX_CLAMP, GX_CLAMP, GX_FALSE);
-		GX_InitTexObjFilterMode(&natras->texObj, GX_NEAR, GX_NEAR);
-		natras->texObjValid = true;
-		rw::gx::texPoolRegister(ras, natras->gxData, natras->dataSize,
-		                        1024, 1024, natras->gxFmt, "wm_vcchs_i8");
-
-		ChsSprite.m_pTexture = rw::Texture::create(ras);
+		if (slantFontBaseName != nil) {
+			char slantPageBaseName[64];
+			BuildChineseAtlasBaseName(slantFontBaseName, page, slantPageBaseName, sizeof(slantPageBaseName));
+			CSprite2d *slantSprite = GetChinesePageSprite(page, true);
+			if (slantSprite != nil)
+				slantSprite->m_pTexture = LoadChineseFontAtlas(slantPageBaseName, "wm_vcchs_font_slant_i8", true);
+		}
 	}
+
+	if (ChsSlantSprite.m_pTexture != nil)
+		printf("[CHS-FONT] slant atlas enabled for %s\n", fontBaseName);
+	printf("[CHS-FONT] atlas ready rows=%d pages=%d base=%s\n", ChsNumRows, ChsNumPages, fontBaseName);
 }
 
 
@@ -2164,7 +2994,160 @@ CFont::LoadChineseFont(void)
 void
 CFont::PrintChineseChar(float x, float y, wchar c)
 {
+	if (gChineseLanguageVariant == CHINESE_VARIANT_ZB) {
+		float glyph = ChsRenderGlyphSize;
+		float atlasW = (float)ChsAtlasWidth;
+		float atlasH = (float)ChsAtlasHeight;
+		float w = RenderState.scaleX * glyph;
+		float h = RenderState.scaleY * glyph;
+
+		CRect rect;
+		rect.left = x;
+		rect.top = y;
+		rect.right = x + w;
+		rect.bottom = y + h;
+
+		float srcX, srcY, srcW, srcH;
+		if (UseZbAsciiAtlas(c, RenderState.bFontHalfTexture, RenderState.bUseOriginalAscii)) {
+			int32 index = c - ' ';
+			int32 row = ChsAsciiCols > 0 ? index / ChsAsciiCols : 0;
+			int32 col = ChsAsciiCols > 0 ? index % ChsAsciiCols : 0;
+			srcX = (float)(col * ChsAsciiPitchX);
+			srcY = (float)(row * ChsAsciiPitchY);
+			srcW = (float)ChsAsciiSampleWidth;
+			srcH = (float)ChsAsciiSampleHeight;
+			rect.top -= RenderState.scaleY;
+			rect.bottom -= RenderState.scaleY;
+		} else {
+			CharPos pos = ChsTable[c];
+			int32 pageRow = ChsRowsPerPage > 0 ? (pos.row % ChsRowsPerPage) : pos.row;
+			srcX = (float)(pos.col * ChsCjkPitchX);
+			srcY = (float)((pageRow + ChsCjkBaseRowOffset) * ChsCjkPitchY);
+			srcW = (float)ChsCjkSampleWidth;
+			srcH = (float)ChsCjkSampleHeight;
+		}
+
+		float leftInset = srcX > 0.0f ? 0.5f : 0.0f;
+		float rightInset = UseZbAsciiAtlas(c, RenderState.bFontHalfTexture, RenderState.bUseOriginalAscii) ? 0.5f : 0.5f;
+		float bottomInset = UseZbAsciiAtlas(c, RenderState.bFontHalfTexture, RenderState.bUseOriginalAscii) ? 0.5f : 0.5f;
+		float u1 = (srcX + leftInset) / atlasW;
+		float v1 = (srcY + 0.5f) / atlasH;
+		float u2 = (srcX + srcW - rightInset) / atlasW;
+		float v3 = (srcY + srcH - bottomInset) / atlasH;
+		float v2 = v1;
+		float u3 = u1;
+		float u4 = u2;
+		float v4 = v3;
+
+		CSprite2d::AddToBuffer(rect, RenderState.color,
+		                       u1, v1, u2, v2, u3, v3, u4, v4);
+		return;
+	}
+
 	CharPos pos = ChsTable[c];
+	int32 pageRow = ChsRowsPerPage > 0 ? (pos.row % ChsRowsPerPage) : pos.row;
+	float glyph = ChsRenderGlyphSize;
+	float cellW = (float)ChsCellWidth;
+	float cellH = (float)ChsCellHeight;
+	float atlasW = (float)ChsAtlasWidth;
+	float atlasH = (float)ChsAtlasHeight;
+	float w = RenderState.scaleX * glyph;
+	float h = RenderState.scaleY * glyph;
+
+	CRect rect;
+	rect.left = x;
+	rect.top = y;
+	rect.right = x + w;
+	rect.bottom = y + h;
+
+	int32 page = GetChineseCharPage(c);
+	CSprite2d *slantSprite = GetChinesePageSprite(page, true);
+	bool useSlantAtlas = RenderState.slant != 0.0f && slantSprite != nil && slantSprite->m_pTexture != nil;
+	float u1 = (float)(pos.col * cellW) / atlasW;
+	float v1 = (float)(pageRow * cellH) / atlasH;
+	float u2 = (float)((pos.col + 1) * cellW) / atlasW;
+	float v3 = (float)((pageRow + 1) * cellH) / atlasH;
+
+	float ufix = 0.5f / atlasW;
+	float vfix = 0.5f / atlasH;
+	u1 += ufix;
+	u2 -= ufix;
+	float v2;
+	float u3 = u1;
+	float u4 = u2;
+	float v4;
+
+	if (useSlantAtlas) {
+		float vfix1 = 0.00055f / 4.0f;
+		float vfix2 = 0.007f / 4.0f;
+		float vfix3 = 0.009f / 4.0f;
+		rect.top += 0.015f;
+		v1 += vfix1;
+		v2 = (float)(pageRow * cellH) / atlasH + vfix + vfix2;
+		v3 -= vfix3;
+		v4 = (float)((pageRow + 1) * cellH) / atlasH + vfix2 - vfix;
+	} else {
+		v1 += vfix;
+		v2 = v1;
+		v3 -= vfix;
+		v4 = v3;
+	}
+
+	CSprite2d::AddToBuffer(rect, RenderState.color,
+	                       u1, v1, u2, v2, u3, v3, u4, v4);
+	return;
+#if 0
+
+#ifndef CHINESE_FONT_16
+	int32 pageRow = ChsRowsPerPage > 0 ? (pos.row % ChsRowsPerPage) : pos.row;
+	float glyph = ChsRenderGlyphSize;
+	float cell = (float)ChsCellSize;
+	float w = RenderState.scaleX * glyph;
+	float h = RenderState.scaleY * glyph;
+
+	CRect rect;
+	rect.left   = x;
+	rect.top    = y;
+	rect.right  = x + w;
+	rect.bottom = y + h;
+
+	int32 page = GetChineseCharPage(c);
+	CSprite2d *slantSprite = GetChinesePageSprite(page, true);
+	bool useSlantAtlas = RenderState.slant != 0.0f && slantSprite != nil && slantSprite->m_pTexture != nil;
+	float u1 = (float)(pos.col * cell) / 1024.0f;
+	float v1 = (float)(pageRow * cell) / 1024.0f;
+	float u2 = (float)((pos.col + 1) * cell) / 1024.0f;
+	float v3 = (float)((pageRow + 1) * cell) / 1024.0f;
+
+	float ufix = 0.5f / 1024.0f;
+	float vfix = 0.5f / 1024.0f;
+	u1 += ufix;
+	u2 -= ufix;
+	float v2;
+	float u3 = u1;
+	float u4 = u2;
+	float v4;
+
+	if (useSlantAtlas) {
+		float vfix1 = 0.00055f / 4.0f;
+		float vfix2 = 0.007f / 4.0f;
+		float vfix3 = 0.009f / 4.0f;
+		rect.top += 0.015f;
+		v1 += vfix1;
+		v2 = (float)(pageRow * cell) / 1024.0f + vfix + vfix2;
+		v3 -= vfix3;
+		v4 = (float)((pageRow + 1) * cell) / 1024.0f + vfix2 - vfix;
+	} else {
+		v1 += vfix;
+		v2 = v1;
+		v3 -= vfix;
+		v4 = v3;
+	}
+
+	CSprite2d::AddToBuffer(rect, RenderState.color,
+	                       u1, v1, u2, v2, u3, v3, u4, v4);
+	return;
+#endif
 
 #ifdef CHINESE_FONT_16
 	// 16px cells → 32×16 screen rect (2:1 aspect)
@@ -2205,7 +3188,8 @@ CFont::PrintChineseChar(float x, float y, wchar c)
 	rect.right  = x + w;
 	rect.bottom = y + h;
 
-	// Pixel-accurate UV: 22px cells on 1024x1024 IA4 texture
+	bool useSlantAtlas = RenderState.slant != 0.0f && ChsSlantSprite.m_pTexture != nil;
+	// Pixel-accurate UV: 22px cells on 1024x1024 I8 texture
 	float u1 = (float)(pos.col * 22) / 1024.0f;
 	float v1 = (float)(pos.row * 22) / 1024.0f;
 	float u2 = (float)((pos.col + 1) * 22) / 1024.0f;
@@ -2214,29 +3198,47 @@ CFont::PrintChineseChar(float x, float y, wchar c)
 	float ufix = 0.5f / 1024.0f;
 	float vfix = 0.5f / 1024.0f;
 	u1 += ufix;
-	v1 += vfix;
 	u2 -= ufix;
-	v3 -= vfix;
-
-	float v2 = v1;
+	float v2;
 	float u3 = u1;
 	float u4 = u2;
-	float v4 = v3;
+	float v4;
+
+	if (useSlantAtlas) {
+		float vfix1 = 0.00055f / 4.0f;
+		float vfix2 = 0.007f / 4.0f;
+		float vfix3 = 0.009f / 4.0f;
+		rect.top += 0.015f;
+		v1 += vfix1;
+		v2 = (float)(pos.row * 22) / 1024.0f + vfix + vfix2;
+		v3 -= vfix3;
+		v4 = (float)((pos.row + 1) * 22) / 1024.0f + vfix2 - vfix;
+	} else {
+		v1 += vfix;
+		v2 = v1;
+		v3 -= vfix;
+		v4 = v3;
+	}
 #endif
 
 	CSprite2d::AddToBuffer(rect, RenderState.color,
 	                       u1, v1, u2, v2, u3, v3, u4, v4);
+#endif
 }
 
 // ─── Chinese character width ───
 float
 CFont::GetChineseCharWidth(wchar c)
 {
-	(void)c;
+	if (UseZbAsciiAtlas(c, RenderState.bFontHalfTexture, RenderState.bUseOriginalAscii))
+		return GetZbAsciiAdvanceFromIndex(c - ' ', RenderState.scaleX);
+	if (gChineseLanguageVariant == CHINESE_VARIANT_ZB &&
+	    (c == ' ' || c == 0x00A0))
+		return GetZbAsciiAdvanceFromIndex(0, RenderState.scaleX);
 #ifdef CHINESE_FONT_16
 	return RenderState.scaleX * 34.0f;  // 32px render + 2px right bearing (fixes overlap)
 #else
-	return RenderState.scaleX * 24.0f;  // 22px render + 2px right bearing (fixes overlap)
+	return RenderState.scaleX * ChsAdvanceSize;
 #endif
 }
 

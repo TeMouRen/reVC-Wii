@@ -42,6 +42,75 @@
 #define FRAMECOUNTER CTimer::GetFrameCounter()
 #endif
 
+static bool
+UseStraightChineseHudText(void)
+{
+#ifdef CHINESE_FONT
+	return FrontEndMenuManager.m_PrefsLanguage == CMenuManager::LANGUAGE_CHINESE &&
+	       (gChineseLanguageVariant == CHINESE_VARIANT_ZB ||
+	        gChineseLanguageVariant == CHINESE_VARIANT_GF);
+#else
+	return false;
+#endif
+}
+
+static bool
+UseZuibaStraightHudText(void)
+{
+#ifdef CHINESE_FONT
+	return FrontEndMenuManager.m_PrefsLanguage == CMenuManager::LANGUAGE_CHINESE &&
+	       gChineseLanguageVariant == CHINESE_VARIANT_ZB;
+#else
+	return false;
+#endif
+}
+
+static bool
+UseOfficialStraightHudText(void)
+{
+#ifdef CHINESE_FONT
+	return FrontEndMenuManager.m_PrefsLanguage == CMenuManager::LANGUAGE_CHINESE &&
+	       gChineseLanguageVariant == CHINESE_VARIANT_GF;
+#else
+	return false;
+#endif
+}
+
+static float
+GetOfficialHudZoneBottom(void)
+{
+	return 68.0f;
+}
+
+static float
+GetOfficialHudVehicleBottom(void)
+{
+	return 30.0f;
+}
+
+static float
+GetOfficialHudScaleX(void)
+{
+	return 0.8f;
+}
+
+static float
+GetOfficialHudScaleY(void)
+{
+	return 1.35f;
+}
+
+static float
+GetStraightChineseHudScaleY(void)
+{
+#ifdef CHINESE_FONT
+	if (FrontEndMenuManager.m_PrefsLanguage == CMenuManager::LANGUAGE_CHINESE &&
+	    gChineseLanguageVariant == CHINESE_VARIANT_ZB)
+		return 1.25f;
+#endif
+	return 1.8f;
+}
+
 // Game has colors inlined in code.
 // For easier modification we collect them here:
 CRGBA MONEY_COLOR(0, 207, 133, 255);
@@ -85,14 +154,15 @@ uint32 CHud::m_VehicleNameTimer;
 wchar *CHud::m_VehicleName;
 wchar *CHud::m_pLastVehicleName;
 wchar *CHud::m_pVehicleNameToPrint;
-wchar CHud::m_Message[256];
-wchar CHud::m_PagerMessage[256];
+wchar CHud::m_Message[HUD_MESSAGE_LENGTH];
+wchar CHud::m_PagerMessage[HUD_MESSAGE_LENGTH];
 bool CHud::m_Wants_To_Draw_Hud;
 bool CHud::m_Wants_To_Draw_3dMarkers;
-wchar CHud::m_BigMessage[6][128];
+wchar CHud::m_BigMessage[6][HUD_BIG_MESSAGE_LENGTH];
 int16 CHud::m_ItemToFlash;
 bool CHud::m_HideRadar;
 int32 CHud::m_ClockState;
+wchar LastBigMessage[6][HUD_BIG_MESSAGE_LENGTH];
 
 // These aren't really in CHud
 float CHud::BigMessageInUse[6];
@@ -403,6 +473,8 @@ void CHud::Draw()
 
 		if (CrossHairHidesHud)
 			return;
+
+		CFont::SetUseOriginalAscii(true);
 
 		/*
 			DrawMoneyCounter
@@ -788,13 +860,22 @@ void CHud::Draw()
 					CFont::SetPropOn();
 					CFont::SetBackgroundOff();
 
-					if (FrontEndMenuManager.m_PrefsLanguage == CMenuManager::LANGUAGE_SPANISH)
-						CFont::SetScale(SCREEN_SCALE_X(1.7f * 0.8f), SCREEN_SCALE_Y(1.8f));
+					bool useOfficialStraightHudText = UseOfficialStraightHudText();
+					float straightHudScaleY = GetStraightChineseHudScaleY();
+					if (useOfficialStraightHudText)
+						CFont::SetScale(SCREEN_SCALE_X(GetOfficialHudScaleX()), SCREEN_SCALE_Y(GetOfficialHudScaleY()));
+					else if (FrontEndMenuManager.m_PrefsLanguage == CMenuManager::LANGUAGE_SPANISH)
+						CFont::SetScale(SCREEN_SCALE_X(1.7f * 0.8f), SCREEN_SCALE_Y(straightHudScaleY));
 					else
-						CFont::SetScale(SCREEN_SCALE_X(1.7f), SCREEN_SCALE_Y(1.8f));
+						CFont::SetScale(SCREEN_SCALE_X(1.7f), SCREEN_SCALE_Y(straightHudScaleY));
 
-					CFont::SetSlantRefPoint(SCREEN_SCALE_FROM_RIGHT(32.0f), SCREEN_SCALE_FROM_BOTTOM(128.0f));
-					CFont::SetSlant(0.15f);
+					bool useStraightChineseText = UseStraightChineseHudText();
+					if (useStraightChineseText) {
+						CFont::SetSlant(0.0f);
+					} else {
+						CFont::SetSlantRefPoint(SCREEN_SCALE_FROM_RIGHT(32.0f), SCREEN_SCALE_FROM_BOTTOM(128.0f));
+						CFont::SetSlant(0.15f);
+					}
 
 					CFont::SetRightJustifyOn();
 					CFont::SetRightJustifyWrap(0.0f);
@@ -804,9 +885,20 @@ void CHud::Draw()
 					CFont::SetFontStyle(FONT_BANK);
 					CFont::SetColor(CRGBA(ZONE_COLOR.r, ZONE_COLOR.g, ZONE_COLOR.b, fZoneAlpha));
 
-					if (!CTheScripts::bPlayerIsInTheStatium)
-						CFont::PrintStringFromBottom(SCREEN_SCALE_FROM_RIGHT(32.0f), SCREEN_SCALE_FROM_BOTTOM(128.0f), m_ZoneToPrint);
+					wchar *zoneText = m_ZoneToPrint;
+					bool useZuibaAsciiHudText = UseZuibaStraightHudText();
+					float zoneHudRight = 32.0f;
+					float zoneHudBottom = 128.0f;
+					if (useOfficialStraightHudText)
+						zoneHudBottom = GetOfficialHudZoneBottom();
+					if (useZuibaAsciiHudText)
+						CFont::SetUseOriginalAscii(false);
 
+					if (!CTheScripts::bPlayerIsInTheStatium)
+						CFont::PrintStringFromBottom(SCREEN_SCALE_FROM_RIGHT(zoneHudRight), SCREEN_SCALE_FROM_BOTTOM(zoneHudBottom), zoneText);
+
+					if (useZuibaAsciiHudText)
+						CFont::SetUseOriginalAscii(true);
 					CFont::SetSlant(0.f);
 				} else {
 					m_ZoneState = 3;
@@ -888,13 +980,22 @@ void CHud::Draw()
 					CFont::SetPropOn();
 					CFont::SetBackgroundOff();
 
-					if (FrontEndMenuManager.m_PrefsLanguage != CMenuManager::LANGUAGE_ITALIAN && FrontEndMenuManager.m_PrefsLanguage != CMenuManager::LANGUAGE_SPANISH)
-						CFont::SetScale(SCREEN_SCALE_X(1.7f), SCREEN_SCALE_Y(1.8f));
+					bool useOfficialStraightHudText = UseOfficialStraightHudText();
+					float straightHudScaleY = GetStraightChineseHudScaleY();
+					if (useOfficialStraightHudText)
+						CFont::SetScale(SCREEN_SCALE_X(GetOfficialHudScaleX()), SCREEN_SCALE_Y(GetOfficialHudScaleY()));
+					else if (FrontEndMenuManager.m_PrefsLanguage != CMenuManager::LANGUAGE_ITALIAN && FrontEndMenuManager.m_PrefsLanguage != CMenuManager::LANGUAGE_SPANISH)
+						CFont::SetScale(SCREEN_SCALE_X(1.7f), SCREEN_SCALE_Y(straightHudScaleY));
 					else
-						CFont::SetScale(SCREEN_SCALE_X(1.7f * 0.85f), SCREEN_SCALE_Y(1.8f));
+						CFont::SetScale(SCREEN_SCALE_X(1.7f * 0.85f), SCREEN_SCALE_Y(straightHudScaleY));
 
-					CFont::SetSlantRefPoint(SCREEN_SCALE_FROM_RIGHT(32.0f), SCREEN_SCALE_FROM_BOTTOM(105.0f));
-					CFont::SetSlant(0.15f);
+					bool useStraightChineseText = UseStraightChineseHudText();
+					if (useStraightChineseText) {
+						CFont::SetSlant(0.0f);
+					} else {
+						CFont::SetSlantRefPoint(SCREEN_SCALE_FROM_RIGHT(32.0f), SCREEN_SCALE_FROM_BOTTOM(105.0f));
+						CFont::SetSlant(0.15f);
+					}
 
 					CFont::SetRightJustifyOn();
 					CFont::SetRightJustifyWrap(0.0f);
@@ -904,8 +1005,19 @@ void CHud::Draw()
 					CFont::SetColor(CRGBA(VEHICLE_COLOR.r, VEHICLE_COLOR.g, VEHICLE_COLOR.b, fVehicleAlpha));
 					CFont::SetDropColor(CRGBA(0, 0, 0, fVehicleAlpha));
 
-					CFont::PrintStringFromBottom(SCREEN_SCALE_FROM_RIGHT(32.0f), SCREEN_SCALE_FROM_BOTTOM(105.0f), m_pVehicleNameToPrint);
+					wchar *vehicleText = m_pVehicleNameToPrint;
+					bool useZuibaAsciiHudText = UseZuibaStraightHudText();
+					float vehicleHudRight = 32.0f;
+					float vehicleHudBottom = 105.0f;
+					if (useOfficialStraightHudText)
+						vehicleHudBottom = GetOfficialHudVehicleBottom();
+					if (useZuibaAsciiHudText)
+						CFont::SetUseOriginalAscii(false);
 
+					CFont::PrintStringFromBottom(SCREEN_SCALE_FROM_RIGHT(vehicleHudRight), SCREEN_SCALE_FROM_BOTTOM(vehicleHudBottom), vehicleText);
+
+					if (useZuibaAsciiHudText)
+						CFont::SetUseOriginalAscii(true);
 					CFont::SetSlant(0.f);
 				}
 			}
@@ -1436,6 +1548,8 @@ void CHud::Draw()
 			BigMessageInUse[2] = 0.0f;
 		}
 	}
+
+	CFont::SetUseOriginalAscii(false);
 }
 
 void CHud::DrawAfterFade()
@@ -1446,6 +1560,8 @@ void CHud::DrawAfterFade()
 
 	if (CTimer::GetIsUserPaused() || CReplay::IsPlayingBack())
 		return;
+
+	CFont::SetUseOriginalAscii(true);
 
 	for (int i = 0; i < ARRAY_SIZE(CTheScripts::IntroTextLines); i++) {
 		intro_text_line &line = CTheScripts::IntroTextLines[i];
@@ -1611,7 +1727,7 @@ void CHud::DrawAfterFade()
 			CFont::SetRightJustifyWrap(SCALE_AND_CENTER_X(0.0f));
 			CFont::SetRightJustifyOn();
 			CFont::SetFontStyle(FONT_BANK);
-			CFont::SetScale(FrontEndMenuManager.m_PrefsLanguage == CMenuManager::LANGUAGE_AMERICAN ? SCREEN_SCALE_X(1.7f) : SCREEN_SCALE_X(1.5f), SCREEN_SCALE_Y(1.8f));
+			CFont::SetScale(FrontEndMenuManager.m_PrefsLanguage == CMenuManager::LANGUAGE_AMERICAN ? SCREEN_SCALE_X(1.7f) : SCREEN_SCALE_X(1.7f), SCREEN_SCALE_Y(1.8f));
 
 			if (BigMessageX[1] >= SCREEN_SCALE_FROM_RIGHT(20.0f)) {
 				BigMessageInUse[1] += CTimer::GetTimeStep();
@@ -1648,6 +1764,8 @@ void CHud::DrawAfterFade()
 	} else {
 		BigMessageInUse[1] = 0.0f;
 	}
+
+	CFont::SetUseOriginalAscii(false);
 }
 
 void CHud::GetRidOfAllHudMessages()
@@ -1677,11 +1795,16 @@ void CHud::GetRidOfAllHudMessages()
 	for (int i = 0; i < ARRAY_SIZE(m_Message); i++)
 		m_Message[i] = 0;
 
+	for (int i = 0; i < ARRAY_SIZE(m_PagerMessage); i++)
+		m_PagerMessage[i] = 0;
+
 	for (int i = 0; i < 6; i++) {
 		BigMessageInUse[i] = 0.0f;
 
-		for (int j = 0; j < 128; j++)
+		for (int j = 0; j < ARRAY_SIZE(m_BigMessage[i]); j++) {
 			m_BigMessage[i][j] = 0;
+			LastBigMessage[i][j] = 0;
+		}
 	}
 }
 
@@ -1847,17 +1970,19 @@ void CHud::ReInitialise() {
 	m_LastWeapon = 0;
 }
 
-wchar LastBigMessage[6][128];
-
 void CHud::SetBigMessage(wchar *message, uint16 style)
 {
+	if (message == nil || style >= ARRAY_SIZE(m_BigMessage))
+		return;
+
+	const int32 maxLen = ARRAY_SIZE(m_BigMessage[0]) - 1;
 	int i = 0;
 
 	if (BigMessageInUse[style] != 0.0f)
 		return;
 
 	if (style == 5) {
-		for (i = 0; i < 128; i++) {
+		for (i = 0; i < maxLen; i++) {
 			if (message[i] == 0)
 				break;
 
@@ -1870,7 +1995,7 @@ void CHud::SetBigMessage(wchar *message, uint16 style)
 			LastBigMessage[5][i] = message[i];
 		}
 	} else {
-		for (i = 0; i < 128; i++) {
+		for (i = 0; i < maxLen; i++) {
 			if (message[i] == 0)
 				break;
 			m_BigMessage[style][i] = message[i];
@@ -1926,8 +2051,13 @@ bool CHud::IsHelpMessageBeingDisplayed(void)
 
 void CHud::SetMessage(wchar *message)
 {
+	if (message == nil) {
+		m_Message[0] = 0;
+		return;
+	}
+
 	int i = 0;
-	for (i = 0; i < ARRAY_SIZE(m_Message); i++) {
+	for (i = 0; i < ARRAY_SIZE(m_Message) - 1; i++) {
 		if (message[i] == 0)
 			break;
 
@@ -1938,8 +2068,13 @@ void CHud::SetMessage(wchar *message)
 
 void CHud::SetPagerMessage(wchar *message)
 {
+	if (message == nil) {
+		m_PagerMessage[0] = 0;
+		return;
+	}
+
 	int i = 0;
-	for (i = 0; i < ARRAY_SIZE(m_PagerMessage); i++) {
+	for (i = 0; i < ARRAY_SIZE(m_PagerMessage) - 1; i++) {
 		if (message[i] == 0)
 			break;
 

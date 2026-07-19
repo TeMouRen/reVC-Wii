@@ -592,8 +592,16 @@ CheckDataNotCorrupt(int32 slot, char *name)
 		if (CloseFile(file)) {
 			if (CheckSum == _checkSum) {
 				m_LevelToLoad = level;
+#ifdef WII
+				SYS_Report("[reVC-WII] Save checksum OK: slot=%d path=%s checksum=%d level=%d blocks=%d\n",
+					slot, filename, CheckSum, level, blocknum);
+#endif
 				return true;
 			}
+#ifdef WII
+			SYS_Report("[reVC-WII] Save checksum mismatch: slot=%d path=%s computed=%d stored=%d level=%d blocks=%d\n",
+				slot, filename, CheckSum, _checkSum, level, blocknum);
+#endif
 			return false;
 		}
 		return false;
@@ -684,7 +692,7 @@ do { \
 #define SkipPtr(from, to) to += 4; from += 8
 
 // unfortunately we need a 2nd buffer of the same size to store the fixed output ...
-static uint8 work_buff2[sizeof(work_buff)];
+alignas(32) static uint8 work_buff2[sizeof(work_buff)];
 
 enum
 {

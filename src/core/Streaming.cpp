@@ -38,6 +38,21 @@
 #include "Frontend.h"
 #include "VarConsole.h"
 
+#ifdef WII
+static const char *
+WiiStreamStateName(uint8 state)
+{
+	switch (state) {
+	case STREAMSTATE_NOTLOADED: return "notloaded";
+	case STREAMSTATE_LOADED: return "loaded";
+	case STREAMSTATE_INQUEUE: return "inqueue";
+	case STREAMSTATE_READING: return "reading";
+	case STREAMSTATE_STARTED: return "started";
+	default: return "unknown";
+	}
+}
+#endif
+
 bool CStreaming::ms_disableStreaming;
 bool CStreaming::ms_bLoadingBigModel;
 int32 CStreaming::ms_numModelsRequested;
@@ -1037,6 +1052,9 @@ CStreaming::RequestSpecialModel(int32 modelId, const char *modelName, int32 flag
 	char oldName[48];
 	uint32 pos, size;
 	int i, n;
+#ifdef WII
+	const char *requestedName = modelName;
+#endif
 
 	mi = CModelInfo::GetModelInfo(modelId);
 	if(strncasecmp("CSPlay", modelName, 6) == 0){
@@ -1048,8 +1066,27 @@ CStreaming::RequestSpecialModel(int32 modelId, const char *modelName, int32 flag
 			}
 		}
 	}
+#ifdef WII
+	printf("[SPEC-WII] request_special modelId=%d slot=%d req=%s resolved=%s current=%s flags=0x%02X refs=%d state=%s\n",
+		modelId,
+		modelId - MI_SPECIAL01 + 1,
+		requestedName,
+		modelName,
+		mi->GetModelName(),
+		flags,
+		mi->GetNumRefs(),
+		WiiStreamStateName(ms_aInfoForModel[modelId].m_loadState));
+#endif
 	if(!CGeneral::faststrcmp(mi->GetModelName(), modelName)){
 		// Already have the correct name, just request it
+#ifdef WII
+		printf("[SPEC-WII] request_special reuse modelId=%d slot=%d model=%s flags=0x%02X state=%s\n",
+			modelId,
+			modelId - MI_SPECIAL01 + 1,
+			modelName,
+			flags,
+			WiiStreamStateName(ms_aInfoForModel[modelId].m_loadState));
+#endif
 		RequestModel(modelId, flags);
 		return;
 	}
@@ -1089,13 +1126,34 @@ CStreaming::RequestSpecialModel(int32 modelId, const char *modelName, int32 flag
 		RemoveModel(modelId);
 
 	bool found = ms_pExtraObjectsDir->FindItem(modelName, pos, size);
+#ifdef WII
+	if(!found){
+		printf("[SPEC-WII] request_special missing_extra modelId=%d slot=%d model=%s\n",
+			modelId,
+			modelId - MI_SPECIAL01 + 1,
+			modelName);
+	}
+#endif
 	assert(found);
 	mi->ClearTexDictionary();
-	if(CTxdStore::FindTxdSlot(modelName) == -1)
+	int specialTxdSlot = CTxdStore::FindTxdSlot(modelName);
+	if(specialTxdSlot == -1)
 		mi->SetTexDictionary("generic");
 	else
 		mi->SetTexDictionary(modelName);
 	ms_aInfoForModel[modelId].SetCdPosnAndSize(pos, size);
+#ifdef WII
+	printf("[SPEC-WII] request_special queued modelId=%d slot=%d old=%s new=%s txd=%s txdSlot=%d cdPos=%u size=%u flags=0x%02X\n",
+		modelId,
+		modelId - MI_SPECIAL01 + 1,
+		oldName,
+		modelName,
+		specialTxdSlot == -1 ? "generic" : modelName,
+		specialTxdSlot,
+		pos,
+		size,
+		flags);
+#endif
 	RequestModel(modelId, flags);
 }
 
@@ -1108,7 +1166,51 @@ CStreaming::RequestSpecialChar(int32 charId, const char *modelName, int32 flags)
 bool
 CStreaming::HasSpecialCharLoaded(int32 id)
 {
-	return HasModelLoaded(id + MI_SPECIAL01);
+	int32 modelId = id + MI_SPECIAL01;
+	bool loaded = HasModelLoaded(modelId);
+#ifdef WII
+	if(id >= 0 && id <= MI_SPECIAL21 - MI_SPECIAL01){
+		static bool s_init = false;
+		static uint8 s_lastModelState[MI_SPECIAL21 - MI_SPECIAL01 + 1];
+		static uint8 s_lastTxdState[MI_SPECIAL21 - MI_SPECIAL01 + 1];
+		static bool s_lastLoaded[MI_SPECIAL21 - MI_SPECIAL01 + 1];
+		if(!s_init){
+			for(int i = 0; i < ARRAY_SIZE(s_lastModelState); i++){
+				s_lastModelState[i] = 0xFF;
+				s_lastTxdState[i] = 0xFF;
+				s_lastLoaded[i] = false;
+			}
+			s_init = true;
+		}
+
+		CBaseModelInfo *mi = CModelInfo::GetModelInfo(modelId);
+		CStreamingInfo *modelInfo = &ms_aInfoForModel[modelId];
+		int txdSlot = CTxdStore::FindTxdSlot(mi->GetModelName());
+		uint8 txdState = txdSlot != -1 ? ms_aInfoForModel[txdSlot + STREAM_OFFSET_TXD].m_loadState : 0xFE;
+		if(s_lastLoaded[id] != loaded ||
+		   s_lastModelState[id] != modelInfo->m_loadState ||
+		   s_lastTxdState[id] != txdState){
+			uint32 pos = 0, size = 0;
+			modelInfo->GetCdPosnAndSize(pos, size);
+			printf("[SPEC-WII] has_special id=%d loaded=%d model=%s modelState=%s txd=%s txdSlot=%d txdState=%s flags=0x%02X refs=%d cdPos=%u size=%u\n",
+				id + 1,
+				loaded ? 1 : 0,
+				mi->GetModelName(),
+				WiiStreamStateName(modelInfo->m_loadState),
+				txdSlot == -1 ? "generic" : CTxdStore::GetTxdName(txdSlot),
+				txdSlot,
+				txdState == 0xFE ? "n/a" : WiiStreamStateName(txdState),
+				modelInfo->m_flags,
+				mi->GetNumRefs(),
+				pos,
+				size);
+			s_lastLoaded[id] = loaded;
+			s_lastModelState[id] = modelInfo->m_loadState;
+			s_lastTxdState[id] = txdState;
+		}
+	}
+#endif
+	return loaded;
 }
 
 void

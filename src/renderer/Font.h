@@ -33,6 +33,7 @@ struct CFontDetails
 	float rightJustifyWrap;
 	int16 style;
 	bool8 bFontHalfTexture;
+	bool8 bUseOriginalAscii;
 	uint32 bank;
 	int16 dropShadowPosition;
 	CRGBA dropColor;
@@ -56,6 +57,7 @@ struct CFontRenderState
 	float slantRefY;
 	bool8 bIsShadow;
 	bool8 bFontHalfTexture;
+	bool8 bUseOriginalAscii;
 	bool8 proportional;
 	bool8 anonymous_14;
 	int16 style;
@@ -210,6 +212,7 @@ public:
 	static void SetPropOn(void);
 	static void SetPropOff(void);
 	static void SetFontStyle(int16 style);
+	static void SetUseOriginalAscii(bool enable);
 	static void SetRightJustifyWrap(float wrap);
 	static void SetAlphaFade(float fade);
 	static void SetDropShadowPosition(int16 pos);
@@ -219,7 +222,7 @@ public:
 	static wchar FindNewCharacter(wchar c);
 	static void FilterOutTokensFromString(wchar*);
 #ifdef MORE_LANGUAGES
-	static void ReloadFonts(uint8 set);
+	static void ReloadFonts(uint8 set, bool force = false);
 
 	// japanese stuff
 	static bool IsAnsiCharacter(wchar* s);
@@ -229,6 +232,7 @@ public:
 #endif
 #ifdef CHINESE_FONT
 	static CSprite2d ChsSprite;
+	static CSprite2d ChsSlantSprite;
 	static int32 ChsNumRows;
 	static void LoadChineseFont(void);
 	static void PrintChineseChar(float x, float y, wchar c);

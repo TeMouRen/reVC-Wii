@@ -37,7 +37,7 @@ static uint32
 GxIntroCutsceneTexBudget(void)
 {
 #ifdef WII
-	return 26u * 1024u * 1024u;
+	return 44u * 1024u * 1024u;
 #else
 	return 18u * 1024u * 1024u;
 #endif
@@ -47,7 +47,7 @@ static uint32
 GxCutsceneLoadTexBudget(void)
 {
 #ifdef WII
-	return 27u * 1024u * 1024u;
+	return 48u * 1024u * 1024u;
 #else
 	return 20u * 1024u * 1024u;
 #endif
@@ -57,7 +57,7 @@ static uint32
 GxPostCutsceneTexBudget(void)
 {
 #ifdef WII
-	return 26u * 1024u * 1024u;
+	return 48u * 1024u * 1024u;
 #else
 	return 22u * 1024u * 1024u;
 #endif
@@ -222,6 +222,10 @@ CCutsceneMgr::Initialise(void)
 	ms_useLodMultiplier = false;
 	ms_animLoaded = false;
 	ms_cutsceneProcessing = false;
+	ms_cutsceneLoadStatus = 0;
+	ms_cutsceneTimer = 0.0f;
+	ms_cutsceneName[0] = '\0';
+	bCamLoaded = false;
 
 	ms_pCutsceneDir = new CDirectory(CUTSCENEDIRSIZE);
 	ms_pCutsceneDir->ReadDirFile("ANIM\\CUTS.DIR");
@@ -275,8 +279,9 @@ CCutsceneMgr::LoadCutsceneData(const char *szCutsceneName)
 			rw::gx::texPoolSetSoftBudget(GxIntroCutsceneTexBudget());
 			rw::gx::texPoolEnforceBudget("intro-cutscene-anim");
 		} else {
-			// Non-intro cutscenes are more sensitive to rwMalloc starvation
-			// during anim/camera/model setup than to texture sharpness.
+			// Wii now has a dedicated 64MB GX pool in MEM2, so keep cutscene
+			// texture budgets close to gameplay quality instead of forcing the
+			// old aggressively blurry safety path.
 			rw::gx::texPoolSetSoftBudget(GxCutsceneLoadTexBudget());
 			rw::gx::texPoolEnforceBudget("cutscene-anim");
 		}
@@ -326,6 +331,16 @@ CCutsceneMgr::LoadCutsceneData(const char *szCutsceneName)
 	CPad::GetPad(0)->SetDisablePlayerControls(PLAYERCONTROL_CUTSCENE);
 	CWorld::Players[CWorld::PlayerInFocus].MakePlayerSafe(true);
 
+#ifdef WII
+	printf("[CUT-WII] data_loaded name=%s anim=%d cam=%d loaded=%d processing=%d running=%d intro=%d\n",
+		ms_cutsceneName,
+		ms_animLoaded ? 1 : 0,
+		bCamLoaded ? 1 : 0,
+		ms_loaded ? 1 : 0,
+		ms_cutsceneProcessing ? 1 : 0,
+		ms_running ? 1 : 0,
+		CGame::playingIntro ? 1 : 0);
+#endif
 	CTimer::Resume();
 }
 
@@ -333,6 +348,14 @@ void
 CCutsceneMgr::FinishCutscene()
 {
 	ms_wasCutsceneSkipped = true;
+#ifdef WII
+	printf("[CUT-WII] finish_cutscene name=%s camLoaded=%d timer=%.3f status=%u running=%d\n",
+		ms_cutsceneName,
+		bCamLoaded ? 1 : 0,
+		ms_cutsceneTimer,
+		ms_cutsceneLoadStatus,
+		ms_running ? 1 : 0);
+#endif
 	if (bCamLoaded) {
 		CCutsceneMgr::ms_cutsceneTimer = TheCamera.GetCutSceneFinishTime() * 0.001f;
 		TheCamera.FinishCutscene();
@@ -347,6 +370,14 @@ CCutsceneMgr::SetupCutsceneToStart(void)
 {
 	((void)0);
 
+#ifdef WII
+	printf("[CUT-WII] setup_to_start name=%s camLoaded=%d objs=%d status=%u running=%d\n",
+		ms_cutsceneName,
+		bCamLoaded ? 1 : 0,
+		ms_numCutsceneObjs,
+		ms_cutsceneLoadStatus,
+		ms_running ? 1 : 0);
+#endif
 	if (bCamLoaded) {
 		TheCamera.SetCamCutSceneOffSet(ms_cutsceneOffset);
 		TheCamera.TakeControlWithSpline(JUMP_CUT);
@@ -528,6 +559,15 @@ void
 CCutsceneMgr::DeleteCutsceneData(void)
 {
 	if (!ms_loaded) return;
+#ifdef WII
+	printf("[CUT-WII] delete_cutscene name=%s loaded=%d processing=%d running=%d status=%u objs=%d\n",
+		ms_cutsceneName,
+		ms_loaded ? 1 : 0,
+		ms_cutsceneProcessing ? 1 : 0,
+		ms_running ? 1 : 0,
+		ms_cutsceneLoadStatus,
+		ms_numCutsceneObjs);
+#endif
 	CTimer::Suspend();
 #if GX_CONSOLE
 	const bool wasIntroCutscene = IsIntroCutsceneName(ms_cutsceneName);
@@ -567,9 +607,13 @@ CCutsceneMgr::DeleteCutsceneData(void)
 		TheCamera.RestoreWithJumpCut();
 		TheCamera.SetWideScreenOff();
 		TheCamera.DeleteCutSceneCamDataMemory();
+		bCamLoaded = false;
 	}
 	ms_running = false;
 	ms_loaded = false;
+	ms_cutsceneLoadStatus = 0;
+	ms_cutsceneTimer = 0.0f;
+	ms_cutsceneName[0] = '\0';
 
 	FindPlayerPed()->bIsVisible = true;
 	CPad::GetPad(0)->SetEnablePlayerControls(PLAYERCONTROL_CUTSCENE);
@@ -588,9 +632,8 @@ CCutsceneMgr::DeleteCutsceneData(void)
 		rw::gx::texPoolSetSoftBudget(GxCutsceneLoadTexBudget());
 		rw::gx::texPoolEnforceBudget("intro-cutscene-end");
 	} else {
-		// Return to the default post-cutscene budget once non-intro setup has
-		// finished. The tighter load-time budget is only there to get through
-		// the heaviest anim/camera allocation burst.
+		// Keep post-cutscene gameplay near the full-quality Wii budget now that
+		// the dedicated GX MEM2 pool is large enough to avoid the old 26MB cap.
 		rw::gx::texPoolSetSoftBudget(GxPostCutsceneTexBudget());
 		rw::gx::texPoolEnforceBudget("cutscene-end");
 	}
@@ -639,6 +682,27 @@ CCutsceneMgr::Update(void)
 		CUTSCENE_LOADING_3,
 		CUTSCENE_LOADING_4
 	};
+
+#ifdef WII
+	static uint32 s_lastLoggedLoadStatus = 0xFFFFFFFFu;
+	static bool s_lastLoggedRunning = false;
+	static bool s_lastLoggedProcessing = false;
+	if (s_lastLoggedLoadStatus != ms_cutsceneLoadStatus ||
+	    s_lastLoggedRunning != ms_running ||
+	    s_lastLoggedProcessing != ms_cutsceneProcessing) {
+		printf("[CUT-WII] update_state name=%s status=%u running=%d processing=%d loaded=%d camLoaded=%d timer=%.3f\n",
+			ms_cutsceneName,
+			ms_cutsceneLoadStatus,
+			ms_running ? 1 : 0,
+			ms_cutsceneProcessing ? 1 : 0,
+			ms_loaded ? 1 : 0,
+			bCamLoaded ? 1 : 0,
+			ms_cutsceneTimer);
+		s_lastLoggedLoadStatus = ms_cutsceneLoadStatus;
+		s_lastLoggedRunning = ms_running;
+		s_lastLoggedProcessing = ms_cutsceneProcessing;
+	}
+#endif
 
 	switch (ms_cutsceneLoadStatus) {
 	case CUTSCENE_LOADING_AUDIO:

@@ -875,6 +875,25 @@ VALIDATE_SIZE(CMenuManager, 0x688);
 
 extern CMenuManager FrontEndMenuManager;
 
+#ifdef CHINESE_FONT
+enum eChineseVariant
+{
+	CHINESE_VARIANT_WM,
+	CHINESE_VARIANT_ZB,
+	CHINESE_VARIANT_GF,
+	CHINESE_VARIANT_COUNT
+};
+
+extern uint8 gChineseLanguageVariant;
+
+void CycleChineseLanguageVariant(int8 changeAmount);
+const char *GetChineseVariantGxtFilename(void);
+const char *GetChineseVariantFontBaseName(void);
+const char *GetChineseVariantSlantFontBaseName(void);
+wchar *GetChineseLanguageMenuLabel(void);
+wchar *GetChineseVariantMenuLabel(void);
+#endif
+
 #endif
 
 #endif // __GTA_FRONTEND_H__

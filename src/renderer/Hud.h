@@ -2,7 +2,9 @@
 #define __GTA_HUD_H__
 #include "Sprite2d.h"
 
-#define HELP_MSG_LENGTH 256
+#define HUD_MESSAGE_LENGTH 512
+#define HELP_MSG_LENGTH HUD_MESSAGE_LENGTH
+#define HUD_BIG_MESSAGE_LENGTH 256
 
 #define HUD_TEXT_SCALE_X 0.7f
 #define HUD_TEXT_SCALE_Y 1.25f
@@ -73,11 +75,11 @@ public:
 	static uint32 m_VehicleState;
 	static int32 m_VehicleFadeTimer;
 	static uint32 m_VehicleNameTimer;
-	static wchar m_Message[256];
-	static wchar m_PagerMessage[256];
+	static wchar m_Message[HUD_MESSAGE_LENGTH];
+	static wchar m_PagerMessage[HUD_MESSAGE_LENGTH];
 	static bool m_Wants_To_Draw_Hud;
 	static bool m_Wants_To_Draw_3dMarkers;
-	static wchar m_BigMessage[6][128];
+	static wchar m_BigMessage[6][HUD_BIG_MESSAGE_LENGTH];
 	static int16 m_ItemToFlash;
 	static bool m_HideRadar;
 	static int32 m_ClockState;

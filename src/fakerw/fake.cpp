@@ -361,6 +361,15 @@ fakeShouldLogFocusedConversionResult(const char *name)
 	       strcmp(name, "plantb256") == 0 ||
 	       strcmp(name, "plantc256") == 0 ||
 	       strcmp(name, "fuzzyplant256") == 0 ||
+	       strncmp(name, "htl_", 4) == 0 ||
+	       strncmp(name, "ht_", 3) == 0 ||
+	       strncmp(name, "hot_", 4) == 0 ||
+	       strncmp(name, "mob_", 4) == 0 ||
+	       strncmp(name, "nt_wall", 7) == 0 ||
+	       strncmp(name, "nt_floor", 8) == 0 ||
+	       strncmp(name, "nt_woodwall", 11) == 0 ||
+	       strstr(name, "hotel") != nil ||
+	       strstr(name, "lobby") != nil ||
 	       strstr(name, "tree") != nil ||
 	       strstr(name, "plant") != nil ||
 	       strstr(name, "leaf") != nil;
@@ -934,6 +943,15 @@ fakeFocusTextureName(const char *name)
 	       fakeNameContainsNoCase(name, "tree") ||
 	       fakeNameContainsNoCase(name, "plant") ||
 	       fakeNameContainsNoCase(name, "foliage") ||
+	       fakeNameContainsNoCase(name, "hotel") ||
+	       fakeNameContainsNoCase(name, "lobby") ||
+	       strncmp(name, "htl_", 4) == 0 ||
+	       strncmp(name, "ht_", 3) == 0 ||
+	       strncmp(name, "hot_", 4) == 0 ||
+	       strncmp(name, "mob_", 4) == 0 ||
+	       strncmp(name, "nt_wall", 7) == 0 ||
+	       strncmp(name, "nt_floor", 8) == 0 ||
+	       strncmp(name, "nt_woodwall", 11) == 0 ||
 	       strcmp(name, "planta256") == 0 ||
 	       strcmp(name, "plantb256") == 0 ||
 	       strcmp(name, "plantc256") == 0 ||
@@ -997,45 +1015,12 @@ fakeIsKnownEdgeBlendCutoutVegetationTexture(const char *name)
 }
 
 static bool
-fakeNeedsTighterVegetationCutoutRef(const char *name)
-{
-	if(name == nil || name[0] == '\0')
-		return false;
-
-	return strcmp(name, "kbtree4_test") == 0 ||
-	       strcmp(name, "foliage256") == 0 ||
-	       strcmp(name, "newtreeleaves128") == 0 ||
-	       strcmp(name, "newtreeleavesb128") == 0 ||
-	       strcmp(name, "planta256") == 0 ||
-	       strcmp(name, "plantb256") == 0 ||
-	       strcmp(name, "plantc256") == 0 ||
-	       strcmp(name, "fuzzyplant256") == 0 ||
-	       strcmp(name, "kbplanter_plants1") == 0;
-}
-
-static bool
 fakeIsLikelyThinTwoSidedTexture(const char *name)
 {
 	return fakeNameContainsNoCase(name, "rotor") ||
 	       fakeNameContainsNoCase(name, "propell") ||
 	       fakeNameContainsNoCase(name, "blade") ||
 	       fakeNameContainsNoCase(name, "fan");
-}
-
-static bool
-fakePreferBlendTextureAlpha(const char *name)
-{
-	if(name == nil)
-		return false;
-
-	return fakeIsKnownSoftBlendVegetationTexture(name) ||
-	       fakeNameContainsNoCase(name, "glass") ||
-	       fakeNameContainsNoCase(name, "window") ||
-	       fakeNameContainsNoCase(name, "shadow") ||
-	       fakeNameContainsNoCase(name, "beam") ||
-	       fakeNameContainsNoCase(name, "light") ||
-	       fakeNameContainsNoCase(name, "flare") ||
-	       fakeNameContainsNoCase(name, "water");
 }
 
 static bool
@@ -1068,22 +1053,6 @@ fakePreferCutoutTextureAlpha(const char *name)
 	       fakeNameContainsNoCase(name, "weed") ||
 	       fakeNameContainsNoCase(name, "sign") ||
 	       fakeIsLikelyThinTwoSidedTexture(name);
-}
-
-static bool
-fakeIsLikelyFoliageCutoutTexture(const char *name)
-{
-	if(fakeIsKnownSoftBlendVegetationTexture(name))
-		return false;
-
-	return fakeNameContainsNoCase(name, "leaf") ||
-	       fakeNameContainsNoCase(name, "bush") ||
-	       fakeNameContainsNoCase(name, "tree") ||
-	       fakeNameContainsNoCase(name, "palm") ||
-	       fakeNameContainsNoCase(name, "ivy") ||
-	       fakeNameContainsNoCase(name, "grass") ||
-	       fakeNameContainsNoCase(name, "hedge") ||
-	       fakeNameContainsNoCase(name, "plant");
 }
 
 static bool32
@@ -1237,10 +1206,8 @@ RpAtomic *AtomicDefaultRenderCallBack(RpAtomic * atomic)
 			bool hasVertexColors = geo && geo->colors &&
 			                      (geo->flags & rw::Geometry::PRELIT) != 0;
 			bool meshVertexAlpha = false;
-			bool preferTexBlend = false;
 			bool preferTexCutout = false;
 			bool preferEdgeBlendCutout = false;
-			bool maskedCutout = false;
 			bool doBlend = false;
 			bool doAlphaTest = false;
 			uint32 numIndices = focusMesh ? focusMesh->numIndices : 0u;
@@ -1268,32 +1235,23 @@ RpAtomic *AtomicDefaultRenderCallBack(RpAtomic * atomic)
 				meshVertexAlpha = fakeMeshHasVertexAlpha(geo, focusMesh->indices,
 				                                        focusMesh->numIndices) != 0;
 
-			preferTexBlend = hasTexAlpha && fakePreferBlendTextureAlpha(focusTex);
 			preferTexCutout = hasTexAlpha && fakePreferCutoutTextureAlpha(focusTex);
 			preferEdgeBlendCutout = hasTexAlpha &&
 			                        fakeIsKnownEdgeBlendCutoutVegetationTexture(focusTex);
-			// Coexisting test+blend: masked textures always alpha-test (unless
-			// they are genuinely translucent blend textures); blend is additive.
-			maskedCutout = (hasTexAlpha || forceKnownAlpha ||
-			                fakeIsLikelyFoliageCutoutTexture(focusTex)) &&
-			               !preferTexBlend;
-			doBlend = hasMatAlpha || meshVertexAlpha || preferTexBlend;
-			doAlphaTest = maskedCutout;
+			// Mirror gxpipe.cpp: all draw-alpha sources enable both states.
+			bool usesAlpha = hasTexAlpha || forceKnownAlpha ||
+			                 hasMatAlpha || meshVertexAlpha;
+			doBlend = usesAlpha;
+			doAlphaTest = usesAlpha;
 
 			if(doAlphaTest){
 				effectiveAlphaFunc = fakeGxAlphaFuncFromState(rw::gx::gxState.alphaTestFunc);
 				effectiveAlphaRef = (uint8)rw::gx::gxState.alphaTestRef;
-				if(fakeIsLikelyFoliageCutoutTexture(focusTex)){
-					if(fakeNeedsTighterVegetationCutoutRef(focusTex))
-						effectiveAlphaRef = gxFmt == GX_TF_CMPR ? 18 : 40;
-					else
-						effectiveAlphaRef = gxFmt == GX_TF_CMPR ? 10 : 16;
-					effectiveAlphaFunc = GX_GEQUAL;
-				}else if(effectiveAlphaRef < 10)
+				if(effectiveAlphaRef < 10)
 					effectiveAlphaRef = 10;
 			}
 
-			printf("[ATOMIC-ALPHA] tex=%s mesh=%u numIdx=%u fmt=0x%02X texObj=%u matA=%u texA=%u vtxA=%u prelit=%u blend=%u cutout=%u prefBlend=%u edgeBlend=%u prefCut=%u masked=%u forceA=%u shadowMute=%u gAFn=%d gARef=%d effAFn=%u effARef=%u\n",
+			printf("[ATOMIC-ALPHA] tex=%s mesh=%u numIdx=%u fmt=0x%02X texObj=%u matA=%u texA=%u vtxA=%u prelit=%u blend=%u alphaTest=%u edgeBlend=%u prefCut=%u forceA=%u shadowMute=%u gAFn=%d gARef=%d effAFn=%u effARef=%u\n",
 			       focusTex ? focusTex : "none",
 			       focusMeshIndex,
 			       numIndices,
@@ -1305,10 +1263,8 @@ RpAtomic *AtomicDefaultRenderCallBack(RpAtomic * atomic)
 			       hasVertexColors ? 1u : 0u,
 			       doBlend ? 1u : 0u,
 			       doAlphaTest ? 1u : 0u,
-			       preferTexBlend ? 1u : 0u,
 			       preferEdgeBlendCutout ? 1u : 0u,
 			       preferTexCutout ? 1u : 0u,
-			       maskedCutout ? 1u : 0u,
 			       forceKnownAlpha ? 1u : 0u,
 			       muteShadowAtlas ? 1u : 0u,
 			       (int)rw::gx::gxState.alphaTestFunc,

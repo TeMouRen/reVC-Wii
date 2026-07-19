@@ -16,10 +16,17 @@ static char s_gx_current_dir[256] = "";
 #ifdef _WIN32
 #include <direct.h>
 #endif
+#if defined(WII)
+#include <malloc.h>
+#include <ogc/isfs.h>
+#endif
 #include "common.h"
 #include "crossplatform.h"
 
 #include "FileMgr.h"
+#if defined(WII)
+#include "wii_save.h"
+#endif
 
 const char *_psGetUserFilesFolder();
 
@@ -35,10 +42,66 @@ struct myFILE
 {
 	bool isText;
 	FILE *file;
+#if defined(WII)
+	s32 isfsFd;
+	int lastError;
+	enum Backend {
+		BACKEND_NONE,
+		BACKEND_STDIO,
+		BACKEND_ISFS
+	} backend;
+#endif
 };
 
 #define NUMFILES 20
 static myFILE myfiles[NUMFILES];
+
+#if defined(WII)
+static size_t
+align32(size_t size)
+{
+	return (size + 31) & ~((size_t)31);
+}
+
+static bool
+isAbsoluteFsPath(const char *path)
+{
+	return path != nil &&
+		(path[0] == '/' ||
+		path[0] == '\\' ||
+		(((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) && path[1] == ':'));
+}
+
+static bool
+buildManagedPathFromCurrentDir(const char *filename, char *outPath, size_t outPathSize)
+{
+	int written;
+
+	if (filename == nil || outPath == nil || outPathSize == 0)
+		return false;
+	if (s_gx_current_dir[0] == '\0' || !WiiSavePathIsManaged(s_gx_current_dir))
+		return false;
+	if (WiiSavePathIsManaged(filename) || isAbsoluteFsPath(filename))
+		return false;
+
+	written = snprintf(outPath, outPathSize, "%s/%s", s_gx_current_dir, filename);
+	if (written < 0 || (size_t)written >= outPathSize) {
+		SYS_Report("[reVC-WII] Managed path build failed: dir=%s file=%s\n",
+			s_gx_current_dir, filename);
+		return false;
+	}
+
+	for (size_t i = 0; outPath[i] != '\0'; i++) {
+		if (outPath[i] == '\\')
+			outPath[i] = '/';
+	}
+
+	return WiiSavePathIsManaged(outPath);
+}
+#endif
+
+static size_t myfread(void *buf, size_t elt, size_t n, int fd);
+static size_t myfwrite(void *buf, size_t elt, size_t n, int fd);
 
 
 #if !defined(_WIN32)
@@ -87,7 +150,11 @@ myfopen(const char *filename, const char *mode)
 	char realmode[10], *p;
 
 	for(fd = 1; fd < NUMFILES; fd++)
+#if defined(WII)
+		if(myfiles[fd].backend == myFILE::BACKEND_NONE)
+#else
 		if(myfiles[fd].file == nil)
+#endif
 			goto found;
 	return 0;	// no free fd
 found:
@@ -104,7 +171,90 @@ found:
 			mode++;
 	*p++ = 'b';
 	*p = '\0';
-	
+
+#if defined(WII)
+	char managedPath[ISFS_MAXPATH];
+	const char *effectiveFilename = filename;
+	const bool shouldUseManagedCurrentDir =
+		s_gx_current_dir[0] != '\0' &&
+		WiiSavePathIsManaged(s_gx_current_dir) &&
+		!WiiSavePathIsManaged(filename) &&
+		!isAbsoluteFsPath(filename);
+	if (buildManagedPathFromCurrentDir(filename, managedPath, sizeof(managedPath)))
+		effectiveFilename = managedPath;
+	else if (shouldUseManagedCurrentDir)
+		return 0;
+
+	if (WiiSavePathIsManaged(effectiveFilename)) {
+		if (!WiiSaveSystemInit())
+			return 0;
+
+		myfiles[fd].file = nil;
+		myfiles[fd].isfsFd = -1;
+		myfiles[fd].lastError = 0;
+		myfiles[fd].backend = myFILE::BACKEND_ISFS;
+		myfiles[fd].isText = false;
+
+		const bool wantsRead = strchr(realmode, 'r') != nil;
+		const bool wantsWrite = strchr(realmode, 'w') != nil;
+		const bool wantsAppend = strchr(realmode, 'a') != nil;
+		const bool wantsPlus = strchr(realmode, '+') != nil;
+
+		if (wantsWrite) {
+			WiiSaveDeleteFile(effectiveFilename);
+			s32 createRet = ISFS_CreateFile(effectiveFilename, 0, 3, 3, 3);
+			if (createRet < 0) {
+				SYS_Report("[reVC-WII] ISFS_CreateFile failed: path=%s ret=%d\n", effectiveFilename, createRet);
+			}
+			myfiles[fd].isfsFd = ISFS_Open(effectiveFilename, ISFS_OPEN_RW);
+			if (myfiles[fd].isfsFd < 0) {
+				SYS_Report("[reVC-WII] ISFS_Open failed for write: path=%s ret=%d\n", effectiveFilename, myfiles[fd].isfsFd);
+				myfiles[fd].backend = myFILE::BACKEND_NONE;
+				return 0;
+			}
+			s32 seekRet = ISFS_Seek(myfiles[fd].isfsFd, 0, SEEK_SET);
+			if (seekRet < 0) {
+				SYS_Report("[reVC-WII] ISFS_Seek failed after write-open: path=%s ret=%d\n", effectiveFilename, seekRet);
+			}
+			return fd;
+		}
+
+		if (wantsAppend) {
+			myfiles[fd].isfsFd = ISFS_Open(effectiveFilename, ISFS_OPEN_RW);
+			if (myfiles[fd].isfsFd < 0) {
+				s32 createRet = ISFS_CreateFile(effectiveFilename, 0, 3, 3, 3);
+				if (createRet < 0) {
+					SYS_Report("[reVC-WII] ISFS_CreateFile failed for append: path=%s ret=%d\n", effectiveFilename, createRet);
+				}
+				myfiles[fd].isfsFd = ISFS_Open(effectiveFilename, ISFS_OPEN_RW);
+			}
+			if (myfiles[fd].isfsFd < 0) {
+				SYS_Report("[reVC-WII] ISFS_Open failed for append: path=%s ret=%d\n", effectiveFilename, myfiles[fd].isfsFd);
+				myfiles[fd].backend = myFILE::BACKEND_NONE;
+				return 0;
+			}
+			if (ISFS_Seek(myfiles[fd].isfsFd, 0, SEEK_END) < 0) {
+				SYS_Report("[reVC-WII] ISFS_Seek failed for append: path=%s\n", effectiveFilename);
+				ISFS_Close(myfiles[fd].isfsFd);
+				myfiles[fd].isfsFd = -1;
+				myfiles[fd].backend = myFILE::BACKEND_NONE;
+				return 0;
+			}
+			return fd;
+		}
+
+		u8 openMode = wantsRead && wantsPlus ? ISFS_OPEN_RW : (wantsRead ? ISFS_OPEN_READ : ISFS_OPEN_RW);
+		myfiles[fd].isfsFd = ISFS_Open(effectiveFilename, openMode);
+		if (myfiles[fd].isfsFd < 0) {
+			if (!WiiSaveIsNoExistsError(myfiles[fd].isfsFd))
+				SYS_Report("[reVC-WII] ISFS_Open failed: path=%s mode=%u ret=%d\n", effectiveFilename, openMode, myfiles[fd].isfsFd);
+			myfiles[fd].backend = myFILE::BACKEND_NONE;
+			return 0;
+		}
+		return fd;
+	}
+#endif
+
 #if GX_CONSOLE
     // ----------------------------------------------------------
     // GameCube: 鎵嬪姩鎷兼帴 dvd:/ 缁濆璺緞
@@ -140,6 +290,11 @@ found:
 
     if(myfiles[fd].file == nil)
         return 0;
+#if defined(WII)
+	myfiles[fd].backend = myFILE::BACKEND_STDIO;
+	myfiles[fd].isfsFd = -1;
+	myfiles[fd].lastError = 0;
+#endif
     setvbuf(myfiles[fd].file, NULL, _IOFBF, 4096);  // Force 4KB buffering
     return fd;
 }
@@ -149,9 +304,24 @@ myfclose(int fd)
 {
 	int ret;
 	assert(fd < NUMFILES);
+#if defined(WII)
+	if(myfiles[fd].backend == myFILE::BACKEND_ISFS && myfiles[fd].isfsFd >= 0){
+		ret = ISFS_Close(myfiles[fd].isfsFd);
+		if(ret < 0)
+			SYS_Report("[reVC-WII] ISFS_Close failed: fd=%d ret=%d\n", myfiles[fd].isfsFd, ret);
+		myfiles[fd].isfsFd = -1;
+		myfiles[fd].backend = myFILE::BACKEND_NONE;
+		myfiles[fd].lastError = 0;
+		return ret;
+	}
+#endif
 	if(myfiles[fd].file){
 		ret = fclose(myfiles[fd].file);
 		myfiles[fd].file = nil;
+#if defined(WII)
+		myfiles[fd].backend = myFILE::BACKEND_NONE;
+		myfiles[fd].lastError = 0;
+#endif
 		return ret;
 	}
 	return EOF;
@@ -161,6 +331,14 @@ static int
 myfgetc(int fd)
 {
 	int c;
+#if defined(WII)
+	if (myfiles[fd].backend == myFILE::BACKEND_ISFS) {
+		unsigned char ch;
+		if (myfread(&ch, 1, 1, fd) != 1)
+			return EOF;
+		return ch;
+	}
+#endif
 	c = fgetc(myfiles[fd].file);
 	if(myfiles[fd].isText && c == 015){
 		/* translate CRLF to LF */
@@ -177,6 +355,12 @@ static int
 myfputc(int c, int fd)
 {
 	/* translate LF to CRLF */
+#if defined(WII)
+	if (myfiles[fd].backend == myFILE::BACKEND_ISFS) {
+		unsigned char ch = (unsigned char)c;
+		return myfwrite(&ch, 1, 1, fd) == 1 ? ch : EOF;
+	}
+#endif
 	if(myfiles[fd].isText && c == 012)
 		fputc(015, myfiles[fd].file);
 	return fputc(c, myfiles[fd].file);
@@ -208,6 +392,70 @@ myfgets(char *buf, int len, int fd)
 static size_t
 myfread(void *buf, size_t elt, size_t n, int fd)
 {
+#if defined(WII)
+	if(myfiles[fd].backend == myFILE::BACKEND_ISFS){
+		size_t total, done;
+		uint8 *dst;
+		uint8 *bounce;
+		const bool directRead = (((u32)buf) & 31) == 0;
+
+		if(myfiles[fd].isText){
+			unsigned char *p;
+			size_t i;
+			int c;
+
+			n *= elt;
+			p = (unsigned char*)buf;
+			for(i = 0; i < n; i++){
+				c = myfgetc(fd);
+				if(c == EOF)
+					break;
+				*p++ = (unsigned char)c;
+			}
+			return i / elt;
+		}
+
+		total = elt * n;
+		if(total == 0)
+			return 0;
+
+		myfiles[fd].lastError = 0;
+		bounce = nil;
+		if(!directRead){
+			bounce = (uint8*)memalign(32, align32(Min((size_t)0x2000, total)));
+			if(bounce == nil){
+				myfiles[fd].lastError = ISFS_ENOMEM;
+				return 0;
+			}
+		}
+
+		dst = (uint8*)buf;
+		done = 0;
+		while(done < total){
+			size_t chunk = Min((size_t)0x2000, total - done);
+			void *readPtr = directRead ? (dst + done) : bounce;
+			s32 res = ISFS_Read(myfiles[fd].isfsFd, readPtr, chunk);
+			if(res < 0){
+				myfiles[fd].lastError = res;
+				break;
+			}
+			if(res == 0){
+				myfiles[fd].lastError = 1;
+				break;
+			}
+			if(!directRead)
+				memcpy(dst + done, bounce, res);
+			done += res;
+			if((size_t)res != chunk){
+				myfiles[fd].lastError = 1;
+				break;
+			}
+		}
+		if(bounce != nil)
+			free(bounce);
+		return done / elt;
+	}
+#endif
 	if(myfiles[fd].isText){
 		unsigned char *p;
 		size_t i;
@@ -229,6 +477,75 @@ myfread(void *buf, size_t elt, size_t n, int fd)
 static size_t
 myfwrite(void *buf, size_t elt, size_t n, int fd)
 {
+#if defined(WII)
+	if(myfiles[fd].backend == myFILE::BACKEND_ISFS){
+		size_t total, done;
+		const uint8 *src;
+		uint8 *bounce;
+		const bool directWrite = (((u32)buf) & 31) == 0;
+
+		if(myfiles[fd].isText){
+			unsigned char *p;
+			size_t i;
+			int c;
+
+			n *= elt;
+			p = (unsigned char*)buf;
+			for(i = 0; i < n; i++){
+				c = *p++;
+				myfputc(c, fd);
+				if(myfiles[fd].lastError)
+					break;
+			}
+			return i / elt;
+		}
+
+		total = elt * n;
+		if(total == 0)
+			return 0;
+
+		src = (const uint8*)buf;
+		done = 0;
+		myfiles[fd].lastError = 0;
+		bounce = nil;
+		if(!directWrite){
+			bounce = (uint8*)memalign(32, align32(Min((size_t)0x2000, total)));
+			if(bounce == nil){
+				myfiles[fd].lastError = ISFS_ENOMEM;
+				return 0;
+			}
+		}
+		while(done < total){
+			size_t chunk = Min((size_t)0x2000, total - done);
+			const void *writePtr = src + done;
+			if(!directWrite){
+				memcpy(bounce, src + done, chunk);
+				writePtr = bounce;
+			}
+			s32 res = ISFS_Write(myfiles[fd].isfsFd, writePtr, chunk);
+			if(res < 0){
+				SYS_Report("[reVC-WII] ISFS_Write failed: fd=%d done=%u total=%u ret=%d\n",
+					myfiles[fd].isfsFd, (u32)done, (u32)total, res);
+				myfiles[fd].lastError = res;
+				break;
+			}
+			if(res == 0){
+				SYS_Report("[reVC-WII] ISFS_Write returned 0: fd=%d done=%u total=%u\n",
+					myfiles[fd].isfsFd, (u32)done, (u32)total);
+				myfiles[fd].lastError = 1;
+				break;
+			}
+			done += res;
+			if((size_t)res != chunk){
+				myfiles[fd].lastError = 1;
+				break;
+			}
+		}
+		if(bounce != nil)
+			free(bounce);
+		return done / elt;
+	}
+#endif
 	if(myfiles[fd].isText){
 		unsigned char *p;
 		size_t i;
@@ -250,12 +567,27 @@ myfwrite(void *buf, size_t elt, size_t n, int fd)
 static int
 myfseek(int fd, long offset, int whence)
 {
+#if defined(WII)
+	if(myfiles[fd].backend == myFILE::BACKEND_ISFS){
+		s32 res = ISFS_Seek(myfiles[fd].isfsFd, offset, whence);
+		if(res < 0){
+			myfiles[fd].lastError = res;
+			return -1;
+		}
+		myfiles[fd].lastError = 0;
+		return 0;
+	}
+#endif
 	return fseek(myfiles[fd].file, offset, whence);
 }
 
 static int
 myfeof(int fd)
 {
+#if defined(WII)
+	if(myfiles[fd].backend == myFILE::BACKEND_ISFS)
+		return myfiles[fd].lastError != 0;
+#endif
 	return feof(myfiles[fd].file);
 //	return ferror(myfiles[fd].file);
 }
@@ -356,7 +688,21 @@ void
 CFileMgr::SetDirMyDocuments(void)
 {
 	SetDir("");	// better start at the root if user directory is relative
+#if defined(WII)
+	const char *path = _psGetUserFilesFolder();
+	if (path == nil)
+		return;
+	strncpy(s_gx_current_dir, path, sizeof(s_gx_current_dir) - 1);
+	s_gx_current_dir[sizeof(s_gx_current_dir) - 1] = '\0';
+	for (int i = 0; s_gx_current_dir[i] != '\0'; i++)
+		if (s_gx_current_dir[i] == '\\')
+			s_gx_current_dir[i] = '/';
+	int gc_len = (int)strlen(s_gx_current_dir);
+	if (gc_len > 1 && s_gx_current_dir[gc_len - 1] == '/')
+		s_gx_current_dir[gc_len - 1] = '\0';
+#else
 	mychdir(_psGetUserFilesFolder());
+#endif
 }
 
 ssize_t
@@ -434,6 +780,18 @@ CFileMgr::Seek(int fd, int offset, int whence)
 long
 CFileMgr::Tell(int fd)
 {
+#if defined(WII)
+	if(myfiles[fd].backend == myFILE::BACKEND_ISFS){
+		alignas(32) fstats stats;
+		s32 res = ISFS_GetFileStats(myfiles[fd].isfsFd, &stats);
+		if(res < 0){
+			myfiles[fd].lastError = res;
+			return -1;
+		}
+		myfiles[fd].lastError = 0;
+		return stats.file_pos;
+	}
+#endif
 	return ftell(myfiles[fd].file);
 }
 

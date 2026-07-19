@@ -156,6 +156,15 @@ int8 CRunningScript::ProcessCommands1000To1099(int32 command)
 	{
 		CollectParameters(&m_nIp, 1);
 		CPlayerInfo* pPlayerInfo = &CWorld::Players[ScriptParams[0]];
+#ifdef WII
+		printf("[CUT-WII] make_player_safe_for_cutscene ip=%u player=%d status=%u loaded=%d running=%d name=%s\n",
+			m_nIp,
+			ScriptParams[0],
+			CCutsceneMgr::ms_cutsceneLoadStatus,
+			CCutsceneMgr::HasLoaded() ? 1 : 0,
+			CCutsceneMgr::IsRunning() ? 1 : 0,
+			CCutsceneMgr::GetCutsceneName());
+#endif
 		CPad::GetPad(ScriptParams[0])->SetDisablePlayerControls(PLAYERCONTROL_CUTSCENE);
 		pPlayerInfo->MakePlayerSafe(true);
 		CCutsceneMgr::StartCutsceneProcessing();

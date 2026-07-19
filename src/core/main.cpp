@@ -150,11 +150,11 @@ WiiRecordOuterVSyncWait(double waitMs, double frameLoopMs)
 }
 #endif
 
-uint8 work_buff[55000];
+alignas(32) uint8 work_buff[55000];
 char gString[256];
 char gString2[512];
-wchar gUString[256];
-wchar gUString2[256];
+wchar gUString[512];
+wchar gUString2[512];
 
 float FramesPerSecond = 30.0f;
 

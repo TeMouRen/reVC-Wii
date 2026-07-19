@@ -20,6 +20,8 @@
 #include "Weather.h"
 #include "DMAudio.h"
 #include "GenericGameStorage.h"
+#include "Frontend.h"
+#include "Radar.h"
 
 #ifdef GTA_PS2
 #include <libcdvd.h>
@@ -52,6 +54,17 @@ int32 gRetuneCounter;
 bool8 g_bAnnouncementReadPosAlready;
 uint8 RadioStaticCounter = 5;
 uint32 RadioStaticTimer;
+
+static bool
+UseOfficialChineseRadioHudLayout(void)
+{
+#ifdef CHINESE_FONT
+	return FrontEndMenuManager.m_PrefsLanguage == CMenuManager::LANGUAGE_CHINESE &&
+	       gChineseLanguageVariant == CHINESE_VARIANT_GF;
+#else
+	return false;
+#endif
+}
 
 CVector vecRiotPosition(300.7f, -322.0f, 12.0f);
 
@@ -1510,17 +1523,24 @@ cMusicManager::DisplayRadioStationName()
 	CFont::SetScale(SCREEN_SCALE_X(0.8f), SCREEN_SCALE_Y(1.35f));
 	CFont::SetPropOn();
 	CFont::SetFontStyle(FONT_STANDARD);
-	CFont::SetCentreOn();
-	CFont::SetCentreSize(SCREEN_STRETCH_X(DEFAULT_SCREEN_WIDTH));
+	float radioTextX = SCREEN_WIDTH / 2;
+	float radioTextY = SCREEN_SCALE_Y(22.0f);
+	if (UseOfficialChineseRadioHudLayout()) {
+		CFont::SetCentreOff();
+		radioTextX = SCREEN_SCALE_X(RADAR_LEFT - 6.0f);
+		radioTextY = SCREEN_SCALE_FROM_BOTTOM(RADAR_BOTTOM + RADAR_HEIGHT + 40.0f);
+	} else {
+		CFont::SetCentreOn();
+		CFont::SetCentreSize(SCREEN_STRETCH_X(DEFAULT_SCREEN_WIDTH));
+	}
 	CFont::SetColor(CRGBA(0, 0, 0, 255));
-	CFont::PrintString(SCREEN_WIDTH / 2 + SCREEN_SCALE_X(2.0f), SCREEN_SCALE_Y(22.0f) + SCREEN_SCALE_Y(2.0f), pCurrentStation);
+	CFont::PrintString(radioTextX + SCREEN_SCALE_X(2.0f), radioTextY + SCREEN_SCALE_Y(2.0f), pCurrentStation);
 
 	if (gNumRetunePresses)
 		CFont::SetColor(CRGBA(102, 133, 143, 255));
 	else
 		CFont::SetColor(CRGBA(147, 196, 211, 255));
 
-	CFont::PrintString(SCREEN_WIDTH / 2, SCREEN_SCALE_Y(22.0f), pCurrentStation);
+	CFont::PrintString(radioTextX, radioTextY, pCurrentStation);
 	CFont::DrawFonts();
 }
-

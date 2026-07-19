@@ -87,7 +87,7 @@ CText::Load(void)
         break;
 #ifdef CHINESE_FONT
     case CMenuManager::LANGUAGE_CHINESE:
-        sprintf(filename, "CHINESE.GXT");
+        strcpy(filename, GetChineseVariantGxtFilename());
         break;
 #endif
 #endif
@@ -310,7 +310,7 @@ CText::LoadMissionText(char *MissionTableName)
         break;
 #ifdef CHINESE_FONT
     case CMenuManager::LANGUAGE_CHINESE:
-        sprintf(filename, "CHINESE.GXT");
+        strcpy(filename, GetChineseVariantGxtFilename());
         break;
 #endif
 #endif

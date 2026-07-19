@@ -200,6 +200,147 @@ CustomFrontendOptionsPopulate(void)
 mINI::INIFile ini("reVC.ini");
 mINI::INIStructure cfg;
 
+#ifdef WII
+static bool
+WiiReadIniStorage(mINI::INIStructure& data)
+{
+	if (data.size())
+		data.clear();
+
+	CFileMgr::SetDirMyDocuments();
+	int file = CFileMgr::OpenFile("reVC.ini", "rb");
+	if (!file) {
+		CFileMgr::SetDir("");
+		return false;
+	}
+
+	CFileMgr::Seek(file, 0, SEEK_END);
+	long fileSize = CFileMgr::Tell(file);
+	CFileMgr::Seek(file, 0, SEEK_SET);
+	if (fileSize < 0) {
+		CFileMgr::CloseFile(file);
+		CFileMgr::SetDir("");
+		return false;
+	}
+
+	std::string fileContents;
+	if (fileSize > 0) {
+		fileContents.resize((size_t)fileSize);
+		size_t bytesRead = CFileMgr::Read(file, &fileContents[0], fileSize);
+		if (bytesRead != (size_t)fileSize) {
+			CFileMgr::CloseFile(file);
+			CFileMgr::SetDir("");
+			return false;
+		}
+	}
+
+	CFileMgr::CloseFile(file);
+	CFileMgr::SetDir("");
+
+	mINI::INIParser::T_ParseValues parseData;
+	std::string section;
+	bool inSection = false;
+	size_t lineStart = 0;
+
+	while (lineStart <= fileContents.size()) {
+		size_t lineEnd = fileContents.find('\n', lineStart);
+		std::string line = lineEnd == std::string::npos
+			? fileContents.substr(lineStart)
+			: fileContents.substr(lineStart, lineEnd - lineStart);
+
+		auto parseResult = mINI::INIParser::parseLine(line, parseData);
+		if (parseResult == mINI::INIParser::PDataType::PDATA_SECTION) {
+			inSection = true;
+			data[section = parseData.first];
+		} else if (inSection && parseResult == mINI::INIParser::PDataType::PDATA_KEYVALUE) {
+			data[section][parseData.first] = parseData.second;
+		}
+
+		if (lineEnd == std::string::npos)
+			break;
+		lineStart = lineEnd + 1;
+	}
+
+	return true;
+}
+
+static bool
+WiiWriteIniStorage(mINI::INIStructure& data, bool pretty = false)
+{
+	std::string output;
+
+	if (data.size() > 0) {
+		auto it = data.begin();
+		for (;;) {
+			output += "[";
+			output += it->first;
+			output += "]";
+
+			auto const& collection = it->second;
+			if (collection.size() > 0) {
+				output += mINI::INIStringUtil::endl;
+				auto it2 = collection.begin();
+				for (;;) {
+					auto key = it2->first;
+					auto value = it2->second;
+					mINI::INIStringUtil::replace(key, "=", "\\=");
+					mINI::INIStringUtil::trim(value);
+					output += key;
+					output += pretty ? " = " : "=";
+					output += value;
+					if (++it2 == collection.end())
+						break;
+					output += mINI::INIStringUtil::endl;
+				}
+			}
+
+			if (++it == data.end())
+				break;
+			output += mINI::INIStringUtil::endl;
+			if (pretty)
+				output += mINI::INIStringUtil::endl;
+		}
+	}
+
+	CFileMgr::SetDirMyDocuments();
+	int file = CFileMgr::OpenFile("reVC.ini", "w+");
+	if (!file) {
+		CFileMgr::SetDir("");
+		return false;
+	}
+
+	bool ok = true;
+	if (!output.empty()) {
+		size_t bytesWritten = CFileMgr::Write(file, output.c_str(), output.size());
+		ok = bytesWritten == output.size();
+	}
+
+	CFileMgr::CloseFile(file);
+	CFileMgr::SetDir("");
+	return ok;
+}
+#endif
+
+static bool
+IniReadStorage(mINI::INIStructure& data)
+{
+#ifdef WII
+	return WiiReadIniStorage(data);
+#else
+	return ini.read(data);
+#endif
+}
+
+static bool
+IniWriteStorage(mINI::INIStructure& data, bool pretty = false)
+{
+#ifdef WII
+	return WiiWriteIniStorage(data, pretty);
+#else
+	return ini.write(data, pretty);
+#endif
+}
+
 bool ReadIniIfExists(const char *cat, const char *key, uint32 *out)
 {
 	mINI::INIMap<std::string> section = cfg.get(cat);
@@ -479,12 +620,12 @@ void SaveINIControllerSettings()
 #endif
 	StoreIni("Controller", "PadButtonsInited", ControlsManager.ms_padButtonsInited);
 
-	ini.write(cfg);
+	IniWriteStorage(cfg);
 }
 
 bool LoadINISettings()
 {
-	if (!ini.read(cfg))
+	if (!IniReadStorage(cfg))
 		return false;
 
 #ifdef IMPROVED_VIDEOMODE
@@ -555,6 +696,11 @@ bool LoadINISettings()
 #endif
 #ifdef NO_MOVIES
 	ReadIniIfExists("General", "NoMovies", &gbNoMovies);
+#endif
+
+#ifdef WII
+	SYS_Report("[reVC-WII] INI loaded from save dir reVC.ini (language=%d)\n",
+		FrontEndMenuManager.m_PrefsLanguage);
 #endif
 
 #ifdef CUSTOM_FRONTEND_OPTIONS
@@ -682,7 +828,16 @@ void SaveINISettings()
 	}
 #endif
 
-	ini.write(cfg);
+	if (IniWriteStorage(cfg)) {
+#ifdef WII
+		SYS_Report("[reVC-WII] INI saved to save dir reVC.ini (language=%d)\n",
+			FrontEndMenuManager.m_PrefsLanguage);
+#endif
+	} else {
+#ifdef WII
+		SYS_Report("[reVC-WII] INI save failed for reVC.ini\n");
+#endif
+	}
 }
 
 #endif

@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <math.h>
 #include <gccore.h>
 
 #include "../rwbase.h"
@@ -26,6 +27,305 @@
 
 namespace rw {
 namespace gx {
+
+struct GxAtomicLights
+{
+    RGBAf ambient;
+    Light *directionals[8];
+    Light *locals[8];
+    int32 numDirectionals;
+    int32 numLocals;
+    bool hasNormals;
+};
+
+static uint8
+lightColorByte(float value)
+{
+    if(value <= 0.0f)
+        return 0;
+    if(value >= 1.0f)
+        return 255;
+    return (uint8)(value * 255.0f + 0.5f);
+}
+
+static void
+gatherAtomicLights(Atomic *atomic, GxAtomicLights &lights)
+{
+    memset(&lights, 0, sizeof(lights));
+    lights.ambient.alpha = 1.0f;
+
+    if(atomic == nil || atomic->geometry == nil ||
+       engine->currentWorld == nil)
+        return;
+
+    lights.hasNormals =
+        (atomic->geometry->flags & Geometry::NORMALS) != 0;
+    const bool dynamicLighting =
+        (atomic->geometry->flags & Geometry::LIGHT) != 0;
+    if(!dynamicLighting)
+        return;
+
+    WorldLights worldLights;
+    worldLights.directionals = lights.directionals;
+    worldLights.numDirectionals = 8;
+    worldLights.locals = lights.locals;
+    worldLights.numLocals = 8;
+    ((World*)engine->currentWorld)->enumerateLights(atomic, &worldLights);
+
+    // Diffuse lights require normals. LIGHT geometries without normals keep
+    // only the ambient term, matching the GX2/GL3 reference pipelines.
+    if(!lights.hasNormals){
+        worldLights.numDirectionals = 0;
+        worldLights.numLocals = 0;
+    }
+
+    lights.ambient = worldLights.ambient;
+    lights.numDirectionals = worldLights.numDirectionals;
+    lights.numLocals = worldLights.numLocals;
+
+    static int s_lightDiagCount = 0;
+    if(s_lightDiagCount < 24){
+        printf("[GX-LIGHT] flags=0x%X ambient=%.3f,%.3f,%.3f dirs=%d locals=%d normals=%d\n",
+               (unsigned)atomic->geometry->flags,
+               (double)lights.ambient.red,
+               (double)lights.ambient.green,
+               (double)lights.ambient.blue,
+               lights.numDirectionals,
+               lights.numLocals,
+               lights.hasNormals ? 1 : 0);
+        s_lightDiagCount++;
+    }
+}
+
+static GXColor
+gxLightColor(const Light *light, float diffuseScale)
+{
+    GXColor color = {
+        lightColorByte(light->color.red * diffuseScale),
+        lightColorByte(light->color.green * diffuseScale),
+        lightColorByte(light->color.blue * diffuseScale),
+        255
+    };
+    return color;
+}
+
+static bool
+normalizeViewVector(guVector &vector)
+{
+    float lenSq = vector.x * vector.x +
+                  vector.y * vector.y +
+                  vector.z * vector.z;
+    if(lenSq <= 0.000001f)
+        return false;
+    float invLen = 1.0f / sqrtf(lenSq);
+    vector.x *= invLen;
+    vector.y *= invLen;
+    vector.z *= invLen;
+    return true;
+}
+
+static u32
+loadGxLights(const GxAtomicLights &lights, float diffuseScale)
+{
+    u32 lightMask = GX_LIGHTNULL;
+    int32 loaded = 0;
+
+    for(int32 i = 0; i < lights.numDirectionals && loaded < 8; i++){
+        Light *light = lights.directionals[i];
+        if(light == nil || light->getFrame() == nil)
+            continue;
+
+        const Matrix *lightLtm = light->getFrame()->getLTM();
+        guVector viewToLight = {
+            -lightLtm->at.x,
+            -lightLtm->at.y,
+            -lightLtm->at.z
+        };
+        guVector transformed;
+        guVecMultiplySR(gxInvCamLTM, &viewToLight, &transformed);
+        if(!normalizeViewVector(transformed))
+            continue;
+
+        GXLightObj lightObj;
+        memset(&lightObj, 0, sizeof(lightObj));
+        GX_InitLightPos(&lightObj,
+                        transformed.x * 100000.0f,
+                        transformed.y * 100000.0f,
+                        transformed.z * 100000.0f);
+        GX_InitLightSpot(&lightObj, 0.0f, GX_SP_OFF);
+        GX_InitLightDistAttn(&lightObj, 0.0f, 0.0f, GX_DA_OFF);
+        GX_InitLightColor(&lightObj, gxLightColor(light, diffuseScale));
+
+        u8 lightId = (u8)(GX_LIGHT0 << loaded);
+        GX_LoadLightObj(&lightObj, lightId);
+        lightMask |= lightId;
+        loaded++;
+    }
+
+    for(int32 i = 0; i < lights.numLocals && loaded < 8; i++){
+        Light *light = lights.locals[i];
+        if(light == nil || light->getFrame() == nil)
+            continue;
+
+        const Matrix *lightLtm = light->getFrame()->getLTM();
+        guVector worldPosition = {
+            lightLtm->pos.x,
+            lightLtm->pos.y,
+            lightLtm->pos.z
+        };
+        guVector viewPosition;
+        guVecMultiply(gxInvCamLTM, &worldPosition, &viewPosition);
+
+        GXLightObj lightObj;
+        memset(&lightObj, 0, sizeof(lightObj));
+        GX_InitLightPos(&lightObj,
+                        viewPosition.x,
+                        viewPosition.y,
+                        viewPosition.z);
+        GX_InitLightColor(&lightObj, gxLightColor(light, diffuseScale));
+
+        float radius = light->radius > 0.001f ? light->radius : 0.001f;
+        GX_InitLightDistAttn(&lightObj, radius, 0.01f, GX_DA_MEDIUM);
+
+        if(light->getType() == Light::SPOT ||
+           light->getType() == Light::SOFTSPOT){
+            guVector worldDirection = {
+                lightLtm->at.x,
+                lightLtm->at.y,
+                lightLtm->at.z
+            };
+            guVector viewDirection;
+            guVecMultiplySR(gxInvCamLTM, &worldDirection, &viewDirection);
+            if(normalizeViewVector(viewDirection)){
+                GX_InitLightDir(&lightObj,
+                                viewDirection.x,
+                                viewDirection.y,
+                                viewDirection.z);
+                float cutoff = light->getAngle() * (180.0f / 3.14159265358979323846f);
+                if(cutoff < 0.1f)
+                    cutoff = 0.1f;
+                if(cutoff > 90.0f)
+                    cutoff = 90.0f;
+                GX_InitLightSpot(&lightObj, cutoff,
+                                 light->getType() == Light::SOFTSPOT ?
+                                     GX_SP_COS2 : GX_SP_FLAT);
+            }else
+                GX_InitLightSpot(&lightObj, 0.0f, GX_SP_OFF);
+        }else{
+            GX_InitLightSpot(&lightObj, 0.0f, GX_SP_OFF);
+        }
+
+        u8 lightId = (u8)(GX_LIGHT0 << loaded);
+        GX_LoadLightObj(&lightObj, lightId);
+        lightMask |= lightId;
+        loaded++;
+    }
+
+    return lightMask;
+}
+
+static void
+setupLightingChannels(Material *mat, const GxAtomicLights &lights)
+{
+    float ambientScale = mat ? mat->surfaceProps.ambient : 1.0f;
+    float diffuseScale = mat ? mat->surfaceProps.diffuse : 1.0f;
+    GXColor ambientColor = {
+        lightColorByte(lights.ambient.red * ambientScale),
+        lightColorByte(lights.ambient.green * ambientScale),
+        lightColorByte(lights.ambient.blue * ambientScale),
+        255
+    };
+    GXColor white = {255, 255, 255, 255};
+
+    // Channel 0 carries the PRELIT vertex color. Channel 1 is only used for
+    // dynamic diffuse lighting; ambient is added explicitly by the TEV so
+    // LIGHT meshes without normals do not depend on a disabled GX channel.
+    GX_SetChanMatColor(GX_COLOR0A0, white);
+    GX_SetChanCtrl(GX_COLOR0A0, GX_FALSE,
+                   GX_SRC_REG, GX_SRC_VTX,
+                   GX_LIGHTNULL, GX_DF_NONE, GX_AF_NONE);
+
+    GX_SetChanAmbColor(GX_COLOR1A1, ambientColor);
+    u32 lightMask = loadGxLights(lights, diffuseScale);
+    if(lights.hasNormals){
+        GX_SetChanMatColor(GX_COLOR1A1, white);
+        GX_SetChanCtrl(GX_COLOR1, GX_TRUE,
+                       GX_SRC_REG, GX_SRC_REG,
+                       lightMask, GX_DF_CLAMP,
+                       lights.numLocals > 0 ? GX_AF_SPOT : GX_AF_NONE);
+    }else{
+        // With lighting disabled GX passes the channel material color through.
+        // Feed ambient through channel 1 so no-normal meshes use the same TEV
+        // prelight + lighting path as meshes with normals.
+        GX_SetChanMatColor(GX_COLOR1A1, ambientColor);
+        GX_SetChanCtrl(GX_COLOR1A1, GX_FALSE,
+                       GX_SRC_REG, GX_SRC_REG,
+                       GX_LIGHTNULL, GX_DF_NONE, GX_AF_NONE);
+    }
+    GX_SetChanCtrl(GX_ALPHA1, GX_FALSE,
+                   GX_SRC_REG, GX_SRC_REG,
+                   GX_LIGHTNULL, GX_DF_NONE, GX_AF_NONE);
+    GX_SetNumChans(2);
+}
+
+static void
+setupDefaultLitTev(GXColor matColor, bool textured)
+{
+    GX_SetTevColor(GX_TEVREG1, matColor);
+    GX_SetNumTevStages(textured ? 4 : 3);
+
+    // GX2: prelight + ambient/diffuse, then material color, then texture.
+    GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORDNULL,
+                   GX_TEXMAP_NULL, GX_COLOR0A0);
+    GX_SetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
+
+    GX_SetTevOrder(GX_TEVSTAGE1, GX_TEXCOORDNULL,
+                   GX_TEXMAP_NULL, GX_COLOR1A1);
+    GX_SetTevColorIn(GX_TEVSTAGE1,
+                     GX_CC_ZERO, GX_CC_RASC,
+                     GX_CC_ONE, GX_CC_CPREV);
+    GX_SetTevColorOp(GX_TEVSTAGE1,
+                     GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
+                     GX_TRUE, GX_TEVPREV);
+    GX_SetTevAlphaIn(GX_TEVSTAGE1,
+                     GX_CA_ZERO, GX_CA_ZERO,
+                     GX_CA_ZERO, GX_CA_APREV);
+    GX_SetTevAlphaOp(GX_TEVSTAGE1,
+                     GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
+                     GX_TRUE, GX_TEVPREV);
+
+    GX_SetTevOrder(GX_TEVSTAGE2, GX_TEXCOORDNULL,
+                   GX_TEXMAP_NULL, GX_COLORNULL);
+    GX_SetTevColorIn(GX_TEVSTAGE2,
+                     GX_CC_ZERO, GX_CC_CPREV,
+                     GX_CC_C1, GX_CC_ZERO);
+    GX_SetTevColorOp(GX_TEVSTAGE2,
+                     GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
+                     GX_TRUE, GX_TEVPREV);
+    GX_SetTevAlphaIn(GX_TEVSTAGE2,
+                     GX_CA_ZERO, GX_CA_APREV,
+                     GX_CA_A1, GX_CA_ZERO);
+    GX_SetTevAlphaOp(GX_TEVSTAGE2,
+                     GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
+                     GX_TRUE, GX_TEVPREV);
+
+    if(textured){
+        GX_SetTevOrder(GX_TEVSTAGE3, GX_TEXCOORD0,
+                       GX_TEXMAP0, GX_COLORNULL);
+        GX_SetTevColorIn(GX_TEVSTAGE3,
+                         GX_CC_ZERO, GX_CC_CPREV,
+                         GX_CC_TEXC, GX_CC_ZERO);
+        GX_SetTevColorOp(GX_TEVSTAGE3,
+                         GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
+                         GX_TRUE, GX_TEVPREV);
+        GX_SetTevAlphaIn(GX_TEVSTAGE3,
+                         GX_CA_ZERO, GX_CA_APREV,
+                         GX_CA_TEXA, GX_CA_ZERO);
+        GX_SetTevAlphaOp(GX_TEVSTAGE3,
+                         GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
+                         GX_TRUE, GX_TEVPREV);
+    }
+}
 
 static bool
 pipeNeedsTrace(Geometry *geo)
@@ -159,21 +459,33 @@ isKnownEdgeBlendCutoutVegetationTexture(const char *name)
            strcmp(name, "kbplanter_plants1") == 0;
 }
 
+static bool isRoomShellTexture(const char *name);
+static bool isRoomShellFloorTexture(const char *name);
+
 static bool
-needsTighterVegetationCutoutRef(const char *name)
+isHotelDebugTexture(const char *name)
 {
     if(name == nil || name[0] == '\0')
         return false;
 
-    return strcmp(name, "kbtree4_test") == 0 ||
-           strcmp(name, "foliage256") == 0 ||
-           strcmp(name, "newtreeleaves128") == 0 ||
-           strcmp(name, "newtreeleavesb128") == 0 ||
-           strcmp(name, "planta256") == 0 ||
-           strcmp(name, "plantb256") == 0 ||
-           strcmp(name, "plantc256") == 0 ||
-           strcmp(name, "fuzzyplant256") == 0 ||
-           strcmp(name, "kbplanter_plants1") == 0;
+    return startsWith(name, "htl_") ||
+           startsWith(name, "ht_") ||
+           startsWith(name, "hot_") ||
+           startsWith(name, "mob_") ||
+           startsWith(name, "nt_wall") ||
+           startsWith(name, "nt_floor") ||
+           startsWith(name, "nt_woodwall") ||
+           nameContainsNoCase(name, "hotel") ||
+           nameContainsNoCase(name, "lobby");
+}
+
+static bool
+isHotelRoomShadowTexture(const char *name)
+{
+    // hotshad1/2/3 are translucent, pre-baked window-light overlays. Treating
+    // their alpha as a cutout leaves the black shadow texels fully opaque.
+    return nameContainsNoCase(name, "hotshad") ||
+           nameContainsNoCase(name, "hotelshad");
 }
 
 static bool
@@ -182,8 +494,14 @@ pipeFocusTexture(const char *name)
     return isKnownHardAlphaVegetationTexture(name) ||
            isKnownEdgeBlendCutoutVegetationTexture(name) ||
            isKnownSoftBlendVegetationTexture(name) ||
+           isHotelRoomShadowTexture(name) ||
+           isHotelDebugTexture(name) ||
+           isRoomShellTexture(name) ||
+           isRoomShellFloorTexture(name) ||
            alphaTraceTexture(name) ||
            (name && (
+                strcmp(name, "black") == 0 ||
+               strcmp(name, "black64") == 0 ||
                 strcmp(name, "Grass_128HV") == 0 ||
                strcmp(name, "Grass_64HV") == 0 ||
                strcmp(name, "hedgewall_64") == 0 ||
@@ -191,22 +509,6 @@ pipeFocusTexture(const char *name)
                strcmp(name, "hedge2_128") == 0 ||
                strcmp(name, "Bow_grass_gryard") == 0 ||
                strcmp(name, "Bow_church_grass_gen") == 0));
-}
-
-static bool
-preferBlendTextureAlpha(const char *name)
-{
-    if(name == nil)
-        return false;
-
-    return isKnownSoftBlendVegetationTexture(name) ||
-           nameContainsNoCase(name, "glass") ||
-           nameContainsNoCase(name, "window") ||
-           nameContainsNoCase(name, "shadow") ||
-           nameContainsNoCase(name, "beam") ||
-           nameContainsNoCase(name, "light") ||
-           nameContainsNoCase(name, "flare") ||
-           nameContainsNoCase(name, "water");
 }
 
 static bool
@@ -335,22 +637,6 @@ preferCutoutTextureAlpha(const char *name)
            isLikelyThinTwoSidedTexture(name);
 }
 
-static bool
-isLikelyFoliageCutoutTexture(const char *name)
-{
-    if(isKnownSoftBlendVegetationTexture(name))
-        return false;
-
-    return nameContainsNoCase(name, "leaf") ||
-           nameContainsNoCase(name, "bush") ||
-           nameContainsNoCase(name, "tree") ||
-           nameContainsNoCase(name, "palm") ||
-           nameContainsNoCase(name, "foliage") ||
-           nameContainsNoCase(name, "ivy") ||
-           nameContainsNoCase(name, "grass") ||
-           nameContainsNoCase(name, "hedge") ||
-           nameContainsNoCase(name, "plant");
-}
 static u8
 gxAlphaFuncFromState(int32 f)
 {
@@ -580,24 +866,30 @@ uninstance(rw::ObjPipeline * /*rwpipe*/, Atomic * /*atomic*/)
 // ── Material �?GX TEV (GX_FALSE �?same as gxskin.cpp) ──────
 
 static void
-setMaterial(Material *mat, bool32 vertexAlpha, bool hasVertexColors)
+setMaterial(Material *mat, bool32 vertexAlpha, bool hasVertexColors,
+            bool modulateMaterialColor, const GxAtomicLights &lights)
 {
     static int s_alphaDiagCount = 0;
     static int s_cullDiagCount = 0;
     static int s_texStateDiagCount = 0;
+    static int s_roomAlphaDiagCount = 0;
     const char *texName = (mat && mat->texture) ? mat->texture->name : nil;
     bool hasMatAlpha = false;
     bool hasTexAlpha = false;
-    bool forcedKnownAlpha = isKnownHardAlphaVegetationTexture(texName);
+    uint8 texAlphaKind = GX_RASTER_ALPHA_NONE;
     bool disableVegetationShadow = isVegetationShadowTexture(texName);
-    bool useVertexMaterialColor = vertexAlpha && hasVertexColors;
+    // PRELIT RGB is independent from vertex alpha. Other backends always use
+    // PRELIT vertex color when present, while mesh->vertexAlpha only decides
+    // whether blending is needed.
     uint8 texFmt = 0xFF;
     bool texObjValid = false;
     GXColor matColor = {255, 255, 255, 255};
     if(mat){
-        matColor.r = mat->color.red;
-        matColor.g = mat->color.green;
-        matColor.b = mat->color.blue;
+        if(modulateMaterialColor){
+            matColor.r = mat->color.red;
+            matColor.g = mat->color.green;
+            matColor.b = mat->color.blue;
+        }
         matColor.a = mat->color.alpha;
         hasMatAlpha = mat->color.alpha != 255;
         if(disableVegetationShadow){
@@ -615,8 +907,8 @@ setMaterial(Material *mat, bool32 vertexAlpha, bool hasVertexColors)
         // forces matColor.a=255. VC drives per-object material alpha for LOD
         // fade; forcing it opaque both defeated the fade and, before the
         // coexisting test+blend model below, was the only thing keeping these
-        // atlases off the translucent path. Now the alpha TEST always runs for
-        // masked foliage (see maskedCutout), so a fading tree blends its
+        // atlases off the translucent path. The alpha test still removes fully
+        // transparent foliage texels while blending preserves authored edges,
         // surviving opaque leaf texels smoothly instead of collapsing into
         // dark cards -- matching the GX2 reference default pipe.
     }
@@ -626,55 +918,41 @@ setMaterial(Material *mat, bool32 vertexAlpha, bool hasVertexColors)
         GxRaster *natras = PLUGINOFFSET(GxRaster, ras, nativeRasterOffset);
         if(natras){
             hasTexAlpha = natras->hasAlpha != 0;
+            texAlphaKind = natras->alphaKind;
             texFmt = natras->gxFmt;
             texObjValid = natras->texObjValid;
         }else
             hasTexAlpha = Raster::formatHasAlpha(ras->format);
     }
 
-    if(forcedKnownAlpha && !hasTexAlpha)
-        hasTexAlpha = true;
-
-    if((forcedKnownAlpha || pipeFocusTexture(texName)) &&
-       (forcedKnownAlpha || s_texStateDiagCount < 160)){
-        printf("[PIPE-TEXSTATE] tex=%s fmt=0x%02X texObj=%d matA=%u texA=%d vtxA=%d prelit=%d forceA=%d colSrc=%s\n",
+    if(pipeFocusTexture(texName) && s_texStateDiagCount < 160){
+        printf("[PIPE-TEXSTATE] tex=%s raster=%p fmt=0x%02X texObj=%d matA=%u texA=%d aKind=%u vtxA=%d prelit=%d modRGB=%d zTest=%d zWrite=%d colSrc=%s\n",
                texName ? texName : "none",
+               (mat && mat->texture) ? (void*)mat->texture->raster : nil,
                (unsigned)texFmt,
                texObjValid ? 1 : 0,
                (unsigned)matColor.a,
                hasTexAlpha ? 1 : 0,
+               (unsigned)texAlphaKind,
                vertexAlpha ? 1 : 0,
                hasVertexColors ? 1 : 0,
-               forcedKnownAlpha ? 1 : 0,
-               useVertexMaterialColor ? "VTX" : "REG");
-        if(!forcedKnownAlpha)
-            s_texStateDiagCount++;
+               modulateMaterialColor ? 1 : 0,
+               gxState.zTest ? 1 : 0,
+               gxState.zWrite ? 1 : 0,
+               "PRELIT+LIGHT");
+        s_texStateDiagCount++;
     }
 
-    bool preferTexBlend = hasTexAlpha && preferBlendTextureAlpha(texName);
     bool preferTexCutout = hasTexAlpha && preferCutoutTextureAlpha(texName);
     bool preferEdgeBlendCutout = hasTexAlpha &&
                                  isKnownEdgeBlendCutoutVegetationTexture(texName);
-    // ── Coexisting alpha-test + blend, mirroring the GX2 reference default
-    // pipe (gx2device.cpp setVertexAlpha/setRasterStage: blend and alpha test
-    // are enabled by the SAME "has alpha" condition, never mutually exclusive).
-    //
-    // - doAlphaTest (cutout): run whenever the texture carries a real mask
-    //   (foliage/fence/hedge), so fully-transparent texels are discarded and
-    //   z-write stays meaningful. Genuinely translucent surfaces (glass/water/
-    //   shadow, via preferTexBlend) are excluded -- they should blend, not test.
-    // - doBlend: ADDITIVE, not exclusive. Enabled by per-object material alpha
-    //   (LOD fade), vertex alpha, or explicit blend textures. A fading masked
-    //   tree therefore does BOTH: the test kills transparent leaf texels while
-    //   blend smooths the surviving opaque pixels -> no dark cards, no collapse.
-    // - zWriteEnable: follow the game's z-write state. Only drop it for purely
-    //   translucent blends that are NOT alpha-tested (glass/water/shadow),
-    //   exactly as stock RW keeps masked foliage writing depth.
-    bool maskedCutout = (hasTexAlpha || forcedKnownAlpha ||
-                         isLikelyFoliageCutoutTexture(texName)) &&
-                        !preferTexBlend;
-    bool doBlend = hasMatAlpha || vertexAlpha || preferTexBlend;
-    bool doAlphaTest = maskedCutout;
+    bool textureCutout = hasTexAlpha &&
+                         texAlphaKind == GX_RASTER_ALPHA_CUTOUT;
+    bool textureSmooth = hasTexAlpha && !textureCutout;
+    // Binary masks discard texels instead of blending their bilinear edge.
+    // Smooth texture alpha and object/material fades retain normal blending.
+    bool doBlend = textureSmooth || hasMatAlpha || vertexAlpha;
+    bool doAlphaTest = textureCutout;
     bool zWriteEnable = gxState.zWrite && !(doBlend && !doAlphaTest);
     bool twoSided = isLikelyRoomShellDoubleSided(texName) ||
                     isLikelyThinTwoSidedTexture(texName) ||
@@ -689,9 +967,25 @@ setMaterial(Material *mat, bool32 vertexAlpha, bool hasVertexColors)
                (unsigned)gxState.cullMode,
                (unsigned)cullMode,
                hasTexAlpha ? 1 : 0,
-               preferTexBlend ? 1 : 0,
+               doBlend ? 1 : 0,
                preferTexCutout ? 1 : 0);
         s_cullDiagCount++;
+    }
+    if(s_roomAlphaDiagCount < 96 &&
+       isLikelyRoomShellDoubleSided(texName) &&
+       (hasTexAlpha || hasMatAlpha || vertexAlpha || doBlend || doAlphaTest)){
+        printf("[PIPE-ROOMALPHA] tex=%s fmt=0x%02X texObj=%d matA=%u texA=%d vtxA=%d blend=%d cutout=%d zWrite=%d twoSided=%d\n",
+               texName ? texName : "none",
+               (unsigned)texFmt,
+               texObjValid ? 1 : 0,
+               (unsigned)matColor.a,
+               hasTexAlpha ? 1 : 0,
+               vertexAlpha ? 1 : 0,
+               doBlend ? 1 : 0,
+               doAlphaTest ? 1 : 0,
+               zWriteEnable ? 1 : 0,
+               twoSided ? 1 : 0);
+        s_roomAlphaDiagCount++;
     }
     GX_SetCullMode(cullMode);
 
@@ -706,64 +1000,54 @@ setMaterial(Material *mat, bool32 vertexAlpha, bool hasVertexColors)
 
     // �?GX_FALSE + GX_SRC_REG: bypass lighting, pass register color directly to TEV
     // GX_TRUE would trigger MatColor × AmbColor where AmbColor defaults to black!
-    GX_SetChanMatColor(GX_COLOR0A0, matColor);
-    GX_SetChanCtrl(GX_COLOR0A0, GX_FALSE,
-                   GX_SRC_REG,
-                   useVertexMaterialColor ? GX_SRC_VTX : GX_SRC_REG,
-                   GX_LIGHTNULL, GX_DF_NONE, GX_AF_NONE);
-    GX_SetNumChans(1);
-
+    setupLightingChannels(mat, lights);
+    u8 effectiveAlphaRef = 0;
     if(doAlphaTest) {
         u8 alphaRef = (u8)gxState.alphaTestRef;
         u8 alphaFunc = gxAlphaFuncFromState(gxState.alphaTestFunc);
-        if(isLikelyFoliageCutoutTexture(texName)) {
-            // Runtime-converted RGBA8 leaf atlases contain a lot of mid-alpha
-            // coverage. A near-zero cutoff keeps the whole billboard card
-            // alive and shows the transparent rectangle around palms. Tighten
-            // the authored foliage atlases more aggressively, but keep a lower
-            // fallback for the generic foliage family so we don't collapse the
-            // mask back into thin strips.
-            if(needsTighterVegetationCutoutRef(texName))
-                alphaRef = texFmt == GX_TF_CMPR ? 18 : 40;
-            else
-                alphaRef = texFmt == GX_TF_CMPR ? 10 : 16;
+        if(textureCutout){
+            // Source alpha is 0/255. Test at the bilinear midpoint so filtered
+            // edge samples do not turn into a wide translucent fringe. Scale
+            // the cutoff with material alpha so LOD fades remain visible.
+            uint32 scaledCutoff = (128u * (uint32)matColor.a + 254u) / 255u;
+            if(scaledCutoff < 1u)
+                scaledCutoff = 1u;
+            if(alphaRef < scaledCutoff)
+                alphaRef = (u8)scaledCutoff;
             alphaFunc = GX_GEQUAL;
-        } else if(alphaRef < 10)
-            alphaRef = 10;
+        }
+        effectiveAlphaRef = alphaRef;
         GX_SetAlphaCompare(alphaFunc,
                            alphaRef,
                            GX_AOP_AND, GX_ALWAYS, 0);
     } else
         GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
-    if((doBlend || doAlphaTest || vertexAlpha || forcedKnownAlpha) &&
-       (forcedKnownAlpha ||
-        s_alphaDiagCount < 20 ||
+    if((doBlend || doAlphaTest || vertexAlpha) &&
+       (s_alphaDiagCount < 20 ||
         (alphaTraceTexture(texName) && s_alphaDiagCount < 80))){
-        printf("[PIPE-ALPHA] tex=%s fmt=0x%02X texObj=%d matA=%u texA=%d vtxA=%d blend=%d cutout=%d prefBlend=%d edgeBlend=%d "
-               "aFn=%d aRef=%d srcB=%d dstB=%d zWrite=%d zAfterTex=%d cull=%u prelit=%d cutoutHint=%d masked=%d forceA=%d\n",
+        printf("[PIPE-ALPHA] tex=%s fmt=0x%02X texObj=%d matA=%u texA=%d aKind=%u vtxA=%d blend=%d alphaTest=%d edgeBlend=%d "
+               "aFn=%d aRef=%d effARef=%u srcB=%d dstB=%d zWrite=%d zAfterTex=%d cull=%u prelit=%d cutoutHint=%d\n",
                texName ? texName : "none",
                (unsigned)texFmt,
                texObjValid ? 1 : 0,
                (unsigned)matColor.a,
                hasTexAlpha ? 1 : 0,
+               (unsigned)texAlphaKind,
                vertexAlpha ? 1 : 0,
                doBlend ? 1 : 0,
                doAlphaTest ? 1 : 0,
-               preferTexBlend ? 1 : 0,
                preferEdgeBlendCutout ? 1 : 0,
                (int)gxState.alphaTestFunc,
                (int)gxState.alphaTestRef,
+               (unsigned)effectiveAlphaRef,
                (int)gxState.srcBlend,
                (int)gxState.dstBlend,
                zWriteEnable ? 1 : 0,
                zAfterTexturing ? 1 : 0,
                (unsigned)cullMode,
                hasVertexColors ? 1 : 0,
-               preferTexCutout ? 1 : 0,
-               maskedCutout ? 1 : 0,
-               forcedKnownAlpha ? 1 : 0);
-        if(!forcedKnownAlpha)
-            s_alphaDiagCount++;
+               preferTexCutout ? 1 : 0);
+        s_alphaDiagCount++;
     }
 
     // Try to use material texture
@@ -775,20 +1059,14 @@ setMaterial(Material *mat, bool32 vertexAlpha, bool hasVertexColors)
             GX_SetNumTexGens(1);
             GX_SetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4,
                               GX_TG_TEX0, GX_IDENTITY);
-            GX_SetNumTevStages(1);
-            GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD0,
-                           GX_TEXMAP0, GX_COLOR0A0);
-            GX_SetTevOp(GX_TEVSTAGE0, GX_MODULATE);
+            setupDefaultLitTev(matColor, true);
             return;
         }
     }
 
     // No valid texture �?solid color via PASSCLR
     GX_SetNumTexGens(0);
-    GX_SetNumTevStages(1);
-    GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORDNULL,
-                   GX_TEXMAP_NULL, GX_COLOR0A0);
-    GX_SetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
+    setupDefaultLitTev(matColor, false);
 }
 
 
@@ -797,13 +1075,15 @@ setMaterial(Material *mat, bool32 vertexAlpha, bool hasVertexColors)
 static void
 setup3dVtxDesc(bool hasNormals, bool hasColors, uint32 numTex)
 {
+    (void)hasNormals;
+    (void)hasColors;
     GX_ClearVtxDesc();
     GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
     GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
-    if (hasNormals) {
-        GX_SetVtxDesc(GX_VA_NRM, GX_DIRECT);
-        GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_NRM, GX_NRM_XYZ, GX_F32, 0);
-    }
+    // GX2's default instance buffer always contains a normal attribute. Use
+    // the canonical (0, 0, 1) value when the source geometry has no normals.
+    GX_SetVtxDesc(GX_VA_NRM, GX_DIRECT);
+    GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_NRM, GX_NRM_XYZ, GX_F32, 0);
     // Always declare CLR0 �?GX_PASSCLR needs vertex color
     GX_SetVtxDesc(GX_VA_CLR0, GX_DIRECT);
     GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
@@ -835,8 +1115,8 @@ submitPipeVertex(const uint8 *vtx, bool hasNrm, bool hasCol, uint32 numTex)
         GX_Color4u8(vtx[off], vtx[off+1], vtx[off+2], vtx[off+3]);
         off += 4;
     } else {
-        // Always send white �?GX_PASSCLR/GX_MODULATE needs vertex color
-        GX_Color4u8(255, 255, 255, 255);
+        // GX2 initializes missing PRELIT data to black and adds lighting later.
+        GX_Color4u8(0, 0, 0, 255);
     }
     for (uint32 t = 0; t < numTex; t++) {
         GX_TexCoord2f32(
@@ -853,16 +1133,17 @@ submitPipeVertexRaw(Geometry *geo, uint16 vi, bool hasNrm, bool hasCol, uint32 n
     const V3d *pos = &morph->vertices[vi];
     GX_Position3f32(pos->x, pos->y, pos->z);
 
-    if (hasNrm) {
+    if (hasNrm && morph->normals) {
         const V3d *nrm = &morph->normals[vi];
         GX_Normal3f32(nrm->x, nrm->y, nrm->z);
-    }
+    } else
+        GX_Normal3f32(0.0f, 0.0f, 1.0f);
 
     if (hasCol && geo->colors) {
         RGBA *c = &geo->colors[vi];
         GX_Color4u8(c->red, c->green, c->blue, c->alpha);
     } else {
-        GX_Color4u8(255, 255, 255, 255);
+        GX_Color4u8(0, 0, 0, 255);
     }
 
     if (numTex > 0 && geo->texCoords[0]) {
@@ -944,8 +1225,10 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
     // �?Reload camera projection �?Im2D overwrites it with ortho
     GX_LoadProjectionMtx(gxProjMtx, gxProjType);
 
+    GxAtomicLights lights;
+    gatherAtomicLights(atomic, lights);
+
     // ── GX_DIRECT vertex format (proven working, same as gxskin.cpp + Im2D) ──
-    setup3dVtxDesc(inst->hasNormals, inst->hasColors, inst->numTexCoords);
 
     // Draw meshes
     uint8 prim = (geo->meshHeader->flags & MeshHeader::TRISTRIP)
@@ -968,13 +1251,17 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
             forceVertexAlphaForSoftVegetation;
         static int s_meshFocusDiagCount = 0;
         if(pipeFocusTexture(meshTexName) && s_meshFocusDiagCount < 160){
-            printf("[PIPE-MESH] mesh=%u tex=%s vtxA=%d effVtxA=%d matA=%u numIdx=%u\n",
+            printf("[PIPE-MESH] mesh=%u tex=%s vtxA=%d effVtxA=%d matA=%u numIdx=%u "
+                   "geoFlags=0x%X hasClr=%d mod=%d\n",
                    (unsigned)m,
                    meshTexName ? meshTexName : "none",
                    md->vertexAlpha ? 1 : 0,
                    effectiveVertexAlpha ? 1 : 0,
                    md->material ? (unsigned)md->material->color.alpha : 255u,
-                   (unsigned)mesh->numIndices);
+                   (unsigned)mesh->numIndices,
+                   (unsigned)geo->flags,
+                   inst->hasColors ? 1 : 0,
+                   (geo->flags & Geometry::MODULATE) ? 1 : 0);
             s_meshFocusDiagCount++;
         }
         if(trace)
@@ -983,7 +1270,9 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
                    (void*)md->material,
                    (md->material && md->material->texture) ? md->material->texture->name : "none");
         SetRenderState(VERTEXALPHA, meshNeedsBlendAlphaState);
-        setMaterial(md->material, effectiveVertexAlpha, inst->hasColors);
+        setup3dVtxDesc(inst->hasNormals, inst->hasColors, inst->numTexCoords);
+        setMaterial(md->material, effectiveVertexAlpha, inst->hasColors,
+                    (geo->flags & Geometry::MODULATE) != 0, lights);
 
         uint16 *meshIdx = mesh->indices;
         uint32  numIdx  = mesh->numIndices;

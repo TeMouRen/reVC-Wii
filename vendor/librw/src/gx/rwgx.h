@@ -72,6 +72,13 @@ struct Im3DVertex
     float getV() { return v; }
 };
 
+enum GxRasterAlphaKind
+{
+    GX_RASTER_ALPHA_NONE = 0,
+    GX_RASTER_ALPHA_CUTOUT,
+    GX_RASTER_ALPHA_SMOOTH
+};
+
 struct GxRaster
 {
     GXTexObj  texObj;
@@ -81,6 +88,7 @@ struct GxRaster
     uint16_t  w, h;
     uint8_t   gxFmt;
     uint8_t   hasAlpha;
+    uint8_t   alphaKind;
     uint8_t   wrapS, wrapT;
     uint8_t   minFilter, magFilter;
     uint8_t   preferOwnSampler;

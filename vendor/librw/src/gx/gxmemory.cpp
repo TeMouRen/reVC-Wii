@@ -52,9 +52,9 @@ static int             gShrinkTotalCount = 0;  // lifetime counter
 static bool            gBudgetShrinkPass = false;
 static bool            gPreferHostMemoryShrink = false;
 #ifdef WII
-static const uint32    GX_TEXP_DEFAULT_SOFT_BUDGET_BYTES = 26u * 1024u * 1024u;
-static const uint32    GX_TEXP_MIN_SOFT_BUDGET_BYTES     = 22u * 1024u * 1024u;
-static const uint32    GX_TEXP_MAX_SOFT_BUDGET_BYTES     = 28u * 1024u * 1024u;
+static const uint32    GX_TEXP_DEFAULT_SOFT_BUDGET_BYTES = 48u * 1024u * 1024u;
+static const uint32    GX_TEXP_MIN_SOFT_BUDGET_BYTES     = 40u * 1024u * 1024u;
+static const uint32    GX_TEXP_MAX_SOFT_BUDGET_BYTES     = 56u * 1024u * 1024u;
 #else
 static const uint32    GX_TEXP_DEFAULT_SOFT_BUDGET_BYTES = 28u * 1024u * 1024u;
 static const uint32    GX_TEXP_MIN_SOFT_BUDGET_BYTES     = 16u * 1024u * 1024u;
@@ -1004,6 +1004,7 @@ hasCriticalUiTextureNameHint(const char *name)
 
     return nameContainsNoCase(name, "font") ||
            nameContainsNoCase(name, "fonts") ||
+           nameContainsNoCase(name, "vcchs") ||
            nameContainsNoCase(name, "hud") ||
            nameContainsNoCase(name, "radar") ||
            nameContainsNoCase(name, "radardisc") ||

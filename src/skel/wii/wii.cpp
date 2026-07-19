@@ -24,8 +24,10 @@
 #include "rwcore.h"
 #include "common.h"
 #include "Frontend.h"
+#include "FileMgr.h"
 #include "Game.h"
 #include "Pad.h"
+#include "PCSave.h"
 #include "TxdStore.h"
 #include "Text.h"
 #include "Timer.h"
@@ -37,6 +39,7 @@
 #include "Vehicle.h"
 #include "CutsceneMgr.h"
 #include "MBlur.h"
+#include "wii_save.h"
 #include "gxmemory.h"
 
 static GXRModeObj *rmode   = NULL;
@@ -662,7 +665,11 @@ extern "C" {
         WiiRequestExit(SYS_POWEROFF);
     }
 }
-const char* _psGetUserFilesFolder() { return ""; }
+const char*
+_psGetUserFilesFolder()
+{
+    return WiiSaveGetDataDir();
+}
 
 // ============================================================
 // é«çº§æ¸²æç®¡çº¿æ¡?
@@ -786,6 +793,13 @@ int main(int argc, char *argv[]) {
         while (true) { VIDEO_WaitVSync(); }
     }
     SYS_Report("[reVC-WII] VFS Mounted!\n");
+    {
+        const char *saveDir = WiiSaveGetDataDir();
+        if (saveDir != nil && saveDir[0] != '\0')
+            SYS_Report("[reVC-WII] Save backend ready: %s\n", saveDir);
+        else
+            SYS_Report("[reVC-WII] Save backend unavailable at boot\n");
+    }
 
     // ââ GC Custom Allocator: grab a big block from MEM1 now (before heap fragments) ââ
     InitMemoryMgr();
@@ -882,6 +896,13 @@ int main(int argc, char *argv[]) {
         SYS_Report("[reVC-WII] Bootstrap: loading text (AMERICAN.GXT)...\n");
         TheText.Load();
         SYS_Report("[reVC-WII] Bootstrap: text OK.\n");
+        SYS_Report("[reVC-WII] Bootstrap: loading frontend settings...\n");
+        FrontEndMenuManager.LoadSettings();
+        SYS_Report("[reVC-WII] Bootstrap: settings ready (language=%d).\n",
+            FrontEndMenuManager.m_PrefsLanguage);
+        CFileMgr::SetDir("");
+        SYS_Report("[reVC-WII] Bootstrap: scanning save slots for cold-start menu...\n");
+        PcSaveHelper.PopulateSlotInfo();
 
         FrontEndMenuManager.m_bSpritesLoaded = true;
         FrontEndMenuManager.m_bMenuActive = true;
@@ -937,6 +958,7 @@ int main(int argc, char *argv[]) {
         // â?New Game / Load Game transition
         // m_bWantToLoad: è¯»æ¡£æµç¨è®¾ç½® | m_bWantToRestart: æ°æ¸¸ææµç¨è®¾ç½?
         if (FrontEndMenuManager.m_bWantToLoad || FrontEndMenuManager.m_bWantToRestart) {
+            const bool wantsInitialLoad = FrontEndMenuManager.m_bWantToLoad;
             if (FrontEndMenuManager.m_bSpritesLoaded) {
                 SYS_Report("[reVC-WII] First transition: unloading frontend textures before InitialiseGame()\n");
                 FrontEndMenuManager.UnloadTextures();
@@ -946,6 +968,18 @@ int main(int argc, char *argv[]) {
             SYS_Report("[reVC-WII] InitialiseGame() START\n");
             InitialiseGame();
             SYS_Report("[reVC-WII] InitialiseGame() DONE\n");
+            if (wantsInitialLoad) {
+                SYS_Report("[reVC-WII] First transition requested save load. Running synthetic restart/load path.\n");
+                CPad::ResetCheats();
+                CPad::StopPadsShaking();
+                DMAudio.ChangeMusicMode(MUSICMODE_DISABLE);
+                CGame::ShutDownForRestart();
+                CTimer::Stop();
+                CGame::InitialiseWhenRestarting();
+                DMAudio.ChangeMusicMode(MUSICMODE_GAME);
+                FrontEndMenuManager.m_bWantToRestart = false;
+                SYS_Report("[reVC-WII] Synthetic first restart/load complete.\n");
+            }
             CMBlur::ResetHistory();
             SYS_Report("[reVC-WII] Reset blur history after InitialiseGame()\n");
             if (!WiiShouldPreserveScriptSplash()) {

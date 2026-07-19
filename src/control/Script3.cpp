@@ -740,6 +740,13 @@ int8 CRunningScript::ProcessCommands500To599(int32 command)
 		strncpy(name, (char*)&CTheScripts::ScriptSpace[m_nIp], KEY_LENGTH_IN_SCRIPT);
 		for (int i = 0; i < KEY_LENGTH_IN_SCRIPT; i++)
 			name[i] = tolower(name[i]);
+#ifdef WII
+		printf("[SPEC-WII] load_special script=%.8s id=%d name=%.8s ip=%u\n",
+			m_abScriptName,
+			ScriptParams[0],
+			name,
+			m_nIp + KEY_LENGTH_IN_SCRIPT);
+#endif
 		CStreaming::RequestSpecialChar(ScriptParams[0] - 1, name, STREAMFLAGS_DEPENDENCY | STREAMFLAGS_SCRIPTOWNED);
 		m_nIp += KEY_LENGTH_IN_SCRIPT;
 		return 0;
@@ -2033,8 +2040,8 @@ int8 CRunningScript::ProcessCommands700To799(int32 command)
 		char name[KEY_LENGTH_IN_SCRIPT];
 		strncpy(name, (const char*)&CTheScripts::ScriptSpace[m_nIp], KEY_LENGTH_IN_SCRIPT);
 		m_nIp += KEY_LENGTH_IN_SCRIPT;
-#if REAL_GAMECUBE
-		printf("[SCR-CUT] load_cutscene name=%.8s ip=%u\n", name, m_nIp);
+#if REAL_GAMECUBE || defined(WII)
+		printf("[CUT-WII] load_cutscene name=%.8s ip=%u\n", name, m_nIp);
 #endif
 		CCutsceneMgr::LoadCutsceneData(name);
 		return 0;
@@ -2064,9 +2071,13 @@ int8 CRunningScript::ProcessCommands700To799(int32 command)
 		return 0;
 	}
 	case COMMAND_START_CUTSCENE:
-#if REAL_GAMECUBE
-		printf("[SCR-CUT] start_cutscene ip=%u status=%d -> 1\n",
-			m_nIp, CCutsceneMgr::ms_cutsceneLoadStatus);
+#if REAL_GAMECUBE || defined(WII)
+		printf("[CUT-WII] start_cutscene ip=%u status=%u loaded=%d running=%d name=%s\n",
+			m_nIp,
+			CCutsceneMgr::ms_cutsceneLoadStatus,
+			CCutsceneMgr::HasLoaded() ? 1 : 0,
+			CCutsceneMgr::IsRunning() ? 1 : 0,
+			CCutsceneMgr::GetCutsceneName());
 #endif
 		CCutsceneMgr::ms_cutsceneLoadStatus = 1;
 		return 0;
@@ -2078,6 +2089,14 @@ int8 CRunningScript::ProcessCommands700To799(int32 command)
 		UpdateCompareFlag(CCutsceneMgr::HasCutsceneFinished());
 		return 0;
 	case COMMAND_CLEAR_CUTSCENE:
+#ifdef WII
+		printf("[CUT-WII] clear_cutscene ip=%u status=%u loaded=%d running=%d name=%s\n",
+			m_nIp,
+			CCutsceneMgr::ms_cutsceneLoadStatus,
+			CCutsceneMgr::HasLoaded() ? 1 : 0,
+			CCutsceneMgr::IsRunning() ? 1 : 0,
+			CCutsceneMgr::GetCutsceneName());
+#endif
 		CCutsceneMgr::DeleteCutsceneData();
 		return 0;
 	case COMMAND_RESTORE_CAMERA_JUMPCUT:

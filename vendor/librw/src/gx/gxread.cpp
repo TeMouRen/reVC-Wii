@@ -449,7 +449,7 @@ tileRGB5A3BlockFromRows(uint8 *dstBytes, const uint8 *rows, int rowBytes, int w,
 static bool
 tileStreamRGBA8(Stream *stream, Texture *tex, uint8 *dst,
                 int32 width, int32 height, bool useRGB5A3,
-                uint8 firstSrc[8])
+                uint8 firstSrc[8], uint8 *alphaKind)
 {
     uint32 rowBytes = (uint32)width * 4u;
     uint8 *rows = allocTempPixels(tex, rowBytes * 4u);
@@ -457,13 +457,25 @@ tileStreamRGBA8(Stream *stream, Texture *tex, uint8 *dst,
         return false;
 
     bool capturedFirstSrc = false;
+    bool hasTransparent = false;
+    bool hasSmooth = false;
     for(int32 by = 0; by < height; by += 4){
         int32 rowsThisBlock = height - by;
         if(rowsThisBlock > 4)
             rowsThisBlock = 4;
 
-        for(int32 iy = 0; iy < rowsThisBlock; iy++)
+        for(int32 iy = 0; iy < rowsThisBlock; iy++){
             stream->read8(rows + iy * rowBytes, rowBytes);
+            const uint8 *row = rows + iy * rowBytes;
+            for(int32 x = 0; x < width; x++){
+                uint8 alpha = row[x*4 + 3];
+                if(alpha == 255)
+                    continue;
+                hasTransparent = true;
+                if(alpha != 0)
+                    hasSmooth = true;
+            }
+        }
 
         for(int32 iy = rowsThisBlock; iy < 4; iy++)
             memcpy(rows + iy * rowBytes,
@@ -487,8 +499,32 @@ tileStreamRGBA8(Stream *stream, Texture *tex, uint8 *dst,
         }
     }
 
+    if(alphaKind){
+        *alphaKind = hasSmooth ? GX_RASTER_ALPHA_SMOOTH :
+                     (hasTransparent ? GX_RASTER_ALPHA_CUTOUT :
+                                       GX_RASTER_ALPHA_NONE);
+    }
     freeTempPixels(rows);
     return true;
+}
+
+static uint8
+classifyLinearRGBA8Alpha(const uint8 *pixels, int32 width, int32 height)
+{
+    if(pixels == nil || width <= 0 || height <= 0)
+        return GX_RASTER_ALPHA_NONE;
+
+    bool hasTransparent = false;
+    uint32 count = (uint32)width * (uint32)height;
+    for(uint32 i = 0; i < count; i++){
+        uint8 alpha = pixels[i*4 + 3];
+        if(alpha == 255)
+            continue;
+        hasTransparent = true;
+        if(alpha != 0)
+            return GX_RASTER_ALPHA_SMOOTH;
+    }
+    return hasTransparent ? GX_RASTER_ALPHA_CUTOUT : GX_RASTER_ALPHA_NONE;
 }
 
 static bool
@@ -533,29 +569,13 @@ isLikelyCompactAlphaHelperTexture(const char *name)
     if(name == nil || name[0] == '\0')
         return false;
 
-    // Prefer a narrow whitelist here. These textures are typically helper
-    // masks, fades, shadows, or light sprites where RGB5A3 keeps alpha but
-    // halves the Wii upload footprint versus RGBA8.
-    if(nameContainsNoCase(name, "window") ||
-       nameContainsNoCase(name, "glass") ||
-       nameContainsNoCase(name, "sign") ||
-       nameContainsNoCase(name, "water") ||
-       nameContainsNoCase(name, "radar") ||
-       nameContainsNoCase(name, "font") ||
-       nameContainsNoCase(name, "hud") ||
-       nameContainsNoCase(name, "menu") ||
-       nameContainsNoCase(name, "load") ||
-       nameContainsNoCase(name, "intro"))
-        return false;
-
-    return nameContainsNoCase(name, "shadow") ||
-           nameContainsNoCase(name, "black256") ||
-           nameContainsNoCase(name, "black128") ||
-           nameContainsNoCase(name, "white128a") ||
-           nameContainsNoCase(name, "white64a") ||
-           nameContainsNoCase(name, "tempalpha") ||
-           nameContainsNoCase(name, "dlight") ||
-           nameContainsNoCase(name, "flare");
+    // Keep smooth helper fades in RGBA8 on Wii. The earlier RGBA8 -> RGB5A3
+    // demotion saved a little pool space, but it also quantized white128a /
+    // black128 / tempalpha-style gradients into visibly harsh masks. That
+    // showed up as blown-out white facades, over-bright pickups, and whole
+    // dark room shells. With the larger MEM2-backed GX pool, correctness wins.
+    (void)name;
+    return false;
 }
 
 static bool
@@ -1366,6 +1386,9 @@ readNativeTexture(rw::Stream *stream)
 
     gxras->gxFmt    = (uint8)outFmt;
     gxras->hasAlpha = hasAlpha ? 1 : 0;
+    gxras->alphaKind = hasAlpha ?
+        (isCMPR ? GX_RASTER_ALPHA_CUTOUT : GX_RASTER_ALPHA_SMOOTH) :
+        GX_RASTER_ALPHA_NONE;
     gxras->dataSize = tiledSize;
     gxras->w        = (uint16)width;
     gxras->h        = (uint16)height;
@@ -1382,6 +1405,7 @@ readNativeTexture(rw::Stream *stream)
     uint8 *linearPixels = nil;
     uint8 firstSrcBytes[8] = {0};
     bool usedStreamTiler = false;
+    uint8 streamedAlphaKind = GX_RASTER_ALPHA_NONE;
     bool cmprDetectedTransparentPixels = false;
     bool alphaHintByName = shouldRecoverTextureAlphaByName(tex->name);
 
@@ -1390,7 +1414,8 @@ readNativeTexture(rw::Stream *stream)
         GX_TEX_DIAG_PRINTF("[GX-DIAG] %s: streaming RGBA8 rows directly into %s tiles\n",
                            tex->name, useRGB5A3 ? "RGB5A3" : "RGBA8");
         if (!tileStreamRGBA8(stream, tex, (uint8 *)gxras->gxData,
-                             width, height, useRGB5A3, firstSrcBytes)) {
+                             width, height, useRGB5A3, firstSrcBytes,
+                             &streamedAlphaKind)) {
             printf("[GX-DIAG] %s: tileStreamRGBA8 FAIL\n", tex->name);
             gxMemFree(gxras->gxData);
             gxras->gxData = nil;
@@ -1471,6 +1496,16 @@ readNativeTexture(rw::Stream *stream)
                             !alphaHintByName;
 
     gxras->hasAlpha = (effectiveHasAlpha && !forceOpaqueAlpha) ? 1 : 0;
+    if(!gxras->hasAlpha)
+        gxras->alphaKind = GX_RASTER_ALPHA_NONE;
+    else if(isCMPR)
+        gxras->alphaKind = GX_RASTER_ALPHA_CUTOUT;
+    else if(isRGBA8){
+        gxras->alphaKind = usedStreamTiler ? streamedAlphaKind :
+            classifyLinearRGBA8Alpha(linearPixels, width, height);
+        gxras->hasAlpha = gxras->alphaKind != GX_RASTER_ALPHA_NONE ? 1 : 0;
+    }else
+        gxras->alphaKind = GX_RASTER_ALPHA_SMOOTH;
     if(isCMPR && effectiveHasAlpha != hasAlpha && gxTexNeedsFocusLog(tex->name)) {
         printf("[GX-ALPHAFIX] %s: alphaMeta=%u -> effective=%u detect=%d hint=%d\n",
                tex->name,

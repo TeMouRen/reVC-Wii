@@ -72,20 +72,44 @@ gxRasterTypeName(int32 type)
     }
 }
 
-static bool
-rgbaBufferUsesAlpha(const uint8 *pixels, int w, int h, int stride)
+static uint8
+classifyRGBAAlpha(const uint8 *pixels, int w, int h, int stride)
 {
-    if(pixels == nil || w <= 0 || h <= 0)
-        return false;
+    if(pixels == nil || w <= 0 || h <= 0 || stride < w*4)
+        return GX_RASTER_ALPHA_NONE;
 
-    for(int y = 0; y < h; y++) {
-        const uint8 *row = pixels + y * stride;
-        for(int x = 0; x < w; x++) {
-            if(row[x * 4 + 3] < 250)
-                return true;
+    uint32 zeroAlpha = 0;
+    uint32 fullAlpha = 0;
+    uint32 smoothAlpha = 0;
+    for(int y = 0; y < h; y++){
+        const uint8 *row = pixels + y*stride;
+        for(int x = 0; x < w; x++){
+            uint8 alpha = row[x*4 + 3];
+            if(alpha == 0)
+                zeroAlpha++;
+            else if(alpha == 255)
+                fullAlpha++;
+            else
+                smoothAlpha++;
         }
     }
-    return false;
+
+    if(zeroAlpha == 0 && smoothAlpha == 0)
+        return GX_RASTER_ALPHA_NONE;
+    if(smoothAlpha == 0)
+        return GX_RASTER_ALPHA_CUTOUT;
+
+    // Antialiased masks contain intermediate alpha at their contours, but
+    // transparent and opaque endpoints still dominate the atlas. Classify
+    // that distribution as CUTOUT without relying on a texture name. Smooth
+    // glass, shadows and fades remain SMOOTH because intermediate alpha owns
+    // most of their coverage.
+    uint32 count = zeroAlpha + fullAlpha + smoothAlpha;
+    if(zeroAlpha * 10u >= count &&
+       fullAlpha * 20u >= count &&
+       smoothAlpha * 5u <= count * 2u)
+        return GX_RASTER_ALPHA_CUTOUT;
+    return GX_RASTER_ALPHA_SMOOTH;
 }
 
 static char
@@ -273,19 +297,6 @@ shouldLogD3DTextureDecision(const char *name)
            nameContainsNoCase(name, "shadow");
 }
 
-static bool
-shouldBleedTransparentFoliageEdges(const char *name)
-{
-    if(!name || !name[0])
-        return false;
-
-    if(nameContainsNoCase(name, "shadow"))
-        return false;
-
-    return isKeyVegetationDebugTexture(name) ||
-           isFocusedFoliageTexture(name);
-}
-
 static int
 bleedTransparentRGBAEdges(uint8 *pixels, int w, int h, int stride,
                           uint8 alphaThreshold, int passes)
@@ -348,134 +359,6 @@ bleedTransparentRGBAEdges(uint8 *pixels, int w, int h, int stride,
 
     rwFree(scratch);
     return totalTouched;
-}
-
-static bool
-needsVegetationAlphaFloorCleanup(const char *name)
-{
-    if(!name || !name[0])
-        return false;
-
-    return strcmp(name, "kbtree4_test") == 0 ||
-           strcmp(name, "newtreeleaves128") == 0 ||
-           strcmp(name, "newtreeleavesb128") == 0 ||
-           strcmp(name, "foliage256") == 0 ||
-           strcmp(name, "planta256") == 0 ||
-           strcmp(name, "plantb256") == 0 ||
-           strcmp(name, "plantc256") == 0 ||
-           strcmp(name, "fuzzyplant256") == 0 ||
-           strcmp(name, "kbplanter_plants1") == 0;
-}
-
-static uint8
-vegetationAlphaFloorThreshold(const char *name)
-{
-    if(!name || !name[0])
-        return 0;
-
-    if(strcmp(name, "kbtree4_test") == 0 ||
-       strcmp(name, "newtreeleaves128") == 0 ||
-       strcmp(name, "newtreeleavesb128") == 0)
-        return 72;
-
-    if(strcmp(name, "foliage256") == 0 ||
-       strcmp(name, "planta256") == 0 ||
-       strcmp(name, "plantb256") == 0 ||
-       strcmp(name, "plantc256") == 0 ||
-       strcmp(name, "fuzzyplant256") == 0 ||
-       strcmp(name, "kbplanter_plants1") == 0)
-        return 56;
-
-    return 40;
-}
-
-static int
-zeroLowAlphaPixels(uint8 *pixels, int w, int h, int stride, uint8 alphaThreshold)
-{
-    if(pixels == nil || w <= 0 || h <= 0 || stride < w*4)
-        return 0;
-
-    int touched = 0;
-    for(int y = 0; y < h; y++){
-        uint8 *row = pixels + y*stride;
-        for(int x = 0; x < w; x++){
-            uint8 *px = row + x*4;
-            if(px[3] != 0 && px[3] < alphaThreshold){
-                px[3] = 0;
-                touched++;
-            }
-        }
-    }
-    return touched;
-}
-
-static int
-solidifyHighAlphaPixels(uint8 *pixels, int w, int h, int stride, uint8 alphaThreshold)
-{
-    if(pixels == nil || w <= 0 || h <= 0 || stride < w*4)
-        return 0;
-
-    int touched = 0;
-    for(int y = 0; y < h; y++){
-        uint8 *row = pixels + y*stride;
-        for(int x = 0; x < w; x++){
-            uint8 *px = row + x*4;
-            if(px[3] >= alphaThreshold && px[3] != 255){
-                px[3] = 255;
-                touched++;
-            }
-        }
-    }
-    return touched;
-}
-
-static bool
-needsVegetationAlphaBinaryCleanup(const char *name)
-{
-    return needsVegetationAlphaFloorCleanup(name);
-}
-
-static uint8
-vegetationAlphaBinaryThreshold(const char *name)
-{
-    if(!name || !name[0])
-        return 255;
-
-    if(strcmp(name, "kbtree4_test") == 0 ||
-       strcmp(name, "newtreeleaves128") == 0 ||
-       strcmp(name, "newtreeleavesb128") == 0)
-        return 120;
-
-    if(strcmp(name, "foliage256") == 0 ||
-       strcmp(name, "planta256") == 0 ||
-       strcmp(name, "plantb256") == 0 ||
-       strcmp(name, "plantc256") == 0 ||
-       strcmp(name, "fuzzyplant256") == 0 ||
-       strcmp(name, "kbplanter_plants1") == 0)
-        return 104;
-
-    return 104;
-}
-
-static int
-binarizeAlphaPixels(uint8 *pixels, int w, int h, int stride, uint8 alphaThreshold)
-{
-    if(pixels == nil || w <= 0 || h <= 0 || stride < w*4)
-        return 0;
-
-    int touched = 0;
-    for(int y = 0; y < h; y++){
-        uint8 *row = pixels + y*stride;
-        for(int x = 0; x < w; x++){
-            uint8 *px = row + x*4;
-            uint8 nextAlpha = px[3] >= alphaThreshold ? 255u : 0u;
-            if(px[3] != nextAlpha){
-                px[3] = nextAlpha;
-                touched++;
-            }
-        }
-    }
-    return touched;
 }
 
 static void
@@ -639,6 +522,7 @@ rasterCreate(Raster *raster)
     natras->w           = 0;
     natras->h           = 0;
     natras->hasAlpha    = 0;
+    natras->alphaKind   = GX_RASTER_ALPHA_NONE;
     natras->wrapS       = GX_CLAMP;
     natras->wrapT       = GX_CLAMP;
     natras->minFilter   = GX_LINEAR;
@@ -654,6 +538,7 @@ rasterCreate(Raster *raster)
     natras->h        = (uint16)h;
     natras->gxFmt    = GX_TF_RGBA8;
     natras->hasAlpha = 0;
+    natras->alphaKind = GX_RASTER_ALPHA_NONE;
     natras->dataSize = rgba8TiledSize(w, h);
 
     return raster;
@@ -719,9 +604,10 @@ rasterUnlock(Raster *raster, int32 /*level*/)
                         natras->gxFmt);
     }
 
-    natras->hasAlpha = rgbaBufferUsesAlpha((const uint8*)natras->cpuData,
-                                           raster->width, raster->height,
-                                           raster->width * 4) ? 1 : 0;
+    natras->alphaKind = classifyRGBAAlpha((const uint8*)natras->cpuData,
+                                          raster->width, raster->height,
+                                          raster->width * 4);
+    natras->hasAlpha = natras->alphaKind != GX_RASTER_ALPHA_NONE ? 1 : 0;
 
     convertRGBA8_to_GX(natras->gxData, natras->cpuData,
                        raster->width, raster->height, 0);
@@ -805,42 +691,20 @@ rasterFromImage(Raster *raster, Image *image)
 
     GxRaster *natras = PLUGINOFFSET(GxRaster, raster, nativeRasterOffset);
     const char *debugName = rw::debugGetCurrentConvertingTextureName();
-    if(needsVegetationAlphaFloorCleanup(debugName)) {
-        uint8 alphaFloor = vegetationAlphaFloorThreshold(debugName);
-        int zeroed = zeroLowAlphaPixels(image->pixels, w, h, image->stride, alphaFloor);
-        static int s_alphaFloorLogCount = 0;
-        if((isKeyVegetationDebugTexture(debugName) || zeroed > 0) &&
-           s_alphaFloorLogCount < 160) {
-            printf("[GX-ALPHA-FLOOR] %s: zeroed=%d threshold=%d %dx%d stride=%d\n",
-                   debugName ? debugName : "<null>",
-                   zeroed, (int)alphaFloor, w, h, image->stride);
-            s_alphaFloorLogCount++;
-        }
-    }
-    if(needsVegetationAlphaBinaryCleanup(debugName)) {
-        uint8 binaryFloor = vegetationAlphaBinaryThreshold(debugName);
-        int binarized = binarizeAlphaPixels(image->pixels, w, h, image->stride, binaryFloor);
-        static int s_alphaBinaryLogCount = 0;
-        if((isKeyVegetationDebugTexture(debugName) || binarized > 0) &&
-           s_alphaBinaryLogCount < 160) {
-            printf("[GX-ALPHA-BINARY] %s: binarized=%d threshold=%d %dx%d stride=%d\n",
-                   debugName ? debugName : "<null>",
-                   binarized, (int)binaryFloor, w, h, image->stride);
-            s_alphaBinaryLogCount++;
-        }
-    }
-    if(shouldBleedTransparentFoliageEdges(debugName)) {
-        int bled = bleedTransparentRGBAEdges(image->pixels, w, h, image->stride, 12, 2);
+    uint8 imageAlphaKind = classifyRGBAAlpha(image->pixels, w, h, image->stride);
+    if(imageAlphaKind == GX_RASTER_ALPHA_CUTOUT) {
+        int bled = bleedTransparentRGBAEdges(image->pixels, w, h,
+                                             image->stride, 127, 4);
         static int s_imageBleedLogCount = 0;
         if((isKeyVegetationDebugTexture(debugName) || bled > 0) &&
            s_imageBleedLogCount < 160) {
-            printf("[GX-IMG-BLEED] %s: touched=%d %dx%d stride=%d\n",
+            printf("[GX-CUTOUT-BLEED] %s: touched=%d %dx%d stride=%d\n",
                    debugName ? debugName : "<null>",
                    bled, w, h, image->stride);
             s_imageBleedLogCount++;
         }
     }
-    bool imageHasAlpha = rgbaBufferUsesAlpha(image->pixels, w, h, image->stride);
+    bool imageHasAlpha = imageAlphaKind != GX_RASTER_ALPHA_NONE;
 
     // 鈹€鈹€ 閲婃斁鏃?GPU 缂撳啿锛沜puData 涓嶅湪姝よ矾寰勫垎閰?鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     texPoolUnregister(natras->gxData);
@@ -852,6 +716,7 @@ rasterFromImage(Raster *raster, Image *image)
     natras->h        = (uint16)h;
     natras->gxFmt    = GX_TF_RGBA8;
     natras->hasAlpha = imageHasAlpha ? 1 : 0;
+    natras->alphaKind = imageAlphaKind;
     natras->dataSize = rgba8TiledSize(w, h);
 
     traceUnnamed512RGBA8("rasterFromImage", raster, natras->dataSize);
@@ -1183,6 +1048,8 @@ void gxConvertRasterToNative(Texture *tex)
                     natras->h = (uint16)h;
                     natras->gxFmt = GX_TF_CMPR;
                     natras->hasAlpha = d3dRas->hasAlpha ? 1 : 0;
+                    natras->alphaKind = d3dRas->hasAlpha ?
+                        gx::GX_RASTER_ALPHA_CUTOUT : gx::GX_RASTER_ALPHA_NONE;
                     natras->dataSize = gx::cmprTiledSize(w, h);
                     natras->gxData = gx::safeGxAlloc(natras->dataSize, 32, tex->name);
                     if(natras->gxData) {
@@ -1273,12 +1140,13 @@ void gxConvertRasterToNative(Texture *tex)
                (unsigned)c[0], (unsigned)c[1], (unsigned)c[2], (unsigned)c[3]);
     }
 
-    if(gx::shouldBleedTransparentFoliageEdges(tex->name)){
-        int bled = gx::bleedTransparentRGBAEdges(pixels, w, h, stride, 12, 2);
+    uint8 imageAlphaKind = gx::classifyRGBAAlpha(pixels, w, h, stride);
+    if(imageAlphaKind == gx::GX_RASTER_ALPHA_CUTOUT){
+        int bled = gx::bleedTransparentRGBAEdges(pixels, w, h, stride, 127, 4);
         if(bled > 0){
             static int s_alphaBleedLogCount = 0;
             if(gx::isKeyVegetationDebugTexture(tex->name) || s_alphaBleedLogCount < 96){
-                printf("[GX-ALPHABLEED] %s: touched=%d %dx%d\n",
+                printf("[GX-CUTOUT-BLEED] %s: touched=%d %dx%d\n",
                        tex->name, bled, w, h);
                 if(!gx::isKeyVegetationDebugTexture(tex->name))
                     s_alphaBleedLogCount++;
@@ -1286,7 +1154,7 @@ void gxConvertRasterToNative(Texture *tex)
         }
     }
 
-    bool imageHasAlpha = gx::rgbaBufferUsesAlpha(pixels, w, h, stride);
+    bool imageHasAlpha = imageAlphaKind != gx::GX_RASTER_ALPHA_NONE;
     bool preserveAlphaDetail = srcDeclaredAlpha || imageHasAlpha;
 
     // Detect grayscale: sample center + 4 corners (skip if all-transparent)
@@ -1347,6 +1215,7 @@ void gxConvertRasterToNative(Texture *tex)
         // them into 4-bit intensity + 4-bit alpha, so keep those on RGBA8.
         natras->gxFmt    = GX_TF_IA4;
         natras->hasAlpha = imageHasAlpha ? 1 : 0;
+        natras->alphaKind = imageAlphaKind;
         natras->dataSize = gx::ia4TiledSize(w, h);
         natras->gxData   = gx::safeGxAlloc(natras->dataSize, 32, tex->name);
         if(natras->gxData) {
@@ -1363,6 +1232,7 @@ void gxConvertRasterToNative(Texture *tex)
         // Fallback: RGBA8
         natras->gxFmt    = GX_TF_RGBA8;
         natras->hasAlpha = imageHasAlpha ? 1 : 0;
+        natras->alphaKind = imageAlphaKind;
         natras->dataSize = gx::rgba8TiledSize(w, h);
         natras->gxData   = gx::safeGxAlloc(natras->dataSize, 32, tex->name);
         if(!natras->gxData){

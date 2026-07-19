@@ -71,6 +71,15 @@ shouldLogFocusedTxdSource(const char *name)
 	       strcmp(name, "fuzzyplant256") == 0 ||
 	       strcmp(name, "newtreeleaves128") == 0 ||
 	       strcmp(name, "newtreeleavesb128") == 0 ||
+	       strncmp(name, "htl_", 4) == 0 ||
+	       strncmp(name, "ht_", 3) == 0 ||
+	       strncmp(name, "hot_", 4) == 0 ||
+	       strncmp(name, "mob_", 4) == 0 ||
+	       strncmp(name, "nt_wall", 7) == 0 ||
+	       strncmp(name, "nt_floor", 8) == 0 ||
+	       strncmp(name, "nt_woodwall", 11) == 0 ||
+	       txdLogContainsNoCase(name, "hotel") ||
+	       txdLogContainsNoCase(name, "lobby") ||
 	       txdLogContainsNoCase(name, "tree") ||
 	       txdLogContainsNoCase(name, "plant") ||
 	       txdLogContainsNoCase(name, "leaf") ||
@@ -84,6 +93,57 @@ shouldLogFocusedTxdSource(const char *name)
 #define READNATIVE(stream, tex, size) RWSRCGLOBAL(stdFunc[rwSTANDARDNATIVETEXTUREREAD](stream, tex, size))
 #endif
 
+#ifdef LIBRW
+struct TxdChunkHeader
+{
+	int32 type;
+	int32 size;
+	uint32 id;
+};
+
+static bool
+FindTextureNativeChunkWithPaddingScan(RwStream *stream, RwUInt32 *sizeOut, RwUInt32 *versionOut)
+{
+	rw::Stream *rwStream = (rw::Stream*)stream;
+	const uint32 originalPos = rwStream->tell();
+	const uint32 scanStart = originalPos >= 8 ? originalPos - 8 : 0;
+	TxdChunkHeader header, innerHeader;
+
+	rwStream->seek(scanStart, 0);
+	while(!rwStream->eof()){
+		const uint32 pos = rwStream->tell();
+		if(rwStream->read32(&header, sizeof(header)) != sizeof(header))
+			break;
+
+		if(header.type == rwID_TEXTURENATIVE &&
+		   header.size > 0){
+			const uint32 afterHeaderPos = rwStream->tell();
+			if(rwStream->read32(&innerHeader, sizeof(innerHeader)) == sizeof(innerHeader) &&
+			   innerHeader.type == rwID_STRUCT &&
+			   innerHeader.size >= 4){
+				rwStream->seek(afterHeaderPos, 0);
+				if(sizeOut)
+					*sizeOut = header.size;
+				if(versionOut)
+					*versionOut = 0;
+				printf("[TXD-SCAN] recovered TEXTURENATIVE txd=%s slot=%d from=%d to=%d size=%u\n",
+				       CTxdStore::GetLoadingTxdName(),
+				       CTxdStore::GetLoadingTxdSlot(),
+				       (int)originalPos,
+				       (int)afterHeaderPos,
+				       (unsigned)header.size);
+				return true;
+			}
+		}
+
+		rwStream->seek(pos + 4, 0);
+	}
+
+	rwStream->seek(originalPos, 0);
+	return false;
+}
+#endif
+
 RwTexture*
 RwTextureGtaStreamRead(RwStream *stream)
 {
@@ -91,16 +151,28 @@ RwTextureGtaStreamRead(RwStream *stream)
 	RwTexture *tex;
 
 	if(!RwStreamFindChunk(stream, rwID_TEXTURENATIVE, &size, &version)){
-		printf("[TXD-FAIL] RwStreamFindChunk(rwID_TEXTURENATIVE) failed\n");
+#ifdef LIBRW
+		if(FindTextureNativeChunkWithPaddingScan(stream, &size, &version))
+			goto found_texture_native;
+#endif
+		printf("[TXD-FAIL] RwStreamFindChunk(rwID_TEXTURENATIVE) failed txd=%s slot=%d pos=%d\n",
+		       CTxdStore::GetLoadingTxdName(),
+		       CTxdStore::GetLoadingTxdSlot(),
+		       (int)STREAMPOS(stream));
 		return nil;
 	}
+found_texture_native:
 
 #ifdef GTA_PC
 	float preloadTime = (float)CTimer::GetCurrentTimeInCycles() / (float)CTimer::GetCyclesPerMillisecond();
 #endif
 
 	if(!READNATIVE(stream, &tex, size)){
-		printf("[TXD-FAIL] READNATIVE failed size=%u\n", size);
+		printf("[TXD-FAIL] READNATIVE failed txd=%s slot=%d size=%u pos=%d\n",
+		       CTxdStore::GetLoadingTxdName(),
+		       CTxdStore::GetLoadingTxdSlot(),
+		       size,
+		       (int)STREAMPOS(stream));
 		return nil;
 	}
 
@@ -167,7 +239,11 @@ RwTexDictionaryGtaStreamRead(RwStream *stream)
 			printf("[TXD-LOOP] tex %d of ~%d remaining=%d\n", txCnt, txCnt + numTextures, numTextures); */
 		tex = RwTextureGtaStreamRead(stream);
 		if(tex == nil){
-			printf("[TXD-FAIL] RwTextureGtaStreamRead failed at countdown=%d\n", numTextures);
+			printf("[TXD-FAIL] RwTextureGtaStreamRead failed txd=%s slot=%d countdown=%d pos=%d\n",
+			       CTxdStore::GetLoadingTxdName(),
+			       CTxdStore::GetLoadingTxdSlot(),
+			       numTextures,
+			       (int)STREAMPOS(stream));
 			RwTexDictionaryForAllTextures(texDict, destroyTexture, nil);
 			RwTexDictionaryDestroy(texDict);
 			return nil;
@@ -210,7 +286,11 @@ RwTexDictionaryGtaStreamRead1(RwStream *stream)
 
 		tex = RwTextureGtaStreamRead(stream);
 		if(tex == nil){
-				printf("[TXD-FAIL] RwTextureGtaStreamRead failed at countdown=%d\n", numTextures);
+				printf("[TXD-FAIL] RwTextureGtaStreamRead failed txd=%s slot=%d countdown=%d pos=%d\n",
+				       CTxdStore::GetLoadingTxdName(),
+				       CTxdStore::GetLoadingTxdSlot(),
+				       numTextures,
+				       (int)STREAMPOS(stream));
 			RwTexDictionaryForAllTextures(texDict, destroyTexture, nil);
 			RwTexDictionaryDestroy(texDict);
 			return nil;
@@ -234,7 +314,11 @@ RwTexDictionaryGtaStreamRead2(RwStream *stream, RwTexDictionary *texDict)
 	while(numberTextures--){
 		tex = RwTextureGtaStreamRead(stream);
 		if(tex == nil){
-				printf("[TXD-FAIL] RwTextureGtaStreamRead failed at countdown=%d\n", numberTextures);
+				printf("[TXD-FAIL] RwTextureGtaStreamRead failed txd=%s slot=%d countdown=%d pos=%d\n",
+				       CTxdStore::GetLoadingTxdName(),
+				       CTxdStore::GetLoadingTxdSlot(),
+				       numberTextures,
+				       (int)STREAMPOS(stream));
 			RwTexDictionaryForAllTextures(texDict, destroyTexture, nil);
 			RwTexDictionaryDestroy(texDict);
 			return nil;

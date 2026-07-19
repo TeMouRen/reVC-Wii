@@ -78,17 +78,6 @@ gxCullFromState(void)
     }
 }
 
-static u8
-gxAlphaFuncFromState(void)
-{
-    switch(gxState.alphaTestFunc){
-    case ALPHAALWAYS:       return GX_ALWAYS;
-    case ALPHAGREATEREQUAL: return GX_GEQUAL;
-    case ALPHALESS:         return GX_LESS;
-    default: return GX_ALWAYS;
-    }
-}
-
 static bool
 nameContainsNoCase(const char *name, const char *needle)
 {
@@ -112,20 +101,6 @@ nameContainsNoCase(const char *name, const char *needle)
             return true;
     }
     return false;
-}
-
-static bool
-preferBlendTextureAlpha(const char *name)
-{
-    if(name == nil)
-        return false;
-
-    return nameContainsNoCase(name, "glass") ||
-           nameContainsNoCase(name, "shadow") ||
-           nameContainsNoCase(name, "beam") ||
-           nameContainsNoCase(name, "light") ||
-           nameContainsNoCase(name, "flare") ||
-           nameContainsNoCase(name, "water");
 }
 
 static bool
@@ -425,6 +400,7 @@ setMaterialSkin(Material *mat, bool32 vertexAlpha)
     const char *texName = (mat && mat->texture) ? mat->texture->name : nil;
 
     bool hasTexAlpha = false;
+    uint8 texAlphaKind = GX_RASTER_ALPHA_NONE;
     uint8 texFmt = 0xFF;
     bool texObjValid = false;
     if(mat && mat->texture && mat->texture->raster){
@@ -432,21 +408,22 @@ setMaterialSkin(Material *mat, bool32 vertexAlpha)
         GxRaster *natras = PLUGINOFFSET(GxRaster, ras, nativeRasterOffset);
         if(natras){
             hasTexAlpha = natras->hasAlpha != 0;
+            texAlphaKind = natras->alphaKind;
             texFmt = natras->gxFmt;
             texObjValid = natras->texObjValid != 0;
         }else
             hasTexAlpha = Raster::formatHasAlpha(ras->format);
     }
 
-    bool preferTexBlend = hasTexAlpha && preferBlendTextureAlpha(texName);
-    // Coexisting alpha-test + blend, mirroring the GX2 reference (and the GX
-    // default pipe in gxpipe.cpp): a masked skin material always alpha-tests so
-    // transparent texels are discarded and z-write stays meaningful, while
-    // blend is additive for fade/vertex/explicit-blend cases rather than
-    // flipping the draw onto a separate translucent path.
+    // Keep skinned meshes on the same RenderWare alpha contract as the
+    // default pipeline and the GX2/GL3 backends.
+    bool textureCutout = hasTexAlpha &&
+                         texAlphaKind == GX_RASTER_ALPHA_CUTOUT;
+    bool textureSmooth = hasTexAlpha && !textureCutout;
+    bool hasMatAlpha = mat && mat->color.alpha < 255;
     bool doBlend = !fullbrightDebug &&
-        (vertexAlpha || (mat && mat->color.alpha < 255) || preferTexBlend);
-    bool doAlphaTest = hasTexAlpha && !preferTexBlend;
+                   (textureSmooth || vertexAlpha || hasMatAlpha);
+    bool doAlphaTest = !fullbrightDebug && textureCutout;
     bool zWriteEnable = gxState.zWrite && !(doBlend && !doAlphaTest);
 
     bool zAfterTexturing = doAlphaTest;
@@ -479,28 +456,38 @@ setMaterialSkin(Material *mat, bool32 vertexAlpha)
                    (freeCamDebug || fullbrightDebug) ? GX_SRC_REG : GX_SRC_VTX,
                    GX_LIGHTNULL, GX_DF_NONE, GX_AF_NONE);
     GX_SetNumChans(1);
-    if(doAlphaTest)
-        GX_SetAlphaCompare(gxAlphaFuncFromState(),
-                           (u8)gxState.alphaTestRef,
+    u8 effectiveAlphaRef = 0;
+    if(doAlphaTest){
+        uint8 materialAlpha = mat ? mat->color.alpha : 255;
+        uint32 scaledCutoff = (128u * (uint32)materialAlpha + 254u) / 255u;
+        if(scaledCutoff < 1u)
+            scaledCutoff = 1u;
+        u8 stateAlphaRef = (u8)gxState.alphaTestRef;
+        effectiveAlphaRef = stateAlphaRef < scaledCutoff ?
+                            (u8)scaledCutoff : stateAlphaRef;
+        GX_SetAlphaCompare(GX_GEQUAL,
+                           effectiveAlphaRef,
                            GX_AOP_AND,
                            GX_ALWAYS, 0);
-    else
+    }else
         GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
 
     static int s_skinTexStateLogCount = 0;
     if(skinFocusTexture(texName) && s_skinTexStateLogCount < 160) {
-        printf("[SKIN-TEXSTATE] tex=%s fmt=0x%02X texObj=%d texA=%d vtxA=%d blend=%d cutout=%d "
-               "matA=%u aFn=%d aRef=%d zWrite=%d zAfterTex=%d cull=%u\n",
+        printf("[SKIN-TEXSTATE] tex=%s fmt=0x%02X texObj=%d texA=%d aKind=%u vtxA=%d blend=%d cutout=%d "
+               "matA=%u aFn=%d aRef=%d effARef=%u zWrite=%d zAfterTex=%d cull=%u\n",
                texName,
                (unsigned)texFmt,
                texObjValid ? 1 : 0,
                hasTexAlpha ? 1 : 0,
+               (unsigned)texAlphaKind,
                vertexAlpha ? 1 : 0,
                doBlend ? 1 : 0,
                doAlphaTest ? 1 : 0,
                mat ? (unsigned)mat->color.alpha : 255u,
                (int)gxState.alphaTestFunc,
                (int)gxState.alphaTestRef,
+               (unsigned)effectiveAlphaRef,
                zWriteEnable ? 1 : 0,
                zAfterTexturing ? 1 : 0,
                (unsigned)((freeCamDebug || fullbrightDebug) ? GX_CULL_NONE : gxCullFromState()));

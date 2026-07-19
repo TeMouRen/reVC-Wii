@@ -5,6 +5,7 @@
 #if defined(WII) || defined(GAMECUBE)
 #include "../skel/wii/diagnostic.h"
 #endif
+#include <stdarg.h>
 #include "common.h"
 #ifdef RW_GX
 #include "../../vendor/librw/src/gx/gxmemory.h"
@@ -120,6 +121,161 @@ bool CMenuManager::m_PrefsCutsceneBorders = true;
 bool holdingScrollBar; // *(bool*)0x7039B9; // not original name
 
 CMenuManager FrontEndMenuManager;
+#ifdef CHINESE_FONT
+uint8 gChineseLanguageVariant = CHINESE_VARIANT_WM;
+static const float kChineseVariantMenuGap = 30.0f;
+static const uint32 kChineseVariantSwitchCooldownMs = 280;
+
+static wchar ChineseMenuLabelAscii[] = { 'C', 'H', 'I', 'N', 'E', 'S', 'E', '\0' };
+static wchar ChineseMenuLabelChinese[] = { 0x4E2D, 0x6587, '\0' };
+static wchar ChineseVariantLabelsAscii[CHINESE_VARIANT_COUNT][3] = {
+	{ 'W', 'M', '\0' },
+	{ 'Z', 'B', '\0' },
+	{ 'G', 'F', '\0' },
+};
+static wchar ChineseVariantLabelsChinese[CHINESE_VARIANT_COUNT][3] = {
+	{ 0x65E0, 0x540D, '\0' },
+	{ 0x7F6A, 0x5427, '\0' },
+	{ 0x5B98, 0x65B9, '\0' },
+};
+
+static float
+GetGroupedLeftTextX(float entryX, uint8 align, float rightWidth, float gap)
+{
+	switch (align) {
+	case MENUALIGN_LEFT:
+	case MENUALIGN_RIGHT:
+		return entryX;
+	default:
+		return entryX - (rightWidth + gap) * 0.5f;
+	}
+}
+
+static float
+GetGroupedRightTextAnchorX(float entryX, uint8 align, float leftWidth, float rightWidth, float gap)
+{
+	switch (align) {
+	case MENUALIGN_LEFT:
+		return entryX + leftWidth + gap + rightWidth;
+	case MENUALIGN_RIGHT:
+		return entryX + gap + rightWidth;
+	default:
+		return entryX + (leftWidth + gap + rightWidth) * 0.5f;
+	}
+}
+
+static void
+GetGroupedTextBounds(float entryX, uint8 align, float leftWidth, float rightWidth, float gap, int &leftBound, int &rightBound)
+{
+	switch (align) {
+	case MENUALIGN_LEFT:
+		leftBound = Max(0, (int)entryX);
+		rightBound = Min(DEFAULT_SCREEN_WIDTH, (int)(entryX + leftWidth + gap + rightWidth));
+		break;
+	case MENUALIGN_RIGHT:
+		leftBound = Max(0, (int)(entryX - leftWidth));
+		rightBound = Min(DEFAULT_SCREEN_WIDTH, (int)(entryX + gap + rightWidth));
+		break;
+	default:
+		leftBound = Max(0, (int)(entryX - (leftWidth + gap + rightWidth) * 0.5f));
+		rightBound = Min(DEFAULT_SCREEN_WIDTH, (int)(entryX + (leftWidth + gap + rightWidth) * 0.5f));
+		break;
+	}
+}
+
+void
+CycleChineseLanguageVariant(int8 changeAmount)
+{
+	int32 nextVariant = gChineseLanguageVariant;
+
+	if (changeAmount > 0)
+		nextVariant++;
+	else if (changeAmount < 0)
+		nextVariant--;
+
+	if (nextVariant < 0)
+		nextVariant = CHINESE_VARIANT_COUNT - 1;
+	else if (nextVariant >= CHINESE_VARIANT_COUNT)
+		nextVariant = 0;
+
+	gChineseLanguageVariant = nextVariant;
+}
+
+const char *
+GetChineseVariantGxtFilename(void)
+{
+	switch (gChineseLanguageVariant) {
+	case CHINESE_VARIANT_ZB:
+		return "chinese_zb.gxt";
+	case CHINESE_VARIANT_GF:
+		return "chinese_gf.gxt";
+	case CHINESE_VARIANT_WM:
+	default:
+		return "chinese_wm.gxt";
+	}
+}
+
+const char *
+GetChineseVariantFontBaseName(void)
+{
+	switch (gChineseLanguageVariant) {
+	case CHINESE_VARIANT_ZB:
+		return "chinese_zb";
+	case CHINESE_VARIANT_GF:
+		return "chinese_gf";
+	case CHINESE_VARIANT_WM:
+	default:
+		return "chinese_wm";
+	}
+}
+
+const char *
+GetChineseVariantSlantFontBaseName(void)
+{
+	switch (gChineseLanguageVariant) {
+	case CHINESE_VARIANT_WM:
+		return "chinese_wm_slant";
+	case CHINESE_VARIANT_ZB:
+	case CHINESE_VARIANT_GF:
+	default:
+		return nil;
+	}
+}
+
+wchar *
+GetChineseLanguageMenuLabel(void)
+{
+	if (FrontEndMenuManager.m_PrefsLanguage == CMenuManager::LANGUAGE_CHINESE)
+		return ChineseMenuLabelChinese;
+
+	return ChineseMenuLabelAscii;
+}
+
+wchar *
+GetChineseVariantMenuLabel(void)
+{
+	if (FrontEndMenuManager.m_PrefsLanguage == CMenuManager::LANGUAGE_CHINESE)
+		return ChineseVariantLabelsChinese[gChineseLanguageVariant];
+
+	return ChineseVariantLabelsAscii[gChineseLanguageVariant];
+}
+
+static wchar *
+GetMenuEntryDisplayText(int32 action, const char *entryName)
+{
+	if (action == MENUACTION_LANG_CHI)
+		return GetChineseLanguageMenuLabel();
+
+	return TheText.Get(entryName);
+}
+#else
+static wchar *
+GetMenuEntryDisplayText(int32 action, const char *entryName)
+{
+	(void)action;
+	return TheText.Get(entryName);
+}
+#endif
 MenuTrapezoid menuBg(CGeneral::GetRandomNumber() % 40 + 65, CGeneral::GetRandomNumber() % 40 + 21,
 	CGeneral::GetRandomNumber() % 40 + 568, CGeneral::GetRandomNumber() % 40 + 44,
 	CGeneral::GetRandomNumber() % 40 + 36, CGeneral::GetRandomNumber() % 40 + 352,
@@ -196,13 +352,47 @@ wchar* CMenuManager::m_pDialogText = nil;
 #define SET_FONT_FOR_MENU_HEADER \
 	CFont::SetRightJustifyOn(); \
 	CFont::SetFontStyle(FONT_LOCALE(FONT_HEADING)); \
-	CFont::SetScale(MENU_X(MENUHEADER_WIDTH), MENU_Y(MENUHEADER_HEIGHT)); \
+	CFont::SetScale(GetMenuHeaderScaleX(), MENU_Y(MENUHEADER_HEIGHT)); \
 	CFont::SetDropShadowPosition(0);
 
 #define SET_FONT_FOR_LIST_ITEM \
 	CFont::SetRightJustifyOff(); \
-	CFont::SetScale(MENU_X(LISTITEM_X_SCALE), MENU_Y(LISTITEM_Y_SCALE)); \
+	CFont::SetScale(GetMenuListItemScaleX(), MENU_Y(LISTITEM_Y_SCALE)); \
 	CFont::SetFontStyle(FONT_LOCALE(FONT_STANDARD));
+
+static inline float
+GetChineseMenuScaleXRaw(float regular, float chineseWm, float chineseZb, float chineseGf)
+{
+#ifdef CHINESE_FONT
+	if (CFont::IsChinese()) {
+		switch (gChineseLanguageVariant) {
+		case CHINESE_VARIANT_WM:
+			return chineseWm;
+		case CHINESE_VARIANT_ZB:
+			return chineseZb;
+		case CHINESE_VARIANT_GF:
+		default:
+			return chineseGf;
+		}
+	}
+	return regular;
+#else
+	return regular;
+#endif
+}
+
+static inline float
+GetChineseMenuScaleX(float regular, float chineseWm, float chineseZb, float chineseGf)
+{
+	return MENU_X(GetChineseMenuScaleXRaw(regular, chineseWm, chineseZb, chineseGf));
+}
+
+static inline float GetMenuHeaderScaleX(void) { return GetChineseMenuScaleX(MENUHEADER_WIDTH, 1.20f, 1.34f, 1.5f); }
+static inline float GetMenuBigText2ScaleX(void) { return GetChineseMenuScaleX(BIGTEXT2_X_SCALE, 0.68f, 0.76f, 0.84f); }
+static inline float GetMenuBigTextScaleX(void) { return GetChineseMenuScaleX(BIGTEXT_X_SCALE, 0.72f, 0.80f, 0.88f); }
+static inline float GetMenuBigTextScaleXRaw(void) { return GetChineseMenuScaleXRaw(BIGTEXT_X_SCALE, 0.72f, 0.80f, 0.88f); }
+static inline float GetMenuMediumTextScaleX(void) { return GetChineseMenuScaleX(MEDIUMTEXT_X_SCALE, 0.56f, 0.64f, 0.72f); }
+static inline float GetMenuListItemScaleX(void) { return GetChineseMenuScaleX(LISTITEM_X_SCALE, 0.45f, 0.52f, 0.58f); }
 
 #define RESET_FONT_FOR_NEW_PAGE \
 	CFont::SetBackgroundOff(); \
@@ -968,6 +1158,7 @@ CMenuManager::DrawStandardMenus(bool activeScreen)
 	DIAG_LOG("[MENU] DrawStdMenu: CFont5\n");
 	CFont::SetBackGroundOnlyTextOff();
 	DIAG_LOG("[MENU] DrawStdMenu: CFont6\n");
+	CFont::SetAlphaFade(255.0f);
 
 #ifdef CUSTOM_FRONTEND_OPTIONS
 	const int xMargin = aScreens[m_nCurrScreen].layout && aScreens[m_nCurrScreen].layout->xMargin != 0 ? aScreens[m_nCurrScreen].layout->xMargin : MENU_X_MARGIN;
@@ -1032,7 +1223,7 @@ CMenuManager::DrawStandardMenus(bool activeScreen)
 		CFont::SetWrapx(MENU_X_RIGHT_ALIGNED(MENULABEL_X_MARGIN));
 		CFont::SetRightJustifyWrap(MENU_X_LEFT_ALIGNED(MENULABEL_X_MARGIN));
 		CFont::SetFontStyle(FONT_LOCALE(FONT_STANDARD));
-		CFont::SetScale(MENU_X(BIGTEXT2_X_SCALE), MENU_Y(BIGTEXT2_Y_SCALE));
+		CFont::SetScale(GetMenuBigText2ScaleX(), MENU_Y(BIGTEXT2_Y_SCALE));
 		CFont::SetRightJustifyOff();
 		CFont::SetDropShadowPosition(2);
 		CFont::SetDropColor(CRGBA(0, 0, 0, FadeIn(255)));
@@ -1102,11 +1293,11 @@ CMenuManager::DrawStandardMenus(bool activeScreen)
 			if (aScreens[m_nCurrScreen].m_aEntries[i].m_SaveSlot >= SAVESLOT_1 && aScreens[m_nCurrScreen].m_aEntries[i].m_SaveSlot <= SAVESLOT_8) {
 				CFont::SetColor(CRGBA(0, 0, 0, FadeIn(255)));
 				CFont::SetFontStyle(FONT_LOCALE(FONT_STANDARD));
-				CFont::SetScale(MENU_X(MEDIUMTEXT_X_SCALE), MENU_Y(MEDIUMTEXT_Y_SCALE));
+				CFont::SetScale(GetMenuMediumTextScaleX(), MENU_Y(MEDIUMTEXT_Y_SCALE));
 				CFont::SetDropShadowPosition(0);
 			} else {
 				CFont::SetFontStyle(FONT_LOCALE(FONT_HEADING));
-				CFont::SetScale(MENU_X(BIGTEXT_X_SCALE), MENU_Y(BIGTEXT_Y_SCALE));
+				CFont::SetScale(GetMenuBigTextScaleX(), MENU_Y(BIGTEXT_Y_SCALE));
 				CFont::SetDropShadowPosition(2);
 				CFont::SetDropColor(CRGBA(0, 0, 0, FadeIn(255)));
 				CFont::SetColor(CRGBA(MENUOPTION_COLOR.r, MENUOPTION_COLOR.g, MENUOPTION_COLOR.b, FadeIn(255)));
@@ -1153,12 +1344,13 @@ CMenuManager::DrawStandardMenus(bool activeScreen)
 						rightText = GetSavedGameDateAndTime(i);
 					}
 
-					if (!leftText || leftText[0] == '\0') {
+				if (!leftText || leftText[0] == '\0') {
 						sprintf(gString, "FEM_SL%d", i + 1);
 						leftText = TheText.Get(gString);
 					}
 				} else {
-					leftText = TheText.Get(aScreens[m_nCurrScreen].m_aEntries[i].m_EntryName);
+					leftText = GetMenuEntryDisplayText(aScreens[m_nCurrScreen].m_aEntries[i].m_Action,
+						aScreens[m_nCurrScreen].m_aEntries[i].m_EntryName);
 				}
 
 				if (m_nPrefsAudio3DProviderIndex == NO_AUDIO_PROVIDER) {
@@ -1321,6 +1513,11 @@ CMenuManager::DrawStandardMenus(bool activeScreen)
 				case MENUACTION_SHOWHEADBOB:
 					rightText = TheText.Get(TheCamera.m_bHeadBob ? "FEM_ON" : "FEM_OFF");
 					break;
+#ifdef CHINESE_FONT
+				case MENUACTION_LANG_CHI:
+					rightText = GetChineseVariantMenuLabel();
+					break;
+#endif
 				case MENUACTION_INVVERT:
 					rightText = TheText.Get(MousePointerStateHelper.bInvertVertically ? "FEM_OFF" : "FEM_ON");
 					break;
@@ -1427,13 +1624,15 @@ CMenuManager::DrawStandardMenus(bool activeScreen)
 				if (activeScreen && i == m_nCurrOption && itemsAreSelectable && section == 0) {
 
 					int leftXMax, rightXMin;
+					int action = aScreens[m_nCurrScreen].m_aEntries[i].m_Action;
 
 					// FIX: Let's don't scale those so GetStringWidth can give us unscaled width, which will be handy to other calculations below that's done without scaling in mind,
 					//		and scaling will be done eventually.
 					// CFont::SetScale(MENU_X(BIGTEXT_X_SCALE), MENU_Y(BIGTEXT_Y_SCALE));
-					CFont::SetScale(BIGTEXT_X_SCALE, BIGTEXT_Y_SCALE);
+					CFont::SetScale(GetMenuBigTextScaleXRaw(), BIGTEXT_Y_SCALE);
 					
-					wchar *curOptionName = TheText.Get(aScreens[m_nCurrScreen].m_aEntries[m_nCurrOption].m_EntryName);
+					wchar *curOptionName = GetMenuEntryDisplayText(aScreens[m_nCurrScreen].m_aEntries[m_nCurrOption].m_Action,
+						aScreens[m_nCurrScreen].m_aEntries[m_nCurrOption].m_EntryName);
 					float curOptionWidth = CFont::GetStringWidth(curOptionName, true);
 
 					if (CFont::Details.centre) {
@@ -1448,11 +1647,23 @@ CMenuManager::DrawStandardMenus(bool activeScreen)
 						leftXMax = Max(0, aScreens[m_nCurrScreen].m_aEntries[m_nCurrOption].m_X - curOptionWidth);
 						rightXMin = aScreens[m_nCurrScreen].m_aEntries[m_nCurrOption].m_X;
 					}
-					CFont::SetScale(MENU_X(BIGTEXT_X_SCALE), MENU_Y(BIGTEXT_Y_SCALE));
+#ifdef CHINESE_FONT
+					if (action == MENUACTION_LANG_CHI && rightText) {
+						float rightTextWidth = CFont::GetStringWidth(rightText, true);
+						GetGroupedTextBounds(
+							aScreens[m_nCurrScreen].m_aEntries[m_nCurrOption].m_X,
+							aScreens[m_nCurrScreen].m_aEntries[m_nCurrOption].m_Align,
+							curOptionWidth,
+							rightTextWidth,
+							kChineseVariantMenuGap,
+							leftXMax,
+							rightXMin);
+					}
+#endif
+					CFont::SetScale(GetMenuBigTextScaleX(), MENU_Y(BIGTEXT_Y_SCALE));
 
-					int action = aScreens[m_nCurrScreen].m_aEntries[i].m_Action;
 					int saveSlot = aScreens[m_nCurrScreen].m_aEntries[i].m_SaveSlot;
-					if (rightText || action == MENUACTION_DRAWDIST || action == MENUACTION_BRIGHTNESS || action == MENUACTION_MUSICVOLUME ||
+					if ((rightText && action != MENUACTION_LANG_CHI) || action == MENUACTION_DRAWDIST || action == MENUACTION_BRIGHTNESS || action == MENUACTION_MUSICVOLUME ||
 						action == MENUACTION_SFXVOLUME || action == MENUACTION_MP3VOLUMEBOOST || action == MENUACTION_MOUSESENS ||
 						saveSlot >= SAVESLOT_1 && saveSlot <= SAVESLOT_8
 #ifdef CUSTOM_FRONTEND_OPTIONS
@@ -1528,7 +1739,18 @@ CMenuManager::DrawStandardMenus(bool activeScreen)
 
 				if (section == 1) {
 					if (leftText) {
-						CFont::PrintString(MENU_X_LEFT_ALIGNED(aScreens[m_nCurrScreen].m_aEntries[i].m_X), MENU_Y(aScreens[m_nCurrScreen].m_aEntries[i].m_Y MINUS_SCROLL_OFFSET), leftText);
+						float leftTextX = aScreens[m_nCurrScreen].m_aEntries[i].m_X;
+#ifdef CHINESE_FONT
+						if (aScreens[m_nCurrScreen].m_aEntries[i].m_Action == MENUACTION_LANG_CHI && rightText) {
+							float rightTextWidth = CFont::GetStringWidth(rightText, true);
+							leftTextX = GetGroupedLeftTextX(
+								aScreens[m_nCurrScreen].m_aEntries[i].m_X,
+								aScreens[m_nCurrScreen].m_aEntries[i].m_Align,
+								rightTextWidth,
+								kChineseVariantMenuGap);
+						}
+#endif
+						CFont::PrintString(MENU_X_LEFT_ALIGNED(leftTextX), MENU_Y(aScreens[m_nCurrScreen].m_aEntries[i].m_Y MINUS_SCROLL_OFFSET), leftText);
 					}
 
 					if (rightText) {
@@ -1536,12 +1758,25 @@ CMenuManager::DrawStandardMenus(bool activeScreen)
 						CFont::SetRightJustifyOn();
 						if (aScreens[m_nCurrScreen].m_aEntries[i].m_SaveSlot >= SAVESLOT_1 && aScreens[m_nCurrScreen].m_aEntries[i].m_SaveSlot <= SAVESLOT_8) {
 							CFont::SetFontStyle(FONT_LOCALE(FONT_STANDARD));
-							CFont::SetScale(MENU_X(MEDIUMTEXT_X_SCALE), MENU_Y(MEDIUMTEXT_Y_SCALE));
+							CFont::SetScale(GetMenuMediumTextScaleX(), MENU_Y(MEDIUMTEXT_Y_SCALE));
 						} else {
 							CFont::SetFontStyle(FONT_LOCALE(FONT_HEADING));
-							CFont::SetScale(MENU_X(BIGTEXT_X_SCALE), MENU_Y(BIGTEXT_Y_SCALE));
+							CFont::SetScale(GetMenuBigTextScaleX(), MENU_Y(BIGTEXT_Y_SCALE));
 						}
-						CFont::PrintString(MENU_X_LEFT_ALIGNED(DEFAULT_SCREEN_WIDTH - RIGHT_ALIGNED_TEXT_RIGHT_MARGIN(xMargin)), MENU_Y(aScreens[m_nCurrScreen].m_aEntries[i].m_Y MINUS_SCROLL_OFFSET), rightText);
+						float rightTextX = DEFAULT_SCREEN_WIDTH - RIGHT_ALIGNED_TEXT_RIGHT_MARGIN(xMargin);
+#ifdef CHINESE_FONT
+						if (aScreens[m_nCurrScreen].m_aEntries[i].m_Action == MENUACTION_LANG_CHI && leftText) {
+							float leftTextWidth = CFont::GetStringWidth(leftText, true);
+							float rightTextWidth = CFont::GetStringWidth(rightText, true);
+							rightTextX = GetGroupedRightTextAnchorX(
+								aScreens[m_nCurrScreen].m_aEntries[i].m_X,
+								aScreens[m_nCurrScreen].m_aEntries[i].m_Align,
+								leftTextWidth,
+								rightTextWidth,
+								kChineseVariantMenuGap);
+						}
+#endif
+						CFont::PrintString(MENU_X_LEFT_ALIGNED(rightTextX), MENU_Y(aScreens[m_nCurrScreen].m_aEntries[i].m_Y MINUS_SCROLL_OFFSET), rightText);
 					}
 
 					if (m_nPrefsAudio3DProviderIndex == DMAudio.GetCurrent3DProviderIndex()) {
@@ -2271,7 +2506,7 @@ CMenuManager::DrawControllerSetupScreen()
 		if (m_PrefsLanguage == LANGUAGE_GERMAN && (i == 20 || i == 21 || i == 22 || i == 23))
 			CFont::SetScale(MENU_X(0.32f), MENU_Y(LISTITEM_Y_SCALE));
 		else
-			CFont::SetScale(MENU_X(LISTITEM_X_SCALE), MENU_Y(LISTITEM_Y_SCALE));
+			CFont::SetScale(GetMenuListItemScaleX(), MENU_Y(LISTITEM_Y_SCALE));
 
 		CFont::PrintString(MENU_X_LEFT_ALIGNED(CONTSETUP_COLUMN_1_X), MENU_Y(i * rowHeight + yStart), actionText);
 	}
@@ -2279,7 +2514,7 @@ CMenuManager::DrawControllerSetupScreen()
 	DrawControllerBound(yStart, MENU_X_LEFT_ALIGNED(CONTSETUP_COLUMN_3_X), rowHeight, CONTSETUP_VEHICLE_COLUMN);
 
 	if (!m_bWaitingForNewKeyBind) {
-		CFont::SetScale(MENU_X(BIGTEXT_X_SCALE), MENU_Y(BIGTEXT_Y_SCALE));
+		CFont::SetScale(GetMenuBigTextScaleX(), MENU_Y(BIGTEXT_Y_SCALE));
 
 		if ((m_nMousePosX > MENU_X_RIGHT_ALIGNED(CONTSETUP_BACK_RIGHT) - CFont::GetStringWidth(TheText.Get("FEDS_TB"), true)
 			&& m_nMousePosX < MENU_X_RIGHT_ALIGNED(CONTSETUP_BACK_RIGHT) && m_nMousePosY > SCREEN_SCALE_FROM_BOTTOM(CONTSETUP_BACK_BOTTOM)
@@ -2297,7 +2532,7 @@ CMenuManager::DrawControllerSetupScreen()
 
 	// Back button and it's shadow
 	CFont::SetFontStyle(FONT_LOCALE(FONT_HEADING));
-	CFont::SetScale(MENU_X(BIGTEXT_X_SCALE), MENU_Y(BIGTEXT_Y_SCALE));
+	CFont::SetScale(GetMenuBigTextScaleX(), MENU_Y(BIGTEXT_Y_SCALE));
 	CFont::SetRightJustifyOn();
 	CFont::SetDropShadowPosition(2);
 	CFont::SetDropColor(CRGBA(0, 0, 0, FadeIn(255)));
@@ -2903,7 +3138,7 @@ CMenuManager::DrawPlayerSetupScreen(bool activeScreen)
 		}
 		CFont::SetFontStyle(FONT_LOCALE(FONT_HEADING));
 
-		CFont::SetScale(MENU_X(BIGTEXT_X_SCALE), MENU_Y(BIGTEXT_Y_SCALE));
+		CFont::SetScale(GetMenuBigTextScaleX(), MENU_Y(BIGTEXT_Y_SCALE));
 
 		if ((m_nMousePosX > MENU_X_RIGHT_ALIGNED(PLAYERSETUP_LIST_RIGHT - 1) - CFont::GetStringWidth(TheText.Get("FEDS_TB"), true)
 			&& m_nMousePosX < MENU_X_RIGHT_ALIGNED(PLAYERSETUP_LIST_RIGHT - 1)
@@ -2974,7 +3209,7 @@ CMenuManager::DrawPlayerSetupScreen(bool activeScreen)
 		}
 	}
 	CFont::SetFontStyle(FONT_LOCALE(FONT_HEADING));
-	CFont::SetScale(MENU_X(BIGTEXT_X_SCALE), MENU_Y(BIGTEXT_Y_SCALE));
+	CFont::SetScale(GetMenuBigTextScaleX(), MENU_Y(BIGTEXT_Y_SCALE));
 	CFont::SetRightJustifyOn();
 	CFont::SetColor(CRGBA(MENUOPTION_COLOR.r, MENUOPTION_COLOR.g, MENUOPTION_COLOR.b, FadeIn(255)));
 	CFont::SetDropShadowPosition(2);
@@ -3028,6 +3263,8 @@ CMenuManager::InitialiseChangedLanguageSettings()
 {
 	if (m_bFrontEnd_ReloadObrTxtGxt) {
 		m_bFrontEnd_ReloadObrTxtGxt = false;
+		// Text reload invalidates cached TheText pointers kept by HUD/brief/pager state.
+		CMessages::ClearAllMessagesDisplayedByGame();
 #ifdef FIX_BUGS
 		if (gGameState > GS_INIT_ONCE)
 #endif
@@ -3058,7 +3295,9 @@ CMenuManager::InitialiseChangedLanguageSettings()
 			break;
 #ifdef CHINESE_FONT
 		case LANGUAGE_CHINESE:
-			CFont::ReloadFonts(FONT_LANGSET_CHINESE);
+			// Chinese variant switches keep the language set the same,
+			// so force a font reload to swap the active atlas/table too.
+			CFont::ReloadFonts(FONT_LANGSET_CHINESE, true);
 			break;
 #endif
 		default:
@@ -3170,15 +3409,12 @@ CMenuManager::LoadAllTextures()
 #endif
 }
 
-void
-CMenuManager::LoadSettings()
+bool
+LoadLegacyFrontendSettingsFromSet(void)
 {
 	CFileMgr::SetDirMyDocuments();
 	int fileHandle = CFileMgr::OpenFile("gta_vc.set", "r");
-
-	int32 prevLang = m_PrefsLanguage;
-	MousePointerStateHelper.bInvertVertically = true;
-	CMBlur::BlurOn = false;
+	bool loadedLegacySettings = false;
 
 	// 50 is silly
 	char headerText[50];
@@ -3195,23 +3431,24 @@ CMenuManager::LoadSettings()
 			CFileMgr::Read(fileHandle, (char*)&someVersion, sizeof(someVersion));
 		}
 		if (fileIsValid && someVersion >= 3) {
+			loadedLegacySettings = true;
 			ControlsManager.LoadSettings(fileHandle);
 #ifdef IMPROVED_VIDEOMODE
-			CFileMgr::Read(fileHandle, (char*)&m_nPrefsWidth, sizeof(m_nPrefsWidth));
-			CFileMgr::Read(fileHandle, (char*)&m_nPrefsHeight, sizeof(m_nPrefsHeight));
-			CFileMgr::Read(fileHandle, (char*)&m_nPrefsDepth, sizeof(m_nPrefsDepth));
-			CFileMgr::Read(fileHandle, (char*)&m_nPrefsWindowed, sizeof(m_nPrefsWindowed));
-			CFileMgr::Read(fileHandle, (char*)&m_nPrefsSubsystem, sizeof(m_nPrefsSubsystem));
-			if(m_nPrefsWindowed != 0 && m_nPrefsWindowed != 1){
+			CFileMgr::Read(fileHandle, (char*)&FrontEndMenuManager.m_nPrefsWidth, sizeof(FrontEndMenuManager.m_nPrefsWidth));
+			CFileMgr::Read(fileHandle, (char*)&FrontEndMenuManager.m_nPrefsHeight, sizeof(FrontEndMenuManager.m_nPrefsHeight));
+			CFileMgr::Read(fileHandle, (char*)&FrontEndMenuManager.m_nPrefsDepth, sizeof(FrontEndMenuManager.m_nPrefsDepth));
+			CFileMgr::Read(fileHandle, (char*)&FrontEndMenuManager.m_nPrefsWindowed, sizeof(FrontEndMenuManager.m_nPrefsWindowed));
+			CFileMgr::Read(fileHandle, (char*)&FrontEndMenuManager.m_nPrefsSubsystem, sizeof(FrontEndMenuManager.m_nPrefsSubsystem));
+			if(FrontEndMenuManager.m_nPrefsWindowed != 0 && FrontEndMenuManager.m_nPrefsWindowed != 1){
 				// garbage data from vanilla settings file
 				// let skeleton find something
-				m_nPrefsWidth = 0;
-				m_nPrefsHeight = 0;
-				m_nPrefsDepth = 0;
-				m_nPrefsWindowed = 0;
-				m_nPrefsSubsystem = 0;
+				FrontEndMenuManager.m_nPrefsWidth = 0;
+				FrontEndMenuManager.m_nPrefsHeight = 0;
+				FrontEndMenuManager.m_nPrefsDepth = 0;
+				FrontEndMenuManager.m_nPrefsWindowed = 0;
+				FrontEndMenuManager.m_nPrefsSubsystem = 0;
 			}
-			m_nSelectedScreenMode = m_nPrefsWindowed;
+			FrontEndMenuManager.m_nSelectedScreenMode = FrontEndMenuManager.m_nPrefsWindowed;
 #else
 			CFileMgr::Read(fileHandle, gString, 20);
 #endif
@@ -3220,7 +3457,7 @@ CMenuManager::LoadSettings()
 			CFileMgr::Read(fileHandle, gString, 4);
 			CFileMgr::Read(fileHandle, gString, 1);
 #ifdef LEGACY_MENU_OPTIONS
-			CFileMgr::Read(fileHandle, (char*)&m_PrefsVsyncDisp, 1);
+			CFileMgr::Read(fileHandle, (char*)&FrontEndMenuManager.m_PrefsVsyncDisp, 1);
 			CFileMgr::Read(fileHandle, (char*)&CMBlur::BlurOn, 1);
 #else
 			CFileMgr::Read(fileHandle, gString, 1);
@@ -3230,35 +3467,55 @@ CMenuManager::LoadSettings()
 			CFileMgr::Read(fileHandle, (char*)&TheCamera.m_fMouseAccelHorzntl, 4);
 			CFileMgr::Read(fileHandle, (char*)&MousePointerStateHelper.bInvertVertically, 1);
 			CFileMgr::Read(fileHandle, (char*)&CVehicle::m_bDisableMouseSteering, 1);
-			CFileMgr::Read(fileHandle, (char*)&m_PrefsSfxVolume, 1);
-			CFileMgr::Read(fileHandle, (char*)&m_PrefsMusicVolume, 1);
-			CFileMgr::Read(fileHandle, (char*)&m_PrefsMP3BoostVolume, 1);
-			CFileMgr::Read(fileHandle, (char*)&m_PrefsRadioStation, 1);
-			CFileMgr::Read(fileHandle, (char*)&m_PrefsSpeakers, 1);
-			CFileMgr::Read(fileHandle, (char*)&m_nPrefsAudio3DProviderIndex, 1);
-			CFileMgr::Read(fileHandle, (char*)&m_PrefsDMA, 1);
-			CFileMgr::Read(fileHandle, (char*)&m_PrefsBrightness, 2);
-			CFileMgr::Read(fileHandle, (char*)&m_PrefsLOD, sizeof(m_PrefsLOD));
-			CFileMgr::Read(fileHandle, (char*)&m_PrefsShowSubtitles, 1);
-			CFileMgr::Read(fileHandle, (char*)&m_PrefsUseWideScreen, 1);
-			CFileMgr::Read(fileHandle, (char*)&m_PrefsFrameLimiter, 1);
-			CFileMgr::Read(fileHandle, (char*)&m_nDisplayVideoMode, 1);
-			CFileMgr::Read(fileHandle, m_PrefsSkinFile, 256);
-			CFileMgr::Read(fileHandle, (char*)&m_ControlMethod, 1);
-			CFileMgr::Read(fileHandle, (char*)&m_PrefsLanguage, 1);
-			CFileMgr::Read(fileHandle, (char*)&m_PrefsShowHud, 1);
-			CFileMgr::Read(fileHandle, (char*)&m_PrefsRadarMode, 1);
-			CFileMgr::Read(fileHandle, (char*)&m_PrefsShowLegends, 1);
+			CFileMgr::Read(fileHandle, (char*)&FrontEndMenuManager.m_PrefsSfxVolume, 1);
+			CFileMgr::Read(fileHandle, (char*)&FrontEndMenuManager.m_PrefsMusicVolume, 1);
+			CFileMgr::Read(fileHandle, (char*)&FrontEndMenuManager.m_PrefsMP3BoostVolume, 1);
+			CFileMgr::Read(fileHandle, (char*)&FrontEndMenuManager.m_PrefsRadioStation, 1);
+			CFileMgr::Read(fileHandle, (char*)&FrontEndMenuManager.m_PrefsSpeakers, 1);
+			CFileMgr::Read(fileHandle, (char*)&FrontEndMenuManager.m_nPrefsAudio3DProviderIndex, 1);
+			CFileMgr::Read(fileHandle, (char*)&FrontEndMenuManager.m_PrefsDMA, 1);
+			CFileMgr::Read(fileHandle, (char*)&FrontEndMenuManager.m_PrefsBrightness, 2);
+			CFileMgr::Read(fileHandle, (char*)&FrontEndMenuManager.m_PrefsLOD, sizeof(FrontEndMenuManager.m_PrefsLOD));
+			CFileMgr::Read(fileHandle, (char*)&FrontEndMenuManager.m_PrefsShowSubtitles, 1);
+			CFileMgr::Read(fileHandle, (char*)&FrontEndMenuManager.m_PrefsUseWideScreen, 1);
+			CFileMgr::Read(fileHandle, (char*)&FrontEndMenuManager.m_PrefsFrameLimiter, 1);
+			CFileMgr::Read(fileHandle, (char*)&FrontEndMenuManager.m_nDisplayVideoMode, 1);
+			CFileMgr::Read(fileHandle, FrontEndMenuManager.m_PrefsSkinFile, 256);
+			CFileMgr::Read(fileHandle, (char*)&FrontEndMenuManager.m_ControlMethod, 1);
+			CFileMgr::Read(fileHandle, (char*)&FrontEndMenuManager.m_PrefsLanguage, 1);
+			CFileMgr::Read(fileHandle, (char*)&FrontEndMenuManager.m_PrefsShowHud, 1);
+			CFileMgr::Read(fileHandle, (char*)&FrontEndMenuManager.m_PrefsRadarMode, 1);
+			CFileMgr::Read(fileHandle, (char*)&FrontEndMenuManager.m_PrefsShowLegends, 1);
 		}
 	}
 
 	CFileMgr::CloseFile(fileHandle);
 	CFileMgr::SetDir("");
+	return loadedLegacySettings;
+}
+
+void
+CMenuManager::LoadSettings()
+{
+	int32 prevLang = m_PrefsLanguage;
+	MousePointerStateHelper.bInvertVertically = true;
+	CMBlur::BlurOn = false;
+#if defined(LOAD_INI_SETTINGS) && defined(WII)
+	bool loadedIniSettings = LoadINISettings();
+	bool migratedLegacySettings = false;
+	if (loadedIniSettings) {
+		LoadINIControllerSettings();
+	} else {
+		migratedLegacySettings = LoadLegacyFrontendSettingsFromSet();
+	}
+#else
+	LoadLegacyFrontendSettingsFromSet();
 
 #ifdef LOAD_INI_SETTINGS
 	if (LoadINISettings()) {
 		LoadINIControllerSettings();
 	}
+#endif
 #endif
 
 #ifdef FIX_BUGS
@@ -3306,6 +3563,13 @@ CMenuManager::LoadSettings()
 		strcpy(m_PrefsSkinFile, DEFAULT_SKIN_NAME);
 		strcpy(m_aSkinName, DEFAULT_SKIN_NAME);
 	}
+
+#if defined(LOAD_INI_SETTINGS) && defined(WII)
+	if (migratedLegacySettings && !loadedIniSettings) {
+		SaveINISettings();
+		SaveINIControllerSettings();
+	}
+#endif
 }
 
 void
@@ -3373,7 +3637,7 @@ CMenuManager::SaveSettings()
 
 	CFileMgr::CloseFile(fileHandle);
 	CFileMgr::SetDir("");
-	
+
 #else
 	m_lastWorking3DAudioProvider = m_nPrefsAudio3DProviderIndex;
 	SaveINISettings();
@@ -3434,7 +3698,7 @@ CMenuManager::PrintBriefs()
 	CFont::SetColor(CRGBA(0, 0, 0, FadeIn(255)));
 	CFont::SetRightJustifyOff();
 	CFont::SetFontStyle(FONT_LOCALE(FONT_STANDARD));
-	CFont::SetScale(MENU_X(MEDIUMTEXT_X_SCALE), MENU_Y(MEDIUMTEXT_Y_SCALE));
+	CFont::SetScale(GetMenuMediumTextScaleX(), MENU_Y(MEDIUMTEXT_Y_SCALE));
 	CFont::SetWrapx(MENU_X_RIGHT_ALIGNED(80.0f));
 	CFont::SetDropShadowPosition(0);
 
@@ -3840,6 +4104,22 @@ CMenuManager::AdditionalOptionInput(bool &goBack)
 	}
 }
 
+static void
+WriteExportFileLine(int fileHandle, const char *format, ...)
+{
+	char buffer[4096];
+	va_list args;
+	va_start(args, format);
+	int written = vsnprintf(buffer, sizeof(buffer), format, args);
+	va_end(args);
+
+	if (written <= 0)
+		return;
+
+	size_t length = written >= (int)sizeof(buffer) ? sizeof(buffer) - 1 : (size_t)written;
+	CFileMgr::Write(fileHandle, buffer, length);
+}
+
 // Not original name
 void
 CMenuManager::ExportStats()
@@ -3848,25 +4128,25 @@ CMenuManager::ExportStats()
 	CFileMgr::SetDirMyDocuments();
 	_strdate(date);
 	wchar *lastMission = TheText.Get(CStats::LastMissionPassedName[0] == '\0' ? "ITBEG" : CStats::LastMissionPassedName);
-	FILE *txtFile = fopen("stats.txt", "w");
+	int txtFile = CFileMgr::OpenFile("stats.txt", "w");
 
 	if (txtFile) {
 		int statLines = CStats::ConstructStatLine(99999);
-		fprintf(txtFile, "-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-\n");
-		fprintf(txtFile, "\t\t\tGTA VICE CITY %s\n", UnicodeToAscii(TheText.Get("FEH_STA")));
-		fprintf(txtFile, "-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-\n\n\n");
-		fprintf(txtFile, "%s: ", UnicodeToAscii(TheText.Get("FES_CMI")));
-		fprintf(txtFile, "%s\n", UnicodeToAscii(lastMission));
-		fprintf(txtFile, "%s: ", UnicodeToAscii(TheText.Get("FES_DAT")));
-		fprintf(txtFile, "%s\n\n\n", date);
-		fprintf(txtFile, "%s  ", UnicodeToAscii(TheText.Get("CRIMRA")));
+		WriteExportFileLine(txtFile, "-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-\n");
+		WriteExportFileLine(txtFile, "\t\t\tGTA VICE CITY %s\n", UnicodeToAscii(TheText.Get("FEH_STA")));
+		WriteExportFileLine(txtFile, "-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-\n\n\n");
+		WriteExportFileLine(txtFile, "%s: ", UnicodeToAscii(TheText.Get("FES_CMI")));
+		WriteExportFileLine(txtFile, "%s\n", UnicodeToAscii(lastMission));
+		WriteExportFileLine(txtFile, "%s: ", UnicodeToAscii(TheText.Get("FES_DAT")));
+		WriteExportFileLine(txtFile, "%s\n\n\n", date);
+		WriteExportFileLine(txtFile, "%s  ", UnicodeToAscii(TheText.Get("CRIMRA")));
 		UnicodeStrcpy(gUString, CStats::FindCriminalRatingString());
-		fprintf(txtFile, "%s (%d)\n\n\n", UnicodeToAscii(gUString), CStats::FindCriminalRatingNumber());
+		WriteExportFileLine(txtFile, "%s (%d)\n\n\n", UnicodeToAscii(gUString), CStats::FindCriminalRatingNumber());
 		for (int i = 0; i < statLines; ++i) {
 			CStats::ConstructStatLine(i);
 			char *statKey = UnicodeToAscii(gUString);
 			if (statKey[0] != '\0')
-				fprintf(txtFile, "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -\n%s\n", statKey);
+				WriteExportFileLine(txtFile, "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -\n%s\n", statKey);
 
 			char *statValue = UnicodeToAscii(gUString2);
 			for (int j = 0; statValue[j] != '\0'; ++j) {
@@ -3874,60 +4154,60 @@ CMenuManager::ExportStats()
 					statValue[j] = '\xBA'; // This is degree symbol, but my editors keeps messing up with it so I wrote hex representation
 			}
 			if (statValue)
-				fprintf(txtFile, "%s\n\n", statValue);
+				WriteExportFileLine(txtFile, "%s\n\n", statValue);
 		}
-		fprintf(txtFile, "-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-\n\n");
+		WriteExportFileLine(txtFile, "-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-\n\n");
+		CFileMgr::CloseFile(txtFile);
 	}
-	fclose(txtFile);
-	FILE *htmlFile = fopen("stats.html", "w");
+	int htmlFile = CFileMgr::OpenFile("stats.html", "w");
 	if (htmlFile) {
 		int statLines = CStats::ConstructStatLine(99999);
-		fprintf(htmlFile, "<title>Grand Theft Auto Vice City Stats</title>\n");
-		fprintf(htmlFile, "<body bgcolor=\"#FF00CC\" leftmargin=\"10\" topmargin=\"10\" marginwidth=\"10\" marginheight=\"10\">\n");
-		fprintf(htmlFile, "<table width=\"560\" align=\"center\" border=\"0\" cellpadding=\"5\" cellspacing=\"0\">\n");
-		fprintf(htmlFile, "<tr align=\"center\" valign=\"top\"> \n");
-		fprintf(htmlFile, "<td height=\"59\" colspan=\"2\" bgcolor=\"#FFCCFF\"><div align=\"center\"><font color=\"#FF00CC\" size=\"3\" "
+		WriteExportFileLine(htmlFile, "<title>Grand Theft Auto Vice City Stats</title>\n");
+		WriteExportFileLine(htmlFile, "<body bgcolor=\"#FF00CC\" leftmargin=\"10\" topmargin=\"10\" marginwidth=\"10\" marginheight=\"10\">\n");
+		WriteExportFileLine(htmlFile, "<table width=\"560\" align=\"center\" border=\"0\" cellpadding=\"5\" cellspacing=\"0\">\n");
+		WriteExportFileLine(htmlFile, "<tr align=\"center\" valign=\"top\"> \n");
+		WriteExportFileLine(htmlFile, "<td height=\"59\" colspan=\"2\" bgcolor=\"#FFCCFF\"><div align=\"center\"><font color=\"#FF00CC\" size=\"3\" "
 			"face=\"Arial, \n");
-		fprintf(htmlFile, "Helvetica, sans-serif\">-------------------------------------------------------------------------</font><font \n");
-		fprintf(htmlFile, "size=\"3\" face=\"Arial, Helvetica, sans-serif\"><br>\n");
-		fprintf(htmlFile, "<strong><font color=\"#000000\">GRAND THEFT AUTO VICE CITY ");
-		fprintf(htmlFile, "%s</font></strong><br><font\n", UnicodeToAscii(TheText.Get("FEH_STA")));
-		fprintf(htmlFile, "color=\"#FF00CC\">-------------------------------------------------------------------------</font></font></div></td> </tr>\n");
-		fprintf(htmlFile, "<tr align=\"left\" valign=\"top\" bgcolor=\"#FFFFFF\">     <td height=\"22\" colspan=\"2\">&nbsp;</td>  </tr>\n");
-		fprintf(htmlFile, "<tr align=\"left\" valign=\"top\" bgcolor=\"#FFFFFF\"> \n");
-		fprintf(htmlFile,
+		WriteExportFileLine(htmlFile, "Helvetica, sans-serif\">-------------------------------------------------------------------------</font><font \n");
+		WriteExportFileLine(htmlFile, "size=\"3\" face=\"Arial, Helvetica, sans-serif\"><br>\n");
+		WriteExportFileLine(htmlFile, "<strong><font color=\"#000000\">GRAND THEFT AUTO VICE CITY ");
+		WriteExportFileLine(htmlFile, "%s</font></strong><br><font\n", UnicodeToAscii(TheText.Get("FEH_STA")));
+		WriteExportFileLine(htmlFile, "color=\"#FF00CC\">-------------------------------------------------------------------------</font></font></div></td> </tr>\n");
+		WriteExportFileLine(htmlFile, "<tr align=\"left\" valign=\"top\" bgcolor=\"#FFFFFF\">     <td height=\"22\" colspan=\"2\">&nbsp;</td>  </tr>\n");
+		WriteExportFileLine(htmlFile, "<tr align=\"left\" valign=\"top\" bgcolor=\"#FFFFFF\"> \n");
+		WriteExportFileLine(htmlFile,
 			"<td height=\"40\" colspan=\"2\"> <p><font color=\"#00CC00\" size=\"2\" face=\"Arial, Helvetica, sans-serif\">"
 			"<strong><font color=\"#009900\" size=\"1\">%s: \n", UnicodeToAscii(TheText.Get("FES_DAT")));
-		fprintf(htmlFile, "%s</font><br>        %s: </strong>", date, UnicodeToAscii(TheText.Get("FES_CMI")));
-		fprintf(htmlFile, "%s<strong><br></strong> </font></p></td></tr>\n", UnicodeToAscii(lastMission));
-		fprintf(htmlFile, "<tr align=\"left\" valign=\"top\" bgcolor=\"#CCCCCC\"> <td height=\"5\" colspan=\"2\"></td> </tr> <tr align=\""
+		WriteExportFileLine(htmlFile, "%s</font><br>        %s: </strong>", date, UnicodeToAscii(TheText.Get("FES_CMI")));
+		WriteExportFileLine(htmlFile, "%s<strong><br></strong> </font></p></td></tr>\n", UnicodeToAscii(lastMission));
+		WriteExportFileLine(htmlFile, "<tr align=\"left\" valign=\"top\" bgcolor=\"#CCCCCC\"> <td height=\"5\" colspan=\"2\"></td> </tr> <tr align=\""
 			"left\" valign=\"top\" bgcolor=\"#FFFFFF\"> \n");
-		fprintf(htmlFile, "<td height=\"10\" colspan=\"2\"></td> </tr> <tr align=\"left\" valign=\"top\" bgcolor=\"#FFFFFF\"> \n");
-		fprintf(htmlFile, "<td height=\"20\" colspan=\"2\"><font color=\"#FF00CC\" size=\"2\" face=\"Arial, Helvetica, sans-serif\"><str"
+		WriteExportFileLine(htmlFile, "<td height=\"10\" colspan=\"2\"></td> </tr> <tr align=\"left\" valign=\"top\" bgcolor=\"#FFFFFF\"> \n");
+		WriteExportFileLine(htmlFile, "<td height=\"20\" colspan=\"2\"><font color=\"#FF00CC\" size=\"2\" face=\"Arial, Helvetica, sans-serif\"><str"
 			"ong>%s</strong>\n", UnicodeToAscii(TheText.Get("CRIMRA")));
 
 		UnicodeStrcpy(gUString, CStats::FindCriminalRatingString());
 		char *statKey = UnicodeToAscii(gUString);
 		int rating = CStats::FindCriminalRatingNumber();
-		fprintf(htmlFile, "%s (%d)</font></td>  </tr>  <tr align=\"left\" valign=\"top\" bgcolor=\"#FFFFFF\"><td height=\"10\" colspan=\""
+		WriteExportFileLine(htmlFile, "%s (%d)</font></td>  </tr>  <tr align=\"left\" valign=\"top\" bgcolor=\"#FFFFFF\"><td height=\"10\" colspan=\""
 			"2\"></td>  </tr>\n", statKey, rating);
 
 		for (int k = 0; k < statLines; ++k) {
 			CStats::ConstructStatLine(k);
 			statKey = UnicodeToAscii(gUString);
 			if (statKey[0] != '\0')
-				fprintf(htmlFile, "</font></strong></div></td> </tr> <tr align=\"left\" valign=\"top\" bgcolor=\"#FFFFFF\">  <td height=\"10"
+				WriteExportFileLine(htmlFile, "</font></strong></div></td> </tr> <tr align=\"left\" valign=\"top\" bgcolor=\"#FFFFFF\">  <td height=\"10"
 					"\" colspan=\"2\"></td> </tr>\n");
 
-			fprintf(htmlFile, "<tr align=\"left\" valign=\"top\"><td width=\"500\" height=\"22\" bgcolor=\"#FFCCFF\"><font color=\"#FF00CC"
+			WriteExportFileLine(htmlFile, "<tr align=\"left\" valign=\"top\"><td width=\"500\" height=\"22\" bgcolor=\"#FFCCFF\"><font color=\"#FF00CC"
 				"\" size=\"2\" face=\"Arial, Helvetica, sans-serif\"><strong>\n");
 
 			if (statKey[0] != '\0')
-				fprintf(htmlFile, "%s", statKey);
+				WriteExportFileLine(htmlFile, "%s", statKey);
 			else
-				fprintf(htmlFile, " ");
+				WriteExportFileLine(htmlFile, " ");
 
-			fprintf(htmlFile, "</strong></font></td> <td width=\"500\" align=\"right\" valign=\"middle\" bgcolor=\"#FFCCFF\"> <div align=\""
+			WriteExportFileLine(htmlFile, "</strong></font></td> <td width=\"500\" align=\"right\" valign=\"middle\" bgcolor=\"#FFCCFF\"> <div align=\""
 				"right\"><strong><font color=\"#FF00CC\">\n");
 
 			char *statValue = UnicodeToAscii(gUString2);
@@ -3936,23 +4216,23 @@ CMenuManager::ExportStats()
 					statValue[l] = '\xBA'; // This is degree symbol, but my editors keeps messing up with it so I wrote hex representation
 			}
 			if (statValue)
-				fprintf(htmlFile, "%s", statValue);
+				WriteExportFileLine(htmlFile, "%s", statValue);
 			else
-				fprintf(htmlFile, " ");
+				WriteExportFileLine(htmlFile, " ");
 		}
-		fprintf(htmlFile, "</font></strong></div></td> </tr> <tr align=\"left\" valign=\"top\" bgcolor=\"#FFFFFF\">  <td height=\"10\" c"
+		WriteExportFileLine(htmlFile, "</font></strong></div></td> </tr> <tr align=\"left\" valign=\"top\" bgcolor=\"#FFFFFF\">  <td height=\"10\" c"
 			"olspan=\"2\"></td> </tr>\n");
-		fprintf(htmlFile, "</table><br><table width=\"560\" border=\"0\"  align=\"center\" cellspacing=\"0\" cellpadding=\"5\"><tr align"
+		WriteExportFileLine(htmlFile, "</table><br><table width=\"560\" border=\"0\"  align=\"center\" cellspacing=\"0\" cellpadding=\"5\"><tr align"
 			"=\"center\" valign=\"middle\" bgcolor=\"#FFCCFF\">");
-		fprintf(htmlFile, "<td><font color=\"#000000\" size=\"2\" face=\"Arial, Helvetica, sans-serif\"><a href=\"http://www.rockstargam"
+		WriteExportFileLine(htmlFile, "<td><font color=\"#000000\" size=\"2\" face=\"Arial, Helvetica, sans-serif\"><a href=\"http://www.rockstargam"
 			"es.com/vicecity\">rockstargames.com/vicecity</a></font></td>\n");
-		fprintf(htmlFile, "<td><font color=\"#000000\" size=\"2\" face=\"Arial, Helvetica, sans-serif\"><a href=\"http://www.rockstargam"
+		WriteExportFileLine(htmlFile, "<td><font color=\"#000000\" size=\"2\" face=\"Arial, Helvetica, sans-serif\"><a href=\"http://www.rockstargam"
 			"es.com\">rockstargames.com</a></font></td>\n");
-		fprintf(htmlFile, "<td><font color=\"#000000\" size=\"2\" face=\"Arial, Helvetica, sans-serif\">&nbsp;<a href=\"http://www.rocks"
+		WriteExportFileLine(htmlFile, "<td><font color=\"#000000\" size=\"2\" face=\"Arial, Helvetica, sans-serif\">&nbsp;<a href=\"http://www.rocks"
 			"tarnorth.com\">rockstarnorth.com</a></font></td></tr>\n");
-		fprintf(htmlFile, "</table>\n</body>\n");
+		WriteExportFileLine(htmlFile, "</table>\n</body>\n");
+		CFileMgr::CloseFile(htmlFile);
 	}
-	fclose(htmlFile);
 	CFileMgr::SetDir("");
 }
 
@@ -4577,6 +4857,9 @@ CMenuManager::UserInput(void)
 				curAction == MENUACTION_SFXVOLUME || curAction == MENUACTION_RADIO ||
 				curAction == MENUACTION_DRAWDIST || curAction == MENUACTION_MOUSESENS ||
 				curAction == MENUACTION_MP3VOLUMEBOOST
+#ifdef CHINESE_FONT
+				|| curAction == MENUACTION_LANG_CHI
+#endif
 #ifdef CUSTOM_FRONTEND_OPTIONS
 				|| curAction == MENUACTION_CFO_SLIDER
 #endif
@@ -4592,6 +4875,9 @@ CMenuManager::UserInput(void)
 				curAction == MENUACTION_SFXVOLUME || curAction == MENUACTION_RADIO ||
 				curAction == MENUACTION_DRAWDIST || curAction == MENUACTION_MOUSESENS ||
 				curAction == MENUACTION_MP3VOLUMEBOOST
+#ifdef CHINESE_FONT
+				|| curAction == MENUACTION_LANG_CHI
+#endif
 #ifdef CUSTOM_FRONTEND_OPTIONS
 				|| curAction == MENUACTION_CFO_SLIDER
 #endif
@@ -4625,6 +4911,16 @@ CMenuManager::UserInput(void)
 			changeValueBy = -1;
 		}
 	}
+#ifdef CHINESE_FONT
+	if (changeValueBy != 0 && curAction == MENUACTION_LANG_CHI) {
+		static uint32 lastChineseVariantSwitch = 0;
+		uint32 now = CTimer::GetTimeInMillisecondsPauseMode();
+		if (now - lastChineseVariantSwitch < kChineseVariantSwitchCooldownMs)
+			changeValueBy = 0;
+		else
+			lastChineseVariantSwitch = now;
+	}
+#endif
 	if (changeValueBy != 0) {
 		if ((m_nCurrScreen == MENUPAGE_SOUND_SETTINGS || m_nCurrScreen == MENUPAGE_DISPLAY_SETTINGS || m_nCurrScreen == MENUPAGE_CONTROLLER_PC || m_nCurrScreen == MENUPAGE_MOUSE_CONTROLS)
 			&& aScreens[m_nCurrScreen].m_aEntries[m_nCurrOption].m_Action != MENUACTION_NOTHING
@@ -5165,6 +5461,15 @@ CMenuManager::ProcessUserInput(uint8 goDown, uint8 goUp, uint8 optionSelected, u
 			case MENUACTION_RADIO:
 				ChangeRadioStation(changeAmount);
 				break;
+#ifdef CHINESE_FONT
+			case MENUACTION_LANG_CHI:
+				CycleChineseLanguageVariant(changeAmount);
+				if (m_PrefsLanguage == LANGUAGE_CHINESE) {
+					m_bFrontEnd_ReloadObrTxtGxt = true;
+					InitialiseChangedLanguageSettings();
+				}
+				break;
+#endif
 			case MENUACTION_RADARMODE:
 				m_PrefsRadarMode += changeAmount;
 				if (m_PrefsRadarMode < 0)

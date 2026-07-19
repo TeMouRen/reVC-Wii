@@ -50,7 +50,140 @@ float CVisibilityPlugins::ms_bigVehicleLod1Dist;
 float CVisibilityPlugins::ms_pedLod1Dist;
 float CVisibilityPlugins::ms_pedFadeDist;
 
+#ifdef WII
+static bool
+WiiMarkDarkMeshGeometryInspected(RpGeometry *geometry)
+{
+    static RpGeometry *inspected[4096];
+    static uint32 numInspected;
+
+    for(uint32 i = 0; i < numInspected; i++)
+        if(inspected[i] == geometry)
+            return false;
+    if(numInspected < ARRAY_SIZE(inspected))
+        inspected[numInspected++] = geometry;
+    return true;
+}
+
+static void
+WiiLogDarkPrelitMeshes(RpAtomic *atomic, CSimpleModelInfo *modelInfo)
+{
+    if(atomic == nil || modelInfo == nil)
+        return;
+
+    rw::Geometry *geometry = atomic->geometry;
+    if(geometry == nil || geometry->colors == nil ||
+       geometry->meshHeader == nil ||
+       (geometry->flags & rw::Geometry::PRELIT) == 0 ||
+       !WiiMarkDarkMeshGeometryInspected(geometry))
+        return;
+
+    rw::Mesh *meshes = geometry->meshHeader->getMeshes();
+    for(uint32 meshIndex = 0;
+        meshIndex < geometry->meshHeader->numMeshes;
+        meshIndex++){
+        rw::Mesh *mesh = &meshes[meshIndex];
+        if(mesh->indices == nil || mesh->numIndices == 0)
+            continue;
+
+        uint32 valid = 0;
+        uint32 dark = 0;
+        uint32 nearDark = 0;
+        uint32 redSum = 0;
+        uint32 greenSum = 0;
+        uint32 blueSum = 0;
+        uint8 redMin = 255, greenMin = 255, blueMin = 255;
+        uint8 redMax = 0, greenMax = 0, blueMax = 0;
+
+        for(uint32 i = 0; i < mesh->numIndices; i++){
+            uint16 vertexIndex = mesh->indices[i];
+            if(vertexIndex >= geometry->numVertices)
+                continue;
+
+            const rw::RGBA &color = geometry->colors[vertexIndex];
+            redSum += color.red;
+            greenSum += color.green;
+            blueSum += color.blue;
+            if(color.red < redMin) redMin = color.red;
+            if(color.green < greenMin) greenMin = color.green;
+            if(color.blue < blueMin) blueMin = color.blue;
+            if(color.red > redMax) redMax = color.red;
+            if(color.green > greenMax) greenMax = color.green;
+            if(color.blue > blueMax) blueMax = color.blue;
+            if(color.red <= 8 && color.green <= 8 && color.blue <= 8)
+                dark++;
+            if(color.red <= 24 && color.green <= 24 && color.blue <= 24)
+                nearDark++;
+            valid++;
+        }
+
+        if(valid == 0)
+            continue;
+
+        uint32 redAvg = redSum / valid;
+        uint32 greenAvg = greenSum / valid;
+        uint32 blueAvg = blueSum / valid;
+        bool mostlyNearDark = nearDark * 4 >= valid;
+        bool lowAverage = redAvg + greenAvg + blueAvg <= 72;
+        if(!mostlyNearDark && !lowAverage)
+            continue;
+
+        rw::Material *material = mesh->material;
+        const char *textureName = material && material->texture ?
+                                  material->texture->name : "none";
+        const float ambientRed = pAmbient ? pAmbient->color.red : -1.0f;
+        const float ambientGreen = pAmbient ? pAmbient->color.green : -1.0f;
+        const float ambientBlue = pAmbient ? pAmbient->color.blue : -1.0f;
+        printf("[GX-DARKMESH] model=%s geo=%p flags=0x%X mesh=%u tex=%s "
+               "idx=%u valid=%u dark=%u near=%u avg=%u,%u,%u "
+               "min=%u,%u,%u max=%u,%u,%u "
+               "mat=%u,%u,%u,%u surfA=%.3f surfD=%.3f "
+               "ambient=%.3f,%.3f,%.3f\n",
+               modelInfo->GetModelName(),
+               (void*)geometry,
+               (unsigned)geometry->flags,
+               (unsigned)meshIndex,
+               textureName ? textureName : "none",
+               (unsigned)mesh->numIndices,
+               (unsigned)valid,
+               (unsigned)dark,
+               (unsigned)nearDark,
+               (unsigned)redAvg,
+               (unsigned)greenAvg,
+               (unsigned)blueAvg,
+               (unsigned)redMin,
+               (unsigned)greenMin,
+               (unsigned)blueMin,
+               (unsigned)redMax,
+               (unsigned)greenMax,
+               (unsigned)blueMax,
+               material ? (unsigned)material->color.red : 255u,
+               material ? (unsigned)material->color.green : 255u,
+               material ? (unsigned)material->color.blue : 255u,
+               material ? (unsigned)material->color.alpha : 255u,
+               material ? (double)material->surfaceProps.ambient : 1.0,
+               material ? (double)material->surfaceProps.diffuse : 1.0,
+               (double)ambientRed,
+               (double)ambientGreen,
+               (double)ambientBlue);
+    }
+}
+
+static RpAtomic*
+WiiAtomicDefaultRenderCallBack(RpAtomic *atomic)
+{
+    CSimpleModelInfo *modelInfo = nil;
+    if(atomic != nil && atomic->clump == nil)
+        modelInfo = CVisibilityPlugins::GetAtomicModelInfo(atomic);
+
+    WiiLogDarkPrelitMeshes(atomic, modelInfo);
+    return AtomicDefaultRenderCallBack(atomic);
+}
+
+#define RENDERCALLBACK WiiAtomicDefaultRenderCallBack
+#else
 #define RENDERCALLBACK AtomicDefaultRenderCallBack
+#endif
 
 #ifdef WII
 static bool

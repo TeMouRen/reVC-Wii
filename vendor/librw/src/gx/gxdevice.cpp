@@ -1129,6 +1129,13 @@ im3DTransform(void *vertices, int32 numVertices, Matrix *world, uint32 flags)
     s_im3dVerts    = (Im3DVertex*)vertices;
     s_im3dNumVerts = numVertices;
 
+    // Effects rendered through Im2D leave GX in an orthographic camera state.
+    // Im3D is world-space geometry, so restore the complete 3D camera state
+    // before its vertices are transformed and depth-tested.
+    GX_SetViewport(0.0f, 0.0f, (f32)s_fbWidth, (f32)s_efbHeight, 0.0f, 1.0f);
+    GX_SetScissor(0, 0, s_fbWidth, s_efbHeight);
+    GX_LoadProjectionMtx(gxProjMtx, gxProjType);
+
     // Load world matrix
     if(world) {
         Mtx worldMtx;

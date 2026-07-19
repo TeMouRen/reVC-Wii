@@ -130,7 +130,7 @@ CMBlur::MotionBlurOpen(RwCamera *cam)
 			BlurOn = false;
 #endif
 		
-		if ( BlurOn )
+		if ( allocateHistoryBuffer )
 		{
 			ms_bScaledBlur = false;
 			rect.w = width;
@@ -156,6 +156,13 @@ CMBlur::MotionBlurOpen(RwCamera *cam)
 #ifndef LIBRW
 		_GetVideoMemInfo(&total, &avaible);
 		debug("Available video memory %d\n", avaible);
+#endif
+#ifdef WII
+		printf("[MBLUR-WII] MotionBlurOpen blurOn=%d alloc=%d front=%p size=%ux%u depth=%u\n",
+		       BlurOn ? 1 : 0,
+		       allocateHistoryBuffer ? 1 : 0,
+		       (void*)pFrontBuffer,
+		       rect.w, rect.h, depth);
 #endif
 		CreateImmediateModeData(cam, &rect);
 	}
@@ -372,6 +379,16 @@ CMBlur::MotionBlurRender(RwCamera *cam, uint32 red, uint32 green, uint32 blue, u
 	bool useFeedbackBlur = BlurOn;
 #ifdef WII
 	useFeedbackBlur = useFeedbackBlur || WiiUseMotionBlurHistory(type);
+	if(useFeedbackBlur && pFrontBuffer == nil){
+		static uint32 s_missingHistoryWarnCount = 0;
+		if(s_missingHistoryWarnCount < 8){
+			printf("[MBLUR-WII] skip blur type=%d blurOn=%d justInit=%d front=%p\n",
+			       type, BlurOn ? 1 : 0, ms_bJustInitialised ? 1 : 0, (void*)pFrontBuffer);
+			s_missingHistoryWarnCount++;
+		}
+		POP_RENDERGROUP();
+		return;
+	}
 #endif
 #ifdef GTA_PS2
 	if( pFrontBuffer )

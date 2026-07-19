@@ -79,6 +79,15 @@ shouldLogFocusedRasterConvert(const char *name)
 	       strcmp(name, "fuzzyplant256") == 0 ||
 	       strcmp(name, "newtreeleaves128") == 0 ||
 	       strcmp(name, "newtreeleavesb128") == 0 ||
+	       strncmp(name, "htl_", 4) == 0 ||
+	       strncmp(name, "ht_", 3) == 0 ||
+	       strncmp(name, "hot_", 4) == 0 ||
+	       strncmp(name, "mob_", 4) == 0 ||
+	       strncmp(name, "nt_wall", 7) == 0 ||
+	       strncmp(name, "nt_floor", 8) == 0 ||
+	       strncmp(name, "nt_woodwall", 11) == 0 ||
+	       rasNameContainsNoCase(name, "hotel") ||
+	       rasNameContainsNoCase(name, "lobby") ||
 	       rasNameContainsNoCase(name, "tree") ||
 	       rasNameContainsNoCase(name, "plant") ||
 	       rasNameContainsNoCase(name, "leaf") ||

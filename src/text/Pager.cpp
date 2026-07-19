@@ -52,8 +52,8 @@ CPager::Process()
 void
 CPager::Display()
 {
-	wchar outstr1[256];
-	wchar outstr2[260];
+	wchar outstr1[512];
+	wchar outstr2[512];
 
 	wchar *pText = m_messages[0].m_pText;
 	uint16 i = 0;

@@ -857,6 +857,7 @@ CMenuManager::InitialiseChangedLanguageSettings(void)
 	if ( bFrontEnd_ReloadObrTxtGxt )
 	{
 		bFrontEnd_ReloadObrTxtGxt = false;
+		CMessages::ClearAllMessagesDisplayedByGame();
 
 		CTimer::Stop();
 		TheText.Unload();
@@ -1088,7 +1089,7 @@ CMenuManager::InitialiseMenuContents(void)
 		MenuBriefs_1.m_numTexts = 0;
 		MenuBriefs_1.AddText(TheText.Get("FEB_PMB"), 0.0f, 0.0f, TITLE_TEXT_COLOR, 0); // Previous Mission Briefs:
 
-		static wchar StringsToDisplay[NUMPREVIOUSBRIEFS][256];
+		static wchar StringsToDisplay[NUMPREVIOUSBRIEFS][512];
 
 		CRGBA newColor;
 		int32 brierY = 36;

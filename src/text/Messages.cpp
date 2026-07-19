@@ -15,6 +15,7 @@ tMessage CMessages::BriefMessages[NUMBRIEFMESSAGES];
 tPreviousBrief CMessages::PreviousBriefs[NUMPREVIOUSBRIEFS];
 tBigMessage CMessages::BIGMessages[NUMBIGMESSAGES];
 char CMessages::PreviousMissionTitle[16]; // unused
+static const uint16 kMessageWorkBufferLength = 512;
 
 void
 CMessages::Init()
@@ -30,6 +31,8 @@ CMessages::Init()
 uint16
 CMessages::GetWideStringLength(wchar *src)
 {
+	if (!src)
+		return 0;
 	uint16 length = 0;
 	while (*(src++)) length++;
 	return length;
@@ -38,6 +41,9 @@ CMessages::GetWideStringLength(wchar *src)
 void
 CMessages::WideStringCopy(wchar *dst, wchar *src, uint16 size)
 {
+	if (!dst || size == 0)
+		return;
+
 	int32 i = 0;
 	if (src) {
 		while (i < size - 1) {
@@ -119,7 +125,7 @@ CMessages::Process()
 void
 CMessages::Display()
 {
-	wchar outstr[256];
+	wchar outstr[kMessageWorkBufferLength];
 
 	DefinedState();
 
@@ -155,8 +161,8 @@ CMessages::Display()
 void
 CMessages::AddMessage(wchar *msg, uint32 time, uint16 flag)
 {
-	wchar outstr[512]; // unused
-	WideStringCopy(outstr, msg, 256);
+	wchar outstr[kMessageWorkBufferLength]; // validation scratch buffer
+	WideStringCopy(outstr, msg, ARRAY_SIZE(outstr));
 	InsertPlayerControlKeysInString(outstr);
 	GetWideStringLength(outstr);
 
@@ -191,8 +197,8 @@ CMessages::AddMessage(wchar *msg, uint32 time, uint16 flag)
 void
 CMessages::AddMessageJumpQ(wchar *msg, uint32 time, uint16 flag)
 {
-	wchar outstr[512]; // unused
-	WideStringCopy(outstr, msg, 256);
+	wchar outstr[kMessageWorkBufferLength]; // validation scratch buffer
+	WideStringCopy(outstr, msg, ARRAY_SIZE(outstr));
 	InsertPlayerControlKeysInString(outstr);
 	GetWideStringLength(outstr);
 
@@ -213,8 +219,8 @@ CMessages::AddMessageJumpQ(wchar *msg, uint32 time, uint16 flag)
 void
 CMessages::AddMessageSoon(wchar *msg, uint32 time, uint16 flag)
 {
-	wchar outstr[512]; // unused
-	WideStringCopy(outstr, msg, 256);
+	wchar outstr[kMessageWorkBufferLength]; // validation scratch buffer
+	WideStringCopy(outstr, msg, ARRAY_SIZE(outstr));
 	InsertPlayerControlKeysInString(outstr);
 	GetWideStringLength(outstr);
 
@@ -273,8 +279,8 @@ CMessages::ClearSmallMessagesOnly()
 void
 CMessages::AddBigMessage(wchar *msg, uint32 time, uint16 style)
 {
-	wchar outstr[512]; // unused
-	WideStringCopy(outstr, msg, 256);
+	wchar outstr[kMessageWorkBufferLength]; // validation scratch buffer
+	WideStringCopy(outstr, msg, ARRAY_SIZE(outstr));
 	InsertPlayerControlKeysInString(outstr);
 	GetWideStringLength(outstr);
 
@@ -294,8 +300,8 @@ CMessages::AddBigMessage(wchar *msg, uint32 time, uint16 style)
 void
 CMessages::AddBigMessageQ(wchar *msg, uint32 time, uint16 style)
 {
-	wchar outstr[512]; // unused
-	WideStringCopy(outstr, msg, 256);
+	wchar outstr[kMessageWorkBufferLength]; // validation scratch buffer
+	WideStringCopy(outstr, msg, ARRAY_SIZE(outstr));
 	InsertPlayerControlKeysInString(outstr);
 	GetWideStringLength(outstr);
 
@@ -378,10 +384,11 @@ CMessages::InsertNumberInString(wchar *str, int32 n1, int32 n2, int32 n3, int32 
 
 	for (int32 c = 0; c < size;) {
 #ifdef MORE_LANGUAGES
-		if ((CFont::IsJapanese() && str[c] == (0x8000 | '~') && str[c + 1] == (0x8000 | '1') && str[c + 2] == (0x8000 | '~')) ||
-			(!CFont::IsJapanese() && str[c] == '~' && str[c + 1] == '1' && str[c + 2] == '~')) {
+		if (c + 2 < size &&
+			((CFont::IsJapanese() && str[c] == (0x8000 | '~') && str[c + 1] == (0x8000 | '1') && str[c + 2] == (0x8000 | '~')) ||
+			(!CFont::IsJapanese() && str[c] == '~' && str[c + 1] == '1' && str[c + 2] == '~'))) {
 #else
-		if (str[c] == '~' && str[c + 1] == '1' && str[c + 2] == '~') {
+		if (c + 2 < size && str[c] == '~' && str[c + 1] == '1' && str[c + 2] == '~') {
 #endif
 			c += 3;
 			for (int j = 0; j < outLen; )
@@ -407,7 +414,8 @@ CMessages::InsertNumberInString(wchar *str, int32 n1, int32 n2, int32 n3, int32 
 void
 CMessages::InsertStringInString(wchar *str1, wchar *str2)
 {
-	wchar tempstr[256];
+	wchar tempstr[kMessageWorkBufferLength];
+	const uint16 maxLen = ARRAY_SIZE(tempstr) - 1;
 
 	if (!str1 || !str2) return;
 
@@ -417,15 +425,18 @@ CMessages::InsertStringInString(wchar *str1, wchar *str2)
 	
 	wchar *_str1 = str1;
 	uint16 i;
-	for (i = 0; i < total_size; ) {
+	for (i = 0; i < total_size && i < maxLen; ) {
+		int32 remainingStr1 = str1_size - (_str1 - str1);
 #ifdef MORE_LANGUAGES
-		if ((CFont::IsJapanese() && *_str1 == (0x8000 | '~') && *(_str1 + 1) == (0x8000 | 'a') && *(_str1 + 2) == (0x8000 | '~'))
-			|| (*_str1 == '~' && *(_str1 + 1) == 'a' && *(_str1 + 2) == '~')) {
+		if (remainingStr1 >= 3 &&
+			((CFont::IsJapanese() && *_str1 == (0x8000 | '~') && *(_str1 + 1) == (0x8000 | 'a') && *(_str1 + 2) == (0x8000 | '~'))
+			|| (*_str1 == '~' && *(_str1 + 1) == 'a' && *(_str1 + 2) == '~'))) {
 #else
-		if (*_str1 == '~' && *(_str1 + 1) == 'a' && *(_str1 + 2) == '~') {
+		if (remainingStr1 >= 3 &&
+			*_str1 == '~' && *(_str1 + 1) == 'a' && *(_str1 + 2) == '~') {
 #endif
 			_str1 += 3;
-			for (int j = 0; j < str2_size; j++) {
+			for (int j = 0; j < str2_size && i < maxLen; j++) {
 				tempstr[i++] = str2[j];
 			}
 		} else {
@@ -434,10 +445,11 @@ CMessages::InsertStringInString(wchar *str1, wchar *str2)
 	}
 	tempstr[i] = '\0';
 
-	for (i = 0; i < total_size; i++)
+	for (i = 0; i < maxLen && tempstr[i] != '\0'; i++)
 		str1[i] = tempstr[i];
+	str1[i] = '\0';
 
-	while (i < 256)
+	while (i < kMessageWorkBufferLength)
 		str1[i++] = '\0';
 }
 
@@ -446,36 +458,82 @@ CMessages::InsertPlayerControlKeysInString(wchar *str)
 {
 #ifdef GTA_PC_CONTROLS
 	uint16 i;
-	wchar outstr[256];
-	wchar keybuf[256];
+	wchar outstr[kMessageWorkBufferLength];
+	wchar keybuf[kMessageWorkBufferLength];
+	const uint16 maxLen = ARRAY_SIZE(outstr) - 1;
 
 	if (!str) return;
 	uint16 strSize = GetWideStringLength(str);
-	memset(keybuf, 0, 256*sizeof(wchar));
+	memset(keybuf, 0, sizeof(keybuf));
 
 	wchar *_outstr = outstr;
-	for (i = 0; i < strSize;) {
+	for (i = 0; i < strSize && (uint16)(_outstr - outstr) < maxLen;) {
+		bool isControlToken = false;
 #ifdef MORE_LANGUAGES
-		if ((CFont::IsJapanese() && str[i] == (0x8000 | '~') && str[i + 1] == (0x8000 | 'k') && str[i + 2] == (0x8000 | '~')) ||
-			(!CFont::IsJapanese() && str[i] == '~' && str[i + 1] == 'k' && str[i + 2] == '~')) {
+		if (i + 2 < strSize &&
+			((CFont::IsJapanese() && str[i] == (0x8000 | '~') && str[i + 1] == (0x8000 | 'k') && str[i + 2] == (0x8000 | '~')) ||
+			(!CFont::IsJapanese() && str[i] == '~' && str[i + 1] == 'k' && str[i + 2] == '~'))) {
+			isControlToken = true;
+		}
 #else
-		if (str[i] == '~' && str[i + 1] == 'k' && str[i + 2] == '~') {
+		if (i + 2 < strSize && str[i] == '~' && str[i + 1] == 'k' && str[i + 2] == '~') {
+			isControlToken = true;
+		}
 #endif
-			i += 4;
+		if (isControlToken) {
+			uint16 tokenStart = i;
+			i += 3;
+#ifdef MORE_LANGUAGES
+			if (CFont::IsJapanese()) {
+				if (i < strSize && str[i] == (0x8000 | '~'))
+					i++;
+			} else
+#endif
+			if (i < strSize && str[i] == '~') {
+				i++;
+			}
+			uint16 actionStart = i;
 			bool done = false;
 			for (int32 cont = 0; cont < MAX_CONTROLLERACTIONS && !done; cont++) {
 				uint16 contSize = GetWideStringLength(ControlsManager.m_aActionNames[cont]);
 				if (contSize != 0) {
 					if (WideStringCompare(&str[i], ControlsManager.m_aActionNames[cont], contSize)) {
 						done = true;
-						ControlsManager.GetWideStringOfCommandKeys(cont, keybuf, 256);
+						ControlsManager.GetWideStringOfCommandKeys(cont, keybuf, ARRAY_SIZE(keybuf));
 						uint16 keybuf_size = GetWideStringLength(keybuf);
-						for (uint16 j = 0; j < keybuf_size; j++) {
+						for (uint16 j = 0; j < keybuf_size && (uint16)(_outstr - outstr) < maxLen; j++) {
 							*(_outstr++) = keybuf[j];
 							keybuf[j] = '\0';
 						}
-						i += contSize + 1;
+						i += contSize;
+#ifdef MORE_LANGUAGES
+						if (CFont::IsJapanese()) {
+							if (i < strSize && str[i] == (0x8000 | '~'))
+								i++;
+						} else
+#endif
+						if (i < strSize && str[i] == '~') {
+							i++;
+						}
 					}
+				}
+			}
+			if (!done) {
+				// Preserve unresolved or truncated control tokens verbatim instead of
+				// leaving the parser in an inconsistent state on long localized strings.
+				for (uint16 raw = tokenStart; raw < strSize && (uint16)(_outstr - outstr) < maxLen; raw++) {
+					*(_outstr++) = str[raw];
+#ifdef MORE_LANGUAGES
+					bool tokenClosed = CFont::IsJapanese() ? str[raw] == (0x8000 | '~') : str[raw] == '~';
+#else
+					bool tokenClosed = str[raw] == '~';
+#endif
+					if (raw >= actionStart && tokenClosed) {
+						raw++;
+						i = raw;
+						break;
+					}
+					i = raw + 1;
 				}
 			}
 		} else {
@@ -484,10 +542,11 @@ CMessages::InsertPlayerControlKeysInString(wchar *str)
 	}
 	*_outstr = '\0';
 
-	for (i = 0; i < GetWideStringLength(outstr); i++)
+	for (i = 0; i < maxLen && outstr[i] != '\0'; i++)
 		str[i] = outstr[i];
+	str[i] = '\0';
 
-	while (i < 256)
+	while (i < kMessageWorkBufferLength)
 		str[i++] = '\0';
 #endif
 }
@@ -495,7 +554,7 @@ CMessages::InsertPlayerControlKeysInString(wchar *str)
 void
 CMessages::AddMessageWithNumber(wchar *str, uint32 time, uint16 flag, int32 n1, int32 n2, int32 n3, int32 n4, int32 n5, int32 n6)
 {
-	wchar outstr[512]; // unused
+	wchar outstr[kMessageWorkBufferLength]; // validation scratch buffer
 	InsertNumberInString(str, n1, n2, n3, n4, n5, n6, outstr);
 	InsertPlayerControlKeysInString(outstr);
 	GetWideStringLength(outstr);
@@ -532,7 +591,7 @@ CMessages::AddMessageWithNumber(wchar *str, uint32 time, uint16 flag, int32 n1, 
 void 
 CMessages::AddMessageJumpQWithNumber(wchar *str, uint32 time, uint16 flag, int32 n1, int32 n2, int32 n3, int32 n4, int32 n5, int32 n6)
 {
-	wchar outstr[512]; // unused
+	wchar outstr[kMessageWorkBufferLength]; // validation scratch buffer
 	InsertNumberInString(str, n1, n2, n3, n4, n5, n6, outstr);
 	InsertPlayerControlKeysInString(outstr);
 	GetWideStringLength(outstr);
@@ -554,7 +613,7 @@ CMessages::AddMessageJumpQWithNumber(wchar *str, uint32 time, uint16 flag, int32
 void
 CMessages::AddMessageSoonWithNumber(wchar *str, uint32 time, uint16 flag, int32 n1, int32 n2, int32 n3, int32 n4, int32 n5, int32 n6)
 {
-	wchar outstr[512]; // unused
+	wchar outstr[kMessageWorkBufferLength]; // validation scratch buffer
 	InsertNumberInString(str, n1, n2, n3, n4, n5, n6, outstr);
 	InsertPlayerControlKeysInString(outstr);
 	GetWideStringLength(outstr);
@@ -593,7 +652,7 @@ CMessages::AddMessageSoonWithNumber(wchar *str, uint32 time, uint16 flag, int32 
 void
 CMessages::AddBigMessageWithNumber(wchar *str, uint32 time, uint16 style, int32 n1, int32 n2, int32 n3, int32 n4, int32 n5, int32 n6)
 {
-	wchar outstr[512]; // unused
+	wchar outstr[kMessageWorkBufferLength]; // validation scratch buffer
 	InsertNumberInString(str, n1, n2, n3, n4, n5, n6, outstr);
 	InsertPlayerControlKeysInString(outstr);
 	GetWideStringLength(outstr);
@@ -614,7 +673,7 @@ CMessages::AddBigMessageWithNumber(wchar *str, uint32 time, uint16 style, int32 
 void
 CMessages::AddBigMessageWithNumberQ(wchar *str, uint32 time, uint16 style, int32 n1, int32 n2, int32 n3, int32 n4, int32 n5, int32 n6)
 {
-	wchar outstr[512]; // unused
+	wchar outstr[kMessageWorkBufferLength]; // validation scratch buffer
 	InsertNumberInString(str, n1, n2, n3, n4, n5, n6, outstr);
 	InsertPlayerControlKeysInString(outstr);
 	GetWideStringLength(outstr);
@@ -642,8 +701,8 @@ CMessages::AddBigMessageWithNumberQ(wchar *str, uint32 time, uint16 style, int32
 void
 CMessages::AddMessageWithString(wchar *text, uint32 time, uint16 flag, wchar *str)
 {
-	wchar outstr[512]; // unused
-	WideStringCopy(outstr, text, 256);
+	wchar outstr[kMessageWorkBufferLength]; // validation scratch buffer
+	WideStringCopy(outstr, text, ARRAY_SIZE(outstr));
 	InsertStringInString(outstr, str);
 	InsertPlayerControlKeysInString(outstr);
 	GetWideStringLength(outstr);
@@ -680,8 +739,8 @@ CMessages::AddMessageWithString(wchar *text, uint32 time, uint16 flag, wchar *st
 void
 CMessages::AddMessageJumpQWithString(wchar *text, uint32 time, uint16 flag, wchar *str)
 {
-	wchar outstr[512]; // unused
-	WideStringCopy(outstr, text, 256);
+	wchar outstr[kMessageWorkBufferLength]; // validation scratch buffer
+	WideStringCopy(outstr, text, ARRAY_SIZE(outstr));
 	InsertStringInString(outstr, str);
 	InsertPlayerControlKeysInString(outstr);
 	GetWideStringLength(outstr);
