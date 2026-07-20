@@ -39,6 +39,7 @@ static const uint32 GC_DMA_BUFFER_SIZE = 8192;
 static const uint32 GC_DMA_BUFFER_FRAMES = GC_DMA_BUFFER_SIZE / (sizeof(int16) * 2);
 static const uint32 GC_DMA_BUFFER_COUNT = 3;
 static const uint32 GC_SOURCE_BUFFER_FRAMES = 4096;
+static const uint32 GC_IDSP_READ_CACHE_SIZE = 64 * 1024;
 
 static const uint32 GC_ADPCM_FRAME_SIZE = 8;
 static const uint32 GC_ADPCM_SAMPLES_PER_FRAME = 14;
@@ -73,6 +74,7 @@ struct tGcSampleChannel
 	bool8 effectFlag;
 	bool8 reverbFlag;
 	bool8 is2D;
+	uint8 requestedVolume;
 	uint8 volume;
 	uint8 pan;
 	uint32 frequency;
@@ -100,6 +102,8 @@ static uint8 *gPedSlotSfxAddr[MAX_PEDSFX];
 static uint8 gCurrentPedSlot = 0;
 static tGcSampleChannel gSampleChannels[MAXCHANNELS + MAX2DCHANNELS];
 static uint32 gSampleDataEndOffset = 0;
+
+static uint32 ReadLE32(FILE *file);
 
 class CGcStreamDecoder
 {
@@ -249,6 +253,7 @@ static void ResetSampleChannel(tGcSampleChannel &channel)
 	channel.effectFlag = FALSE;
 	channel.reverbFlag = FALSE;
 	channel.is2D = FALSE;
+	channel.requestedVolume = MAX_VOLUME;
 	channel.volume = MAX_VOLUME;
 	channel.pan = 63;
 	channel.frequency = DIGITALRATE;
@@ -370,11 +375,23 @@ static bool8 InitialiseSampleTable(tSample *samples)
 		return FALSE;
 
 	size_t expected = sizeof(tSample) * TOTAL_AUDIO_SAMPLES;
+#if defined(RW_BIG_ENDIAN) && !defined(GTA_PS2)
+	for (uint32 i = 0; i < TOTAL_AUDIO_SAMPLES; i++) {
+		samples[i].nOffset = ReadLE32(gSampleDescFile);
+		samples[i].nSize = ReadLE32(gSampleDescFile);
+		samples[i].nFrequency = ReadLE32(gSampleDescFile);
+		samples[i].nLoopStart = ReadLE32(gSampleDescFile);
+		samples[i].nLoopEnd = int32(ReadLE32(gSampleDescFile));
+		if (ferror(gSampleDescFile) || feof(gSampleDescFile))
+			return FALSE;
+	}
+#else
 	size_t got = fread(samples, 1, expected, gSampleDescFile);
 	if (got != expected) {
 		printf("[GC-AUDIO] ERROR: sample table short read (%u/%u bytes)\n", (uint32)got, (uint32)expected);
 		return FALSE;
 	}
+#endif
 
 	fclose(gSampleDescFile);
 	gSampleDescFile = NULL;
@@ -452,6 +469,13 @@ static inline uint8 ClampPan127(uint32 value)
 	return uint8(Min(value, (uint32)127));
 }
 
+static void UpdateSampleChannelVolume(tGcSampleChannel &channel, uint8 effectsVolume, uint8 effectsFadeVolume)
+{
+	uint32 volume = uint32(effectsFadeVolume) * channel.requestedVolume * effectsVolume >> 14;
+	channel.volume = ClampVolume127(volume);
+	channel.emittingVolume = float(channel.volume);
+}
+
 static bool8 ResolveSampleAddress(const tSample *samples, uint32 nSfx, uint8 nBank, const int16 *&sampleData, uint32 &sampleCount)
 {
 	sampleData = NULL;
@@ -505,41 +529,48 @@ static bool RenderNextSampleChannelFrame(tGcSampleChannel &channel, int16 &outL,
 	if (!channel.active || channel.paused || channel.sampleData == NULL || channel.sampleCount == 0 || channel.stepQ16 == 0)
 		return false;
 
+	const bool looping = channel.loopCount == 0 || channel.loopCount > 1;
+	uint32 loopStart = BytesToSampleIndex(channel.loopStartBytes);
+	if (loopStart >= channel.sampleCount)
+		loopStart = 0;
+
+	uint32 loopEnd = channel.sampleCount;
+	int32 loopEndSample = BytesToLoopEndSampleIndex(channel.loopEndBytes);
+	if (loopEndSample > int32(loopStart) && uint32(loopEndSample) <= channel.sampleCount)
+		loopEnd = uint32(loopEndSample);
+
 	uint32 sampleIndex = channel.cursorQ16 >> 16;
-	if (sampleIndex >= channel.sampleCount) {
-		if (channel.loopCount == 0 || channel.loopCount > 1) {
-			uint32 loopStart = BytesToSampleIndex(channel.loopStartBytes);
-			if (loopStart >= channel.sampleCount)
-				loopStart = 0;
-			if (channel.loopCount > 1)
-				channel.loopCount--;
-			channel.cursorQ16 = loopStart << 16;
-			sampleIndex = loopStart;
-		} else {
+	if (sampleIndex >= channel.sampleCount || (looping && sampleIndex >= loopEnd)) {
+		if (!looping) {
 			channel.active = FALSE;
 			return false;
 		}
+		if (channel.loopCount > 1)
+			channel.loopCount--;
+		channel.cursorQ16 = loopStart << 16;
+		sampleIndex = loopStart;
 	}
 
-	int16 mono = channel.sampleData[sampleIndex];
+	uint32 fractional = channel.cursorQ16 & 0xffff;
+	uint32 nextIndex = sampleIndex + 1;
+	if (looping && nextIndex >= loopEnd)
+		nextIndex = loopStart;
+	if (nextIndex >= channel.sampleCount)
+		nextIndex = sampleIndex;
+
+	int32 currentSample = channel.sampleData[sampleIndex];
+	int32 nextSample = channel.sampleData[nextIndex];
+	int32 interpolated = currentSample + int32((int64(nextSample - currentSample) * fractional) >> 16);
+	int16 mono = int16(interpolated);
 	outL = mono;
 	outR = mono;
 
 	channel.cursorQ16 += channel.stepQ16;
 
-	if (channel.loopCount == 0 || channel.loopCount > 1) {
-		int32 loopEnd = BytesToLoopEndSampleIndex(channel.loopEndBytes);
-		if (loopEnd >= 0 && uint32(loopEnd) < channel.sampleCount) {
-			uint32 currentIndex = channel.cursorQ16 >> 16;
-			if (currentIndex >= uint32(loopEnd)) {
-				uint32 loopStart = BytesToSampleIndex(channel.loopStartBytes);
-				if (loopStart >= channel.sampleCount)
-					loopStart = 0;
-				if (channel.loopCount > 1)
-					channel.loopCount--;
-				channel.cursorQ16 = loopStart << 16;
-			}
-		}
+	if (looping && (channel.cursorQ16 >> 16) >= loopEnd) {
+		if (channel.loopCount > 1)
+			channel.loopCount--;
+		channel.cursorQ16 = loopStart << 16;
 	}
 
 	return true;
@@ -751,6 +782,14 @@ static uint16 ReadBE16(FILE *file)
 	return uint16((bytes[0] << 8) | bytes[1]);
 }
 
+static uint32 ReadLE32(FILE *file)
+{
+	uint8 bytes[4];
+	if (fread(bytes, 1, sizeof(bytes), file) != sizeof(bytes))
+		return 0;
+	return (uint32(bytes[3]) << 24) | (uint32(bytes[2]) << 16) | (uint32(bytes[1]) << 8) | uint32(bytes[0]);
+}
+
 static uint32 ReadBE32(FILE *file)
 {
 	uint8 bytes[4];
@@ -850,11 +889,16 @@ class CIdspStreamDecoder : public CGcStreamDecoder
 	uint32 m_AudioDataSize;
 	uint32 m_BlockCount;
 	uint32 m_BlockSamples;
+	uint32 m_CombinedBlockSize;
 
 	int16 m_Coefs[2][16];
 	tAdpcmHist m_InitialHist[2];
 	tAdpcmHist m_CurrentHist[2];
 	uint8 *m_pBlockData[2];
+	uint8 *m_pReadCache;
+	uint32 m_ReadCacheFirstBlock;
+	uint32 m_ReadCacheBlockCount;
+	uint32 m_ReadCacheCapacityBlocks;
 
 	uint32 m_CurrentSample;
 	uint32 m_CurrentBlock;
@@ -865,18 +909,38 @@ class CIdspStreamDecoder : public CGcStreamDecoder
 	uint32 m_PendingCount;
 	uint32 m_PendingPos;
 
+	bool FillReadCache(uint32 blockIndex)
+	{
+		if (m_pReadCache == NULL || m_ReadCacheCapacityBlocks == 0 || blockIndex >= m_BlockCount)
+			return false;
+
+		uint32 blocksToRead = Min(m_ReadCacheCapacityBlocks, m_BlockCount - blockIndex);
+		uint32 bytesToRead = blocksToRead * m_CombinedBlockSize;
+		uint64 offset = uint64(m_AudioDataOffset) + uint64(blockIndex) * m_CombinedBlockSize;
+		uint64 dataEnd = uint64(m_AudioDataOffset) + uint64(m_AudioDataSize) * m_ChannelCount;
+		if (offset + bytesToRead > dataEnd || fseek(m_pFile, long(offset), SEEK_SET) != 0)
+			return false;
+		if (fread(m_pReadCache, 1, bytesToRead, m_pFile) != bytesToRead)
+			return false;
+
+		m_ReadCacheFirstBlock = blockIndex;
+		m_ReadCacheBlockCount = blocksToRead;
+		return true;
+	}
+
 	bool ReadBlock(uint32 blockIndex)
 	{
 		if (m_ChannelCount == 0 || blockIndex >= m_BlockCount)
 			return false;
 
-		for (uint32 ch = 0; ch < m_ChannelCount && ch < 2; ch++) {
-			uint32 offset = m_AudioDataOffset + blockIndex * m_InterleaveSize * m_ChannelCount + ch * m_InterleaveSize;
-			if (fseek(m_pFile, long(offset), SEEK_SET) != 0)
-				return false;
-			if (fread(m_pBlockData[ch], 1, m_InterleaveSize, m_pFile) != m_InterleaveSize)
-				return false;
-		}
+		bool cached = blockIndex >= m_ReadCacheFirstBlock &&
+		              blockIndex - m_ReadCacheFirstBlock < m_ReadCacheBlockCount;
+		if (!cached && !FillReadCache(blockIndex))
+			return false;
+
+		uint32 cacheOffset = (blockIndex - m_ReadCacheFirstBlock) * m_CombinedBlockSize;
+		for (uint32 ch = 0; ch < m_ChannelCount && ch < 2; ch++)
+			memcpy(m_pBlockData[ch], m_pReadCache + cacheOffset + ch * m_InterleaveSize, m_InterleaveSize);
 
 		m_bBlockRead = true;
 		return true;
@@ -901,6 +965,11 @@ public:
 		  m_AudioDataSize(0),
 		  m_BlockCount(0),
 		  m_BlockSamples(0),
+		  m_CombinedBlockSize(0),
+		  m_pReadCache(NULL),
+		  m_ReadCacheFirstBlock(0),
+		  m_ReadCacheBlockCount(0),
+		  m_ReadCacheCapacityBlocks(0),
 		  m_CurrentSample(0),
 		  m_CurrentBlock(0),
 		  m_CurrentFrameInBlock(0),
@@ -935,13 +1004,22 @@ public:
 		m_HeaderSize = ReadBE32(m_pFile);
 		m_AudioDataSize = ReadBE32(m_pFile);
 
-		if (m_ChannelCount == 0 || m_ChannelCount > 2 || m_SampleRate == 0 || m_SampleCount == 0 || m_InterleaveSize == 0)
+		if (m_ChannelCount == 0 || m_ChannelCount > 2 || m_SampleRate == 0 || m_SampleCount == 0 || m_InterleaveSize == 0 ||
+		    m_InterleaveSize > UINT32_MAX / m_ChannelCount)
 			return;
 
 		m_AudioDataOffset = m_HeaderSize;
-		m_BlockCount = m_AudioDataSize / (m_InterleaveSize * m_ChannelCount);
+		m_BlockCount = m_AudioDataSize / m_InterleaveSize;
 		m_BlockSamples = GcByteCountToSampleCount(m_InterleaveSize);
+		m_CombinedBlockSize = m_InterleaveSize * m_ChannelCount;
 		if (m_BlockCount == 0 || m_BlockSamples == 0)
+			return;
+
+		uint32 cacheSize = Max(GC_IDSP_READ_CACHE_SIZE, m_CombinedBlockSize);
+		m_ReadCacheCapacityBlocks = cacheSize / m_CombinedBlockSize;
+		cacheSize = m_ReadCacheCapacityBlocks * m_CombinedBlockSize;
+		m_pReadCache = (uint8*)memalign(32, cacheSize);
+		if (m_pReadCache == NULL)
 			return;
 
 		for (uint32 ch = 0; ch < m_ChannelCount; ch++) {
@@ -977,6 +1055,7 @@ public:
 	{
 		if (m_pFile)
 			fclose(m_pFile);
+		free(m_pReadCache);
 		for (uint32 ch = 0; ch < 2; ch++)
 			delete[] m_pBlockData[ch];
 	}
@@ -1005,7 +1084,7 @@ public:
 		if (targetSample >= m_SampleCount)
 			targetSample = 0;
 
-		const uint32 warmupBlocks = 2;
+		uint32 warmupBlocks = (m_SampleRate + m_BlockSamples - 1) / m_BlockSamples;
 		uint32 targetBlock = targetSample / m_BlockSamples;
 		uint32 decodeStartBlock = targetBlock > warmupBlocks ? targetBlock - warmupBlocks : 0;
 
@@ -1145,7 +1224,6 @@ public:
 		fseek(m_pFile, 0, SEEK_SET);
 		if (fileSize <= 0)
 			return;
-
 		m_BlockCount = uint32(fileSize) / (m_ChannelCount * VB_BLOCK_SIZE);
 		if (m_BlockCount == 0)
 			return;
@@ -1293,9 +1371,45 @@ static volatile uint32 gDmaBufferStates[GC_DMA_BUFFER_COUNT];
 static uint32 gDmaBufferSlotFrames[GC_DMA_BUFFER_COUNT][MAX_STREAMS];
 static volatile int32 gCurrentDmaBuffer = -1;
 static bool8 gDmaActive = FALSE;
+static volatile uint8 gDmaReadyQueue[GC_DMA_BUFFER_COUNT];
+static volatile uint8 gDmaReadyHead = 0;
+static volatile uint8 gDmaReadyTail = 0;
+static volatile uint8 gDmaReadyCount = 0;
 static int16 gDmaBuffers[GC_DMA_BUFFER_COUNT][GC_DMA_BUFFER_FRAMES * 2] ATTRIBUTE_ALIGN(32);
 static int16 gSilenceBuffer[GC_DMA_BUFFER_FRAMES * 2] ATTRIBUTE_ALIGN(32);
 static int32 gMixBuffer[GC_DMA_BUFFER_FRAMES * 2];
+
+static void ResetDmaReadyQueue()
+{
+	gDmaReadyHead = 0;
+	gDmaReadyTail = 0;
+	gDmaReadyCount = 0;
+}
+
+/* Call with audio interrupts disabled. */
+static bool PushDmaReadyBuffer(uint32 bufferIndex)
+{
+	if (bufferIndex >= GC_DMA_BUFFER_COUNT || gDmaReadyCount >= GC_DMA_BUFFER_COUNT)
+		return false;
+
+	gDmaReadyQueue[gDmaReadyTail] = uint8(bufferIndex);
+	gDmaReadyTail = (gDmaReadyTail + 1) % GC_DMA_BUFFER_COUNT;
+	gDmaReadyCount++;
+	return true;
+}
+
+/* Call with audio interrupts disabled. */
+static int32 PopDmaReadyBuffer()
+{
+	while (gDmaReadyCount != 0) {
+		uint32 bufferIndex = gDmaReadyQueue[gDmaReadyHead];
+		gDmaReadyHead = (gDmaReadyHead + 1) % GC_DMA_BUFFER_COUNT;
+		gDmaReadyCount--;
+		if (bufferIndex < GC_DMA_BUFFER_COUNT && gDmaBufferStates[bufferIndex] == GC_BUFFER_READY)
+			return int32(bufferIndex);
+	}
+	return -1;
+}
 
 static const char *GetTrackPath(tTrack track)
 {
@@ -1307,6 +1421,12 @@ static const char *GetTrackPath(tTrack track)
 		track = STREAMED_SOUND_RADIO_WILD;
 #endif
 
+#ifdef PS2_AUDIO_PATHS
+	const char *packagedPath = track < CountOfPS2Table() ? PS2StreamedNameTable[track] : NULL;
+	if (CanOpenTrackPath(packagedPath))
+		return packagedPath;
+#endif
+
 	if (IsDirectPs2RadioWhitelistTrack(track)) {
 		const char *directPath = ResolveDirectPs2RadioPath(track);
 		if (directPath != NULL)
@@ -1314,8 +1434,7 @@ static const char *GetTrackPath(tTrack track)
 	}
 
 #ifdef PS2_AUDIO_PATHS
-	if (track < CountOfPS2Table())
-		return PS2StreamedNameTable[track];
+	return packagedPath;
 #endif
 	return NULL;
 }
@@ -1574,8 +1693,21 @@ static bool FillDmaBuffer(uint32 bufferIndex)
 	if (!hasAudio)
 		return false;
 
-	for (uint32 i = 0; i < GC_DMA_BUFFER_FRAMES * 2; i++)
-		gDmaBuffers[bufferIndex][i] = ClampToInt16(gMixBuffer[i]);
+	int64 peak = 0;
+	for (uint32 i = 0; i < GC_DMA_BUFFER_FRAMES * 2; i++) {
+		int64 magnitude = gMixBuffer[i] < 0 ? -int64(gMixBuffer[i]) : int64(gMixBuffer[i]);
+		if (magnitude > peak)
+			peak = magnitude;
+	}
+
+	uint32 gainQ16 = 1U << 16;
+	if (peak > 32767)
+		gainQ16 = uint32((int64(32767) << 16) / peak);
+
+	for (uint32 i = 0; i < GC_DMA_BUFFER_FRAMES * 2; i++) {
+		int32 limited = int32((int64(gMixBuffer[i]) * gainQ16) >> 16);
+		gDmaBuffers[bufferIndex][i] = ClampToInt16(limited);
+	}
 
 	DCFlushRange(gDmaBuffers[bufferIndex], GC_DMA_BUFFER_SIZE);
 	return true;
@@ -1591,7 +1723,15 @@ static void TryFillReadyBuffers()
 			continue;
 		if (!FillDmaBuffer(i))
 			break;
-		gDmaBufferStates[i] = GC_BUFFER_READY;
+
+		u32 level;
+		_CPU_ISR_Disable(level);
+		bool queued = gDmaBufferStates[i] == GC_BUFFER_FREE && PushDmaReadyBuffer(i);
+		if (queued)
+			gDmaBufferStates[i] = GC_BUFFER_READY;
+		_CPU_ISR_Restore(level);
+		if (!queued)
+			break;
 	}
 }
 
@@ -1606,13 +1746,7 @@ static void AudioDmaCallback()
 		gDmaBufferStates[gCurrentDmaBuffer] = GC_BUFFER_FREE;
 	}
 
-	int32 nextBuffer = -1;
-	for (uint32 i = 0; i < GC_DMA_BUFFER_COUNT; i++) {
-		if (gDmaBufferStates[i] == GC_BUFFER_READY) {
-			nextBuffer = i;
-			break;
-		}
-	}
+	int32 nextBuffer = PopDmaReadyBuffer();
 
 	gCurrentDmaBuffer = nextBuffer;
 	if (nextBuffer >= 0) {
@@ -1637,6 +1771,7 @@ static void StartAudioDmaIfNeeded()
 		gDmaBufferStates[i] = GC_BUFFER_FREE;
 		memset(gDmaBufferSlotFrames[i], 0, sizeof(gDmaBufferSlotFrames[i]));
 	}
+	ResetDmaReadyQueue();
 
 	AUDIO_Init(NULL);
 	AUDIO_SetDSPSampleRate(AI_SAMPLERATE_48KHZ);
@@ -1810,6 +1945,7 @@ cSampleManager::Terminate(void)
 		gDmaActive = FALSE;
 		gCurrentDmaBuffer = -1;
 	}
+	ResetDmaReadyQueue();
 
 	for (uint32 i = 0; i < MAX_STREAMS; i++) {
 		CloseStreamSlot(i);
@@ -1859,6 +1995,8 @@ cSampleManager::SetEffectsMasterVolume(uint8 nVolume)
 				slot.mixVolume = m_nEffectsFadeVolume * slot.requestedVolume * m_nEffectsVolume >> 14;
 		}
 	}
+	for (uint32 i = 0; i < MAXCHANNELS + MAX2DCHANNELS; i++)
+		UpdateSampleChannelVolume(gSampleChannels[i], m_nEffectsVolume, m_nEffectsFadeVolume);
 #endif
 }
 
@@ -1903,6 +2041,8 @@ cSampleManager::SetEffectsFadeVolume(uint8 nVolume)
 				slot.mixVolume = m_nEffectsFadeVolume * slot.requestedVolume * m_nEffectsVolume >> 14;
 		}
 	}
+	for (uint32 i = 0; i < MAXCHANNELS + MAX2DCHANNELS; i++)
+		UpdateSampleChannelVolume(gSampleChannels[i], m_nEffectsVolume, m_nEffectsFadeVolume);
 #endif
 }
 
@@ -2152,10 +2292,10 @@ cSampleManager::InitialiseChannel(uint32 nChannel, uint32 nSfx, uint8 nBank)
 
 	tGcSampleChannel &channel = gSampleChannels[nChannel];
 	ResetSampleChannel(channel);
+	UpdateSampleChannelVolume(channel, m_nEffectsVolume, m_nEffectsFadeVolume);
 	channel.initialised = TRUE;
 	channel.is2D = nChannel >= NUM_CHANNELS_GENERIC;
 	channel.effectFlag = !channel.is2D;
-	channel.volume = MAX_VOLUME;
 	channel.pan = 63;
 	channel.baseFrequency = GetSampleBaseFrequency(nSfx);
 	channel.frequency = channel.baseFrequency;
@@ -2183,8 +2323,9 @@ cSampleManager::SetChannelEmittingVolume(uint32 nChannel, uint32 nVolume)
 	ASSERT(nChannel < MAXCHANNELS + MAX2DCHANNELS);
 
 #ifdef GAMECUBE
-	gSampleChannels[nChannel].emittingVolume = float(ClampVolume127(nVolume));
-	gSampleChannels[nChannel].volume = ClampVolume127(nVolume);
+	tGcSampleChannel &channel = gSampleChannels[nChannel];
+	channel.requestedVolume = ClampVolume127(nVolume);
+	UpdateSampleChannelVolume(channel, m_nEffectsVolume, m_nEffectsFadeVolume);
 #else
 	(void)nVolume;
 #endif
@@ -2227,7 +2368,9 @@ cSampleManager::SetChannelVolume(uint32 nChannel, uint32 nVolume)
 	ASSERT(nChannel < MAXCHANNELS + MAX2DCHANNELS);
 
 #ifdef GAMECUBE
-	gSampleChannels[nChannel].volume = ClampVolume127(nVolume);
+	tGcSampleChannel &channel = gSampleChannels[nChannel];
+	channel.requestedVolume = ClampVolume127(nVolume);
+	UpdateSampleChannelVolume(channel, m_nEffectsVolume, m_nEffectsFadeVolume);
 #else
 	(void)nVolume;
 #endif
@@ -2536,7 +2679,7 @@ cSampleManager::InitialiseSampleBanks(void)
 	FreeSampleBankMemory();
 	ResetSampleBankState();
 
-	if (BankStartOffset[SFX_BANK_0] == 0 || BankStartOffset[SFX_BANK_PED_COMMENTS] == 0) {
+	if (BankStartOffset[SFX_BANK_PED_COMMENTS] <= BankStartOffset[SFX_BANK_0]) {
 		printf("[GC-AUDIO] ERROR: bank start offsets invalid bank0=%u ped=%u\n",
 		       BankStartOffset[SFX_BANK_0],
 		       BankStartOffset[SFX_BANK_PED_COMMENTS]);

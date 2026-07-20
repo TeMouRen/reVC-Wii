@@ -1264,10 +1264,10 @@ cAudioManager::ProcessActiveQueues()
 						if (!m_asActiveSamples[k].m_bIs2D) {
 							TranslateEntity(&m_asActiveSamples[k].m_vecPos, &position);
 #ifndef EXTERNAL_3D_SOUND
-							m_asActiveSamples[j].m_nPan = ComputePan(m_asActiveSamples[j].m_MaxDistance, &position);
+							m_asActiveSamples[k].m_nPan = ComputePan(m_asActiveSamples[k].m_MaxDistance, &position);
 #endif
 						}
-						emittingVol = m_bDoubleVolume ? 2 * Min(63, m_asActiveSamples[j].WORKING_VOLUME_FIELD) : m_asActiveSamples[j].WORKING_VOLUME_FIELD;
+						emittingVol = m_bDoubleVolume ? 2 * Min(63, m_asActiveSamples[k].WORKING_VOLUME_FIELD) : m_asActiveSamples[k].WORKING_VOLUME_FIELD;
 #ifdef GTA_PS2
 						{
 							SampleManager.InitialiseChannel(k, m_asActiveSamples[k].m_nSampleIndex, m_asActiveSamples[k].m_nBankIndex);
@@ -1275,7 +1275,10 @@ cAudioManager::ProcessActiveQueues()
 						if (SampleManager.InitialiseChannel(k, m_asActiveSamples[k].m_nSampleIndex, m_asActiveSamples[k].m_nBankIndex)) {
 #endif
 #ifdef USE_TIME_SCALE_FOR_AUDIO
-							SampleManager.SetChannelFrequency(k, m_asActiveSamples[k].m_nFrequency * timeScale);
+							if (m_asActiveSamples[k].m_bIs2D && m_asActiveSamples[k].m_bStatic)
+								SampleManager.SetChannelFrequency(k, m_asActiveSamples[k].m_nFrequency);
+							else
+								SampleManager.SetChannelFrequency(k, m_asActiveSamples[k].m_nFrequency * timeScale);
 #else
 							SampleManager.SetChannelFrequency(k, m_asActiveSamples[k].m_nFrequency);
 #endif
@@ -1296,8 +1299,8 @@ cAudioManager::ProcessActiveQueues()
 #ifdef EXTERNAL_3D_SOUND
 							SampleManager.SetChannelEmittingVolume(k, vol);
 #else
-							SampleManager.SetChannelVolume(j, emittingVol);
-							SampleManager.SetChannelPan(j, m_asActiveSamples[j].m_nPan);
+							SampleManager.SetChannelVolume(k, vol);
+							SampleManager.SetChannelPan(k, m_asActiveSamples[k].m_nPan);
 #endif
 #ifndef GTA_PS2
 							SampleManager.SetChannelLoopPoints(k, m_asActiveSamples[k].m_nLoopStart, m_asActiveSamples[k].m_nLoopEnd);
@@ -1309,6 +1312,9 @@ cAudioManager::ProcessActiveQueues()
 #ifdef EXTERNAL_3D_SOUND
 							if (m_asActiveSamples[k].m_bIs2D) {
 								uint8 offset = m_asActiveSamples[k].m_nPan;
+#ifdef GAMECUBE
+								SampleManager.SetChannelPan(k, offset);
+#endif
 								if (offset == 63)
 									x = 0.0f;
 								else if (offset >= 63)
@@ -1347,8 +1353,12 @@ cAudioManager::ProcessActiveQueues()
 
 #ifdef USE_TIME_SCALE_FOR_AUDIO
 	for (uint8 i = 0; i < m_nActiveSamples; i++) {
-		if (m_asActiveSamples[i].m_nSampleIndex != NO_SAMPLE && m_asActiveSamples[i].m_bIsBeingPlayed)
-			SampleManager.SetChannelFrequency(i, m_asActiveSamples[i].m_nFrequency * timeScale);
+		if (m_asActiveSamples[i].m_nSampleIndex != NO_SAMPLE && m_asActiveSamples[i].m_bIsBeingPlayed) {
+			if (m_asActiveSamples[i].m_bIs2D && m_asActiveSamples[i].m_bStatic)
+				SampleManager.SetChannelFrequency(i, m_asActiveSamples[i].m_nFrequency);
+			else
+				SampleManager.SetChannelFrequency(i, m_asActiveSamples[i].m_nFrequency * timeScale);
+		}
 	}
 #endif
 
