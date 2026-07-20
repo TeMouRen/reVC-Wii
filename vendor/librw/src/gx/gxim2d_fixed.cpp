@@ -14,6 +14,11 @@
 #include "../rwrender.h"
 #include "rwgx.h"
 
+// Define GX_PIPELINE_DIAGNOSTICS when targeted Im2D tracing is needed.
+#ifndef GX_PIPELINE_DIAGNOSTICS
+#define printf(...) ((void)sizeof((::printf)(__VA_ARGS__)))
+#endif
+
 namespace rw {
 namespace gx {
 
