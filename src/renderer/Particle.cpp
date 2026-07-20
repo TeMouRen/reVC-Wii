@@ -1812,11 +1812,9 @@ void CParticle::Render()
 		RwRaster **frames = psystem->m_ppRaster;
 		tParticleType type = psystem->m_Type;
 
-		if ( type == PARTICLE_ENGINE_SMOKE
-			|| type == PARTICLE_ENGINE_SMOKE2
-			|| type == PARTICLE_ENGINE_STEAM
-			|| type == PARTICLE_CARFLAME_SMOKE
-			|| type == PARTICLE_RUBBER_SMOKE
+		// The original half-screen optimization uses the unscaled projection
+		// size, which culls engine damage effects when the camera is near a car.
+		if ( type == PARTICLE_RUBBER_SMOKE
 			|| type == PARTICLE_BURNINGRUBBER_SMOKE
 			|| type == PARTICLE_EXHAUST_FUMES
 			|| type == PARTICLE_CARCOLLISION_DUST )

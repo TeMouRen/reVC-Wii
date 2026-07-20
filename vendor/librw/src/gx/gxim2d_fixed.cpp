@@ -33,6 +33,17 @@ static Mtx s_im2dView;
 static Im2DVertex s_tmpVerts[3];
 static int s_radarIm2dLogBudget = 120;
 
+static u8
+gxAlphaFuncFromState(int32 f)
+{
+    switch(f) {
+    case ALPHAALWAYS:       return GX_ALWAYS;
+    case ALPHAGREATEREQUAL: return GX_GEQUAL;
+    case ALPHALESS:         return GX_LESS;
+    default:                return GX_ALWAYS;
+    }
+}
+
 static bool
 isRadarIm2DCall(const Im2DVertex *v, int32 n)
 {
@@ -94,7 +105,10 @@ im2dSetup(void)
 {
     if(!s_im2dProjReady){
         // RenderWare Im2D uses a top-left origin in screen pixels.
-        guOrtho(s_im2dProj, 0.0f, 480.0f, 0.0f, 640.0f, -1000.0f, 1000.0f);
+        // RenderWare Im2D screen Z uses the device depth range (0.1..10000
+        // on GX), while GX camera space looks down the negative Z axis.
+        guOrtho(s_im2dProj, 0.0f, 480.0f, 0.0f, 640.0f,
+                engine->device.zNear, engine->device.zFar);
         guMtxIdentity(s_im2dView);
         s_im2dProjReady = true;
     }
@@ -120,10 +134,20 @@ im2dSetup(void)
     GX_SetZMode((gxState.zTest || gxState.zWrite) ? GX_TRUE : GX_FALSE,
                 gxState.zTest ? GX_LEQUAL : GX_ALWAYS,
                 gxState.zWrite ? GX_TRUE : GX_FALSE);
+    bool im2dAlphaAlways = gxState.gsAlpha && !gxState.zWrite;
+    GX_SetZCompLoc((im2dAlphaAlways ||
+                    gxState.alphaTestFunc == ALPHAALWAYS) ? GX_TRUE : GX_FALSE);
     GX_SetBlendMode(GX_BM_BLEND,
                     (u8)gxState.srcBlend,
                     (u8)gxState.dstBlend,
                     GX_LO_CLEAR);
+    if(im2dAlphaAlways)
+        GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
+    else
+        GX_SetAlphaCompare(gxAlphaFuncFromState(gxState.alphaTestFunc),
+                           (u8)gxState.alphaTestRef,
+                           GX_AOP_AND,
+                           GX_ALWAYS, 0);
 
     GX_SetChanCtrl(GX_COLOR0A0, GX_FALSE,
                    GX_SRC_VTX, GX_SRC_VTX,
@@ -146,11 +170,20 @@ im2dSetup(void)
     GX_InvVtxCache();
 }
 
+static void
+restoreIm2DAlphaState(void)
+{
+    GX_SetAlphaCompare(gxAlphaFuncFromState(gxState.alphaTestFunc),
+                       (u8)gxState.alphaTestRef,
+                       GX_AOP_AND, GX_ALWAYS, 0);
+    GX_SetZCompLoc(GX_TRUE);
+}
+
 static inline void
 submitVertex(const Im2DVertex *v)
 {
     uint32 c = v->color;
-    GX_Position3f32(v->x, v->y, v->z);
+    GX_Position3f32(v->x, v->y, -v->z);
     GX_Color4u8((u8)(c >> 24), (u8)(c >> 16), (u8)(c >> 8), (u8)c);
     GX_TexCoord2f32(v->u, v->v);
 }
@@ -203,6 +236,7 @@ im2DRenderPrimitive(PrimitiveType primType, void *vertices, int32 numVertices)
         GX_SetColorUpdate(GX_TRUE);
         GX_SetAlphaUpdate(GX_TRUE);
     }
+    restoreIm2DAlphaState();
 }
 
 void
@@ -235,6 +269,7 @@ im2DRenderIndexedPrimitive(PrimitiveType primType,
         GX_SetColorUpdate(GX_TRUE);
         GX_SetAlphaUpdate(GX_TRUE);
     }
+    restoreIm2DAlphaState();
 }
 
 } // namespace gx

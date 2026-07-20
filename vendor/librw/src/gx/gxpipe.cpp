@@ -865,9 +865,10 @@ uninstance(rw::ObjPipeline * /*rwpipe*/, Atomic * /*atomic*/)
 
 // ── Material �?GX TEV (GX_FALSE �?same as gxskin.cpp) ──────
 
-static void
+static uint32
 setMaterial(Material *mat, bool32 vertexAlpha, bool hasVertexColors,
-            bool modulateMaterialColor, const GxAtomicLights &lights)
+            bool modulateMaterialColor, const GxAtomicLights &lights,
+            uint32 passIndex)
 {
     static int s_alphaDiagCount = 0;
     static int s_cullDiagCount = 0;
@@ -946,14 +947,14 @@ setMaterial(Material *mat, bool32 vertexAlpha, bool hasVertexColors,
     bool preferTexCutout = hasTexAlpha && preferCutoutTextureAlpha(texName);
     bool preferEdgeBlendCutout = hasTexAlpha &&
                                  isKnownEdgeBlendCutoutVegetationTexture(texName);
+    bool usesAlpha = hasTexAlpha || hasMatAlpha || vertexAlpha;
     bool textureCutout = hasTexAlpha &&
                          texAlphaKind == GX_RASTER_ALPHA_CUTOUT;
-    bool textureSmooth = hasTexAlpha && !textureCutout;
-    // Binary masks discard texels instead of blending their bilinear edge.
-    // Smooth texture alpha and object/material fades retain normal blending.
-    bool doBlend = textureSmooth || hasMatAlpha || vertexAlpha;
-    bool doAlphaTest = textureCutout;
-    bool zWriteEnable = gxState.zWrite && !(doBlend && !doAlphaTest);
+    bool doBlend = usesAlpha;
+    bool doAlphaTest = usesAlpha;
+    bool dualPass = gxState.gsAlpha && usesAlpha && gxState.zWrite;
+    bool zWriteEnable = dualPass ? (passIndex == 0) : gxState.zWrite;
+    bool zAfterTexturing = usesAlpha;
     bool twoSided = isLikelyRoomShellDoubleSided(texName) ||
                     isLikelyThinTwoSidedTexture(texName) ||
                     isLikelyVegetationTwoSidedTexture(texName) ||
@@ -989,7 +990,6 @@ setMaterial(Material *mat, bool32 vertexAlpha, bool hasVertexColors,
     }
     GX_SetCullMode(cullMode);
 
-    bool zAfterTexturing = doAlphaTest;
     GX_SetZCompLoc(zAfterTexturing ? GX_FALSE : GX_TRUE);
     GX_SetZMode(gxState.zTest ? GX_TRUE : GX_FALSE, GX_LEQUAL,
                 zWriteEnable ? GX_TRUE : GX_FALSE);
@@ -1003,23 +1003,34 @@ setMaterial(Material *mat, bool32 vertexAlpha, bool hasVertexColors,
     setupLightingChannels(mat, lights);
     u8 effectiveAlphaRef = 0;
     if(doAlphaTest) {
-        u8 alphaRef = (u8)gxState.alphaTestRef;
-        u8 alphaFunc = gxAlphaFuncFromState(gxState.alphaTestFunc);
-        if(textureCutout){
-            // Source alpha is 0/255. Test at the bilinear midpoint so filtered
-            // edge samples do not turn into a wide translucent fringe. Scale
-            // the cutoff with material alpha so LOD fades remain visible.
-            uint32 scaledCutoff = (128u * (uint32)matColor.a + 254u) / 255u;
-            if(scaledCutoff < 1u)
-                scaledCutoff = 1u;
-            if(alphaRef < scaledCutoff)
-                alphaRef = (u8)scaledCutoff;
-            alphaFunc = GX_GEQUAL;
+        u8 alphaFunc = GX_ALWAYS;
+        u8 alphaRef = 0;
+        if(dualPass) {
+            alphaFunc = (passIndex == 0) ? GX_GEQUAL : GX_LESS;
+            alphaRef = (u8)gxState.gsAlphaRef;
+        } else {
+            alphaRef = (u8)gxState.alphaTestRef;
+            alphaFunc = gxAlphaFuncFromState(gxState.alphaTestFunc);
+            if(textureCutout){
+                // Source alpha is 0/255. Test at the bilinear midpoint so filtered
+                // edge samples do not turn into a wide translucent fringe. Scale
+                // the cutoff with material alpha so LOD fades remain visible.
+                uint32 scaledCutoff = (128u * (uint32)matColor.a + 254u) / 255u;
+                if(scaledCutoff < 1u)
+                    scaledCutoff = 1u;
+                if(alphaRef < scaledCutoff)
+                    alphaRef = (u8)scaledCutoff;
+                alphaFunc = GX_GEQUAL;
+            }
         }
         effectiveAlphaRef = alphaRef;
-        GX_SetAlphaCompare(alphaFunc,
-                           alphaRef,
-                           GX_AOP_AND, GX_ALWAYS, 0);
+        if(gxState.gsAlpha && usesAlpha && !gxState.zWrite) {
+            GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
+        } else {
+            GX_SetAlphaCompare(alphaFunc,
+                               alphaRef,
+                               GX_AOP_AND, GX_ALWAYS, 0);
+        }
     } else
         GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
     if((doBlend || doAlphaTest || vertexAlpha) &&
@@ -1060,13 +1071,14 @@ setMaterial(Material *mat, bool32 vertexAlpha, bool hasVertexColors,
             GX_SetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4,
                               GX_TG_TEX0, GX_IDENTITY);
             setupDefaultLitTev(matColor, true);
-            return;
+            return dualPass ? 2u : 1u;
         }
     }
 
     // No valid texture �?solid color via PASSCLR
     GX_SetNumTexGens(0);
     setupDefaultLitTev(matColor, false);
+    return dualPass ? 2u : 1u;
 }
 
 
@@ -1150,6 +1162,24 @@ submitPipeVertexRaw(Geometry *geo, uint16 vi, bool hasNrm, bool hasCol, uint32 n
         TexCoords *tc = &geo->texCoords[0][vi];
         GX_TexCoord2f32(tc->u, tc->v);
     }
+}
+
+static inline void
+drawPipeMesh(Geometry *geo, const uint16 *meshIdx, uint32 numIdx,
+             bool hasNrm, bool hasCol, uint32 numTex, uint8 prim,
+             bool trace, uint32 meshIndex, uint32 passIndex)
+{
+    if(trace)
+        printf("[PIPE-TRACE] gx-begin geo=%p mesh=%u pass=%u prim=%u numIdx=%u\n",
+               (void*)geo, (unsigned)meshIndex, (unsigned)passIndex,
+               (unsigned)prim, (unsigned)numIdx);
+    GX_Begin(prim, GX_VTXFMT0, (u16)numIdx);
+    for (uint32 i = 0; i < numIdx; i++)
+        submitPipeVertexRaw(geo, meshIdx[i], hasNrm, hasCol, numTex);
+    GX_End();
+    if(trace)
+        printf("[PIPE-TRACE] gx-end geo=%p mesh=%u pass=%u\n",
+               (void*)geo, (unsigned)meshIndex, (unsigned)passIndex);
 }
 
 
@@ -1271,8 +1301,8 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
                    (md->material && md->material->texture) ? md->material->texture->name : "none");
         SetRenderState(VERTEXALPHA, meshNeedsBlendAlphaState);
         setup3dVtxDesc(inst->hasNormals, inst->hasColors, inst->numTexCoords);
-        setMaterial(md->material, effectiveVertexAlpha, inst->hasColors,
-                    (geo->flags & Geometry::MODULATE) != 0, lights);
+        uint32 passCount = setMaterial(md->material, effectiveVertexAlpha, inst->hasColors,
+                    (geo->flags & Geometry::MODULATE) != 0, lights, 0);
 
         uint16 *meshIdx = mesh->indices;
         uint32  numIdx  = mesh->numIndices;
@@ -1306,18 +1336,26 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
             continue;
         }
 
-        if(trace)
-            printf("[PIPE-TRACE] gx-begin geo=%p mesh=%u prim=%u numIdx=%u\n",
-                   (void*)geo, (unsigned)m, (unsigned)prim, (unsigned)numIdx);
-        GX_Begin(prim, GX_VTXFMT0, (u16)numIdx);
-        for (uint32 i = 0; i < numIdx; i++)
-            submitPipeVertexRaw(geo, meshIdx[i],
-                                inst->hasNormals, inst->hasColors,
-                                inst->numTexCoords);
-        GX_End();
-        if(trace)
-            printf("[PIPE-TRACE] gx-end geo=%p mesh=%u\n", (void*)geo, (unsigned)m);
+        drawPipeMesh(geo, meshIdx, numIdx,
+                     inst->hasNormals, inst->hasColors,
+                     inst->numTexCoords, prim, trace, m, 0);
+        if(passCount > 1) {
+            setMaterial(md->material, effectiveVertexAlpha, inst->hasColors,
+                        (geo->flags & Geometry::MODULATE) != 0, lights, 1);
+            drawPipeMesh(geo, meshIdx, numIdx,
+                         inst->hasNormals, inst->hasColors,
+                         inst->numTexCoords, prim, trace, m, 1);
+        }
     }
+    // GS alpha emulation changes the hardware compare/depth state for the
+    // second pass. Restore the RenderWare state before another pipeline (for
+    // example Im2D/HUD) can run without drawing through the last mesh.
+    GX_SetAlphaCompare(gxAlphaFuncFromState(gxState.alphaTestFunc),
+                       (u8)gxState.alphaTestRef,
+                       GX_AOP_AND, GX_ALWAYS, 0);
+    GX_SetZMode(gxState.zTest ? GX_TRUE : GX_FALSE, GX_LEQUAL,
+                gxState.zWrite ? GX_TRUE : GX_FALSE);
+    GX_SetZCompLoc(GX_TRUE);
     if(trace)
         printf("[PIPE-TRACE] render-end geo=%p\n", (void*)geo);
 }

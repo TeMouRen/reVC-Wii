@@ -389,8 +389,8 @@ skinUninstance(rw::ObjPipeline * /*rwpipe*/, Atomic * /*atomic*/)
 }
 
 
-static void
-setMaterialSkin(Material *mat, bool32 vertexAlpha)
+static uint32
+setMaterialSkin(Material *mat, bool32 vertexAlpha, uint32 passIndex)
 {
     // ★ Reload projection every mesh — Im2D/clearCamera overwrite it with ortho
     GX_LoadProjectionMtx(gxProjMtx, gxProjType);
@@ -417,16 +417,14 @@ setMaterialSkin(Material *mat, bool32 vertexAlpha)
 
     // Keep skinned meshes on the same RenderWare alpha contract as the
     // default pipeline and the GX2/GL3 backends.
-    bool textureCutout = hasTexAlpha &&
-                         texAlphaKind == GX_RASTER_ALPHA_CUTOUT;
-    bool textureSmooth = hasTexAlpha && !textureCutout;
     bool hasMatAlpha = mat && mat->color.alpha < 255;
-    bool doBlend = !fullbrightDebug &&
-                   (textureSmooth || vertexAlpha || hasMatAlpha);
-    bool doAlphaTest = !fullbrightDebug && textureCutout;
-    bool zWriteEnable = gxState.zWrite && !(doBlend && !doAlphaTest);
-
-    bool zAfterTexturing = doAlphaTest;
+    bool usesAlpha = hasTexAlpha || vertexAlpha || hasMatAlpha;
+    bool doBlend = !fullbrightDebug && usesAlpha;
+    bool doAlphaTest = !fullbrightDebug && usesAlpha;
+    bool dualPass = !freeCamXray && gxState.gsAlpha && usesAlpha &&
+                    !fullbrightDebug && gxState.zWrite;
+    bool zWriteEnable = dualPass ? (passIndex == 0) : gxState.zWrite;
+    bool zAfterTexturing = usesAlpha;
     GX_SetZCompLoc(zAfterTexturing ? GX_FALSE : GX_TRUE);
 
     if(freeCamXray)
@@ -463,12 +461,22 @@ setMaterialSkin(Material *mat, bool32 vertexAlpha)
         if(scaledCutoff < 1u)
             scaledCutoff = 1u;
         u8 stateAlphaRef = (u8)gxState.alphaTestRef;
-        effectiveAlphaRef = stateAlphaRef < scaledCutoff ?
-                            (u8)scaledCutoff : stateAlphaRef;
-        GX_SetAlphaCompare(GX_GEQUAL,
-                           effectiveAlphaRef,
-                           GX_AOP_AND,
-                           GX_ALWAYS, 0);
+        if(dualPass) {
+            effectiveAlphaRef = (u8)gxState.gsAlphaRef;
+            GX_SetAlphaCompare(passIndex == 0 ? GX_GEQUAL : GX_LESS,
+                               effectiveAlphaRef,
+                               GX_AOP_AND,
+                               GX_ALWAYS, 0);
+        } else if(gxState.gsAlpha && usesAlpha && !gxState.zWrite) {
+            GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
+        } else {
+            effectiveAlphaRef = stateAlphaRef < scaledCutoff ?
+                                (u8)scaledCutoff : stateAlphaRef;
+            GX_SetAlphaCompare(GX_GEQUAL,
+                               effectiveAlphaRef,
+                               GX_AOP_AND,
+                               GX_ALWAYS, 0);
+        }
     }else
         GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
 
@@ -507,7 +515,7 @@ setMaterialSkin(Material *mat, bool32 vertexAlpha)
             GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD0,
                            GX_TEXMAP0, GX_COLOR0A0);
             GX_SetTevOp(GX_TEVSTAGE0, GX_MODULATE);
-            return;
+            return dualPass ? 2u : 1u;
         }
     }
 
@@ -517,6 +525,17 @@ setMaterialSkin(Material *mat, bool32 vertexAlpha)
     GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORDNULL,
                    GX_TEXMAP_NULL, GX_COLOR0A0);
     GX_SetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
+    return dualPass ? 2u : 1u;
+}
+
+static u8
+skinAlphaFuncFromState(int32 f)
+{
+    switch(f){
+    case ALPHAGREATEREQUAL: return GX_GEQUAL;
+    case ALPHALESS:         return GX_LESS;
+    default:                return GX_ALWAYS;
+    }
 }
 
 
@@ -694,7 +713,6 @@ skinRender(rw::ObjPipeline *rwpipe, Atomic *atomic)
         GxSkinData::MeshData *md = &inst->meshes[m];
         // ★ Reload model-view each mesh — clearCamera overwrites PNMTX0
         GX_LoadPosMtxImm(modelView, GX_PNMTX0);
-        setMaterialSkin(md->material, md->vertexAlpha);
         Texture *meshTex = (md->material != nil) ? md->material->texture : nil;
         const char *meshTexName = meshTex ? meshTex->name : nil;
         static int s_skinFocusMeshLogCount = 0;
@@ -740,10 +758,15 @@ skinRender(rw::ObjPipeline *rwpipe, Atomic *atomic)
         }
         logSkinMeshDiag(atomic, inst, md, meshIdx, prim, doSkin, skin, hier,
                         boneMats, boneCount, weightCount);
+        uint32 passCount = setMaterialSkin(md->material, md->vertexAlpha, 0);
+        for(uint32 pass = 0; pass < passCount; pass++) {
+            GX_LoadPosMtxImm(modelView, GX_PNMTX0);
+            if(pass > 0)
+                setMaterialSkin(md->material, md->vertexAlpha, pass);
 
         if(logRender)
-            printf("[SKIN-MESH-BEGIN] render=%d mesh=%u numIdx=%u tex=%s\n",
-                   s_skinRenderCount - 1, (unsigned)m, (unsigned)numIdx,
+            printf("[SKIN-MESH-BEGIN] render=%d mesh=%u pass=%u numIdx=%u tex=%s\n",
+                   s_skinRenderCount - 1, (unsigned)m, (unsigned)pass, (unsigned)numIdx,
                    (md->material && md->material->texture) ?
                        md->material->texture->name : "none");
 
@@ -847,9 +870,16 @@ skinRender(rw::ObjPipeline *rwpipe, Atomic *atomic)
 
         GX_End();
         if(logRender)
-            printf("[SKIN-MESH-END] render=%d mesh=%u\n",
-                   s_skinRenderCount - 1, (unsigned)m);
+            printf("[SKIN-MESH-END] render=%d mesh=%u pass=%u\n",
+                   s_skinRenderCount - 1, (unsigned)m, (unsigned)pass);
+        }
     }
+    GX_SetAlphaCompare(skinAlphaFuncFromState(gxState.alphaTestFunc),
+                       (u8)gxState.alphaTestRef,
+                       GX_AOP_AND, GX_ALWAYS, 0);
+    GX_SetZMode(gxState.zTest ? GX_TRUE : GX_FALSE, GX_LEQUAL,
+                gxState.zWrite ? GX_TRUE : GX_FALSE);
+    GX_SetZCompLoc(GX_TRUE);
     if(logRender)
         printf("[SKIN-RENDER-END] #%d geo=%p\n",
                s_skinRenderCount - 1, (void*)geo);
