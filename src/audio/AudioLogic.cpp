@@ -683,6 +683,8 @@ enum
 	SCRIPT_OBJECT_NEW_WATERFALL_VOLUME = 30,
 
 	FRONTEND_VOLUME = 127,
+	FRONTEND_UI_VOLUME = 80,
+	FRONTEND_UI_COUNTER_BASE = 240,
 
 	//CRANE_MAX_DIST = 80,
 	//CRANE_VOLUME = 100,
@@ -8897,6 +8899,7 @@ cAudioManager::ProcessFrontEnd()
 	bool8 processedMission;
 	bool8 staticFreq;
 	bool8 center;
+	bool8 frontendUiSound;
 	int16 sample;
 
 	static uint8 iSound = 0;
@@ -8910,6 +8913,7 @@ cAudioManager::ProcessFrontEnd()
 		center = FALSE;
 		processedMission = FALSE;
 		stereo = FALSE;
+		frontendUiSound = FALSE;
 		switch (m_asAudioEntities[m_sQueueSample.m_nEntityIndex].m_awAudioEvent[i]) {
 		case SOUND_WEAPON_SNIPER_SHOT_NO_ZOOM:
 			m_sQueueSample.m_nSampleIndex = SFX_ERROR_FIRE_RIFLE;
@@ -9020,18 +9024,22 @@ cAudioManager::ProcessFrontEnd()
 			break;
 		case SOUND_FRONTEND_HIGHLIGHT_OPTION:
 			stereo = TRUE;
+			frontendUiSound = TRUE;
 			m_sQueueSample.m_nSampleIndex = SFX_FE_HIGHLIGHT_LEFT;
 			break;
 		case SOUND_FRONTEND_ENTER_OR_ADJUST:
 			stereo = TRUE;
+			frontendUiSound = TRUE;
 			m_sQueueSample.m_nSampleIndex = SFX_FE_SELECT_LEFT;
 			break;
 		case SOUND_FRONTEND_BACK:
 			stereo = TRUE;
+			frontendUiSound = TRUE;
 			m_sQueueSample.m_nSampleIndex = SFX_FE_BACK_LEFT;
 			break;
 		case SOUND_FRONTEND_FAIL:
 			stereo = TRUE;
+			frontendUiSound = TRUE;
 			m_sQueueSample.m_nSampleIndex = SFX_FE_ERROR_LEFT;
 			break;
 		case SOUND_FRONTEND_AUDIO_TEST:
@@ -9065,10 +9073,17 @@ cAudioManager::ProcessFrontEnd()
 		else
 			m_sQueueSample.m_nFrequency = SampleManager.GetSampleBaseFrequency(m_sQueueSample.m_nSampleIndex);
 
-		m_sQueueSample.m_nVolume = FRONTEND_VOLUME;
+		m_sQueueSample.m_nVolume = frontendUiSound ? FRONTEND_UI_VOLUME : FRONTEND_VOLUME;
 		if (m_sQueueSample.m_nSampleIndex == SFX_HURRICANE_MA && CWeather::Wind > 1.0f)
 			m_sQueueSample.m_nVolume = (CWeather::Wind - 1.0f) * m_sQueueSample.m_nVolume;
-		m_sQueueSample.m_nCounter = iSound++;
+		// Coalesce repeated menu input instead of stacking long stereo tails.
+		if (frontendUiSound) {
+			m_sQueueSample.m_nCounter = FRONTEND_UI_COUNTER_BASE + m_sQueueSample.m_nSampleIndex - SFX_FE_HIGHLIGHT_LEFT;
+		} else {
+			m_sQueueSample.m_nCounter = iSound++;
+			if (iSound == FRONTEND_UI_COUNTER_BASE)
+				iSound = 0;
+		}
 		m_sQueueSample.m_nLoopCount = 1;
 		m_sQueueSample.m_bStatic = TRUE;
 		m_sQueueSample.m_nBankIndex = SFX_BANK_FRONT_END_MENU;
@@ -9101,13 +9116,21 @@ cAudioManager::ProcessFrontEnd()
 		AddSampleToRequestedQueue();
 		if (stereo) {
 			m_sQueueSample.m_nSampleIndex++;
-			m_sQueueSample.m_nCounter = iSound++;
+			if (frontendUiSound)
+				m_sQueueSample.m_nCounter++;
+			else {
+				m_sQueueSample.m_nCounter = iSound++;
+				if (iSound == FRONTEND_UI_COUNTER_BASE)
+					iSound = 0;
+			}
 			m_sQueueSample.m_nPan = 127 - m_sQueueSample.m_nPan;
 			AddSampleToRequestedQueue();
 		}
 		if (center) {
 			m_sQueueSample.m_nSampleIndex++;
 			m_sQueueSample.m_nCounter = iSound++;
+			if (iSound == FRONTEND_UI_COUNTER_BASE)
+				iSound = 0;
 			m_sQueueSample.m_nPan = 63;
 			m_sQueueSample.m_nFrequency = SampleManager.GetSampleBaseFrequency(m_sQueueSample.m_nSampleIndex);
 			AddSampleToRequestedQueue();

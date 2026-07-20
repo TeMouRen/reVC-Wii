@@ -184,7 +184,9 @@ enum Config {
 #	define VU_COLLISION
 #	define PS2_MENU
 #elif defined GTA_PC
-#	define EXTERNAL_3D_SOUND
+#	if !defined(GAMECUBE)
+#		define EXTERNAL_3D_SOUND
+#	endif
 #	define AUDIO_REVERB
 #	ifndef GTA_HANDHELD
 #		define PC_PLAYER_CONTROLS	// mouse player/cam mode
@@ -479,8 +481,10 @@ static_assert(false, "SUPPORT_XBOX_SCRIPT and SUPPORT_MOBILE_SCRIPT are mutually
 #define FREE_CAM		// Rotating cam
 
 // Audio
+#if !defined(GAMECUBE)
 #define EXTERNAL_3D_SOUND // use external engine to simulate 3d audio spatialization. OpenAL would not work without it (because it works in a 3d space
                           // originally and making it work in 2d only requires more resource). Will not work on PS2
+#endif
 #define AUDIO_REFLECTIONS // Enable audio reflections. This is enabled in all vanilla versions
 #define AUDIO_REVERB // Enable audio reverb. It was disabled in PS2 and mobile versions
 #define RADIO_SCROLL_TO_PREV_STATION // Won't work without FIX_BUGS

@@ -2182,6 +2182,7 @@ FrontendIdle(void)
 	DIAG_LOG("[FE] Step5 ProcessMenu\n");
 	DIAG_LOG("[FE] Step5b RsGlobal w=%d h=%d\n", (int)RsGlobal.width, (int)RsGlobal.height);
 	FrontEndMenuManager.Process();
+	DMAudio.Service();
 
 	if(RsGlobal.quit)
 		return;

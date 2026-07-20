@@ -3860,7 +3860,6 @@ CMenuManager::Process(void)
 	if (m_bMenuActive) {
 		UserInput();
 		ProcessFileActions();
-		DMAudio.Service();
 #ifdef USE_TEXTURE_POOL
 		// TODO
 #endif

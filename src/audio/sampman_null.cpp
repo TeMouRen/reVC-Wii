@@ -9,7 +9,11 @@
 #ifdef GAMECUBE
 #include <gccore.h>
 #include <malloc.h>
+#include <ogc/lwp.h>
+#include <ogc/lwp_watchdog.h>
 #include <ogc/machine/processor.h>
+#include <ogc/mutex.h>
+#include <ogc/semaphore.h>
 #endif
 
 cSampleManager SampleManager;
@@ -40,6 +44,7 @@ static const uint32 GC_DMA_BUFFER_FRAMES = GC_DMA_BUFFER_SIZE / (sizeof(int16) *
 static const uint32 GC_DMA_BUFFER_COUNT = 3;
 static const uint32 GC_SOURCE_BUFFER_FRAMES = 4096;
 static const uint32 GC_IDSP_READ_CACHE_SIZE = 64 * 1024;
+static const uint32 GC_SFX_EDGE_RAMP_FRAMES = 64;
 
 static const uint32 GC_ADPCM_FRAME_SIZE = 8;
 static const uint32 GC_ADPCM_SAMPLES_PER_FRAME = 14;
@@ -89,6 +94,8 @@ struct tGcSampleChannel
 	uint32 sampleCount;
 	uint32 cursorQ16;
 	uint32 stepQ16;
+	uint32 renderedOutputFrames;
+	uint32 edgeRampFrames;
 };
 
 static FILE *gSampleDescFile = NULL;
@@ -268,6 +275,8 @@ static void ResetSampleChannel(tGcSampleChannel &channel)
 	channel.sampleCount = 0;
 	channel.cursorQ16 = 0;
 	channel.stepQ16 = 0;
+	channel.renderedOutputFrames = 0;
+	channel.edgeRampFrames = 0;
 }
 
 static void ResetSampleBankState()
@@ -441,6 +450,16 @@ static uint32 ComputeChannelStepQ16(uint32 frequency)
 	return uint32(step);
 }
 
+static uint32 ComputeSampleEdgeRampFrames(uint32 sampleCount, uint32 stepQ16)
+{
+	if (sampleCount == 0 || stepQ16 == 0)
+		return 0;
+
+	uint64 durationQ16 = uint64(sampleCount) << 16;
+	uint64 outputFrames = (durationQ16 + stepQ16 - 1) / stepQ16;
+	return uint32(Min(uint64(GC_SFX_EDGE_RAMP_FRAMES), outputFrames / 2));
+}
+
 static void ByteSwapPcm16Buffer(void *buffer, uint32 sizeBytes)
 {
 #ifdef RW_BIG_ENDIAN
@@ -597,9 +616,27 @@ static uint32 MixSampleChannelIntoBuffer(tGcSampleChannel &channel, int32 *mixBu
 		if (!RenderNextSampleChannelFrame(channel, left, right))
 			break;
 
+		uint32 edgeGainQ16 = 1U << 16;
+		if (channel.edgeRampFrames != 0 && channel.renderedOutputFrames < channel.edgeRampFrames)
+			edgeGainQ16 = ((channel.renderedOutputFrames + 1) << 16) / channel.edgeRampFrames;
+
+		if (channel.edgeRampFrames != 0 && channel.loopCount == 1) {
+			uint64 sampleEndQ16 = uint64(channel.sampleCount) << 16;
+			uint64 remainingQ16 = channel.cursorQ16 < sampleEndQ16 ? sampleEndQ16 - channel.cursorQ16 : 0;
+			uint64 remainingFrames = (remainingQ16 + channel.stepQ16 - 1) / channel.stepQ16;
+			uint64 currentAndRemainingFrames = remainingFrames + 1;
+			if (currentAndRemainingFrames <= channel.edgeRampFrames) {
+				uint32 endGainQ16 = uint32((currentAndRemainingFrames << 16) / channel.edgeRampFrames);
+				edgeGainQ16 = Min(edgeGainQ16, endGainQ16);
+			}
+		}
+
 		uint32 outIndex = framesRendered * 2;
-		mixBuffer[outIndex + 0] += (int32(left) * int32(leftGain)) / MAX_VOLUME;
-		mixBuffer[outIndex + 1] += (int32(right) * int32(rightGain)) / MAX_VOLUME;
+		int32 rampedLeft = int32((int64(left) * edgeGainQ16) >> 16);
+		int32 rampedRight = int32((int64(right) * edgeGainQ16) >> 16);
+		mixBuffer[outIndex + 0] += (rampedLeft * int32(leftGain)) / MAX_VOLUME;
+		mixBuffer[outIndex + 1] += (rampedRight * int32(rightGain)) / MAX_VOLUME;
+		channel.renderedOutputFrames++;
 		framesRendered++;
 	}
 
@@ -1342,7 +1379,6 @@ struct tGcStreamSlot
 	uint32 mixVolume;
 	uint32 lengthMs;
 	uint32 startPosMs;
-	uint64 playedOutputFrames;
 	uint64 resampleStep;
 	uint64 resampleFrac;
 	bool8 sourceEnded;
@@ -1359,7 +1395,6 @@ struct tGcStreamSlot
 		sourceFramePos = 0;
 		resampleStep = 0;
 		resampleFrac = 0;
-		playedOutputFrames = 0;
 		startPosMs = 0;
 	}
 };
@@ -1367,23 +1402,174 @@ struct tGcStreamSlot
 static tGcStreamSlot gStreamSlots[MAX_STREAMS];
 static uint32 gStreamLength[TOTAL_STREAMED_SOUNDS];
 static bool8 gStreamLoopedFlag[MAX_STREAMS];
+static volatile uint32 gStreamPlaybackGeneration[MAX_STREAMS];
+static volatile uint64 gStreamPlayedOutputFrames[MAX_STREAMS];
+static volatile uint32 gSamplePlaybackGeneration[MAXCHANNELS + MAX2DCHANNELS];
+static volatile uint32 gSamplePendingOutputFrames[MAXCHANNELS + MAX2DCHANNELS];
 static volatile uint32 gDmaBufferStates[GC_DMA_BUFFER_COUNT];
 static uint32 gDmaBufferSlotFrames[GC_DMA_BUFFER_COUNT][MAX_STREAMS];
-static volatile int32 gCurrentDmaBuffer = -1;
+static uint32 gDmaBufferSlotGeneration[GC_DMA_BUFFER_COUNT][MAX_STREAMS];
+static uint32 gDmaBufferSampleFrames[GC_DMA_BUFFER_COUNT][MAXCHANNELS + MAX2DCHANNELS];
+static uint32 gDmaBufferSampleGeneration[GC_DMA_BUFFER_COUNT][MAXCHANNELS + MAX2DCHANNELS];
+static volatile int32 gPlayingDmaBuffer = -1;
+static volatile int32 gSubmittedDmaBuffer = -1;
 static bool8 gDmaActive = FALSE;
 static volatile uint8 gDmaReadyQueue[GC_DMA_BUFFER_COUNT];
 static volatile uint8 gDmaReadyHead = 0;
 static volatile uint8 gDmaReadyTail = 0;
 static volatile uint8 gDmaReadyCount = 0;
+static volatile bool8 gDmaExpectingAudio = FALSE;
+static volatile uint32 gDmaUnderrunCount = 0;
+static volatile uint32 gDmaSilenceBufferCount = 0;
+static volatile uint32 gDmaOutputBufferCount = 0;
+static volatile uint32 gDmaMinimumReadyDepth = GC_DMA_BUFFER_COUNT;
+static volatile uint32 gDmaBuffersFilled = 0;
+static volatile uint32 gDmaMaximumFillTimeUs = 0;
+static mutex_t gAudioStateMutex = LWP_MUTEX_NULL;
+static sem_t gAudioProducerSemaphore = LWP_SEM_NULL;
+static lwp_t gAudioProducerThread = LWP_THREAD_NULL;
+static volatile bool8 gAudioProducerStop = FALSE;
+static volatile bool8 gAudioProducerRunning = FALSE;
+static volatile bool8 gAudioProducerWakeRequested = FALSE;
+static uint8 gAudioProducerStack[32 * 1024] ATTRIBUTE_ALIGN(32);
 static int16 gDmaBuffers[GC_DMA_BUFFER_COUNT][GC_DMA_BUFFER_FRAMES * 2] ATTRIBUTE_ALIGN(32);
+static int16 gDmaSampleOnlyBuffers[GC_DMA_BUFFER_COUNT][GC_DMA_BUFFER_FRAMES * 2] ATTRIBUTE_ALIGN(32);
 static int16 gSilenceBuffer[GC_DMA_BUFFER_FRAMES * 2] ATTRIBUTE_ALIGN(32);
 static int32 gMixBuffer[GC_DMA_BUFFER_FRAMES * 2];
+
+class cAudioStateLock
+{
+	bool m_locked;
+
+public:
+	cAudioStateLock() : m_locked(false)
+	{
+		if (gAudioStateMutex != LWP_MUTEX_NULL) {
+			m_locked = LWP_MutexLock(gAudioStateMutex) == 0;
+		}
+	}
+
+	~cAudioStateLock()
+	{
+		if (m_locked)
+			LWP_MutexUnlock(gAudioStateMutex);
+	}
+};
+
+static void ResetStreamPlaybackClock(uint32 streamIndex)
+{
+	u32 level;
+	_CPU_ISR_Disable(level);
+	gStreamPlaybackGeneration[streamIndex]++;
+	gStreamPlayedOutputFrames[streamIndex] = 0;
+	_CPU_ISR_Restore(level);
+}
+
+static void ResetSamplePlaybackClock(uint32 channelIndex)
+{
+	u32 level;
+	_CPU_ISR_Disable(level);
+	gSamplePlaybackGeneration[channelIndex]++;
+	gSamplePendingOutputFrames[channelIndex] = 0;
+	_CPU_ISR_Restore(level);
+}
+
+static void AccountQueuedSampleBuffer(uint32 bufferIndex)
+{
+	for (uint32 i = 0; i < MAXCHANNELS + MAX2DCHANNELS; i++) {
+		if (gDmaBufferSampleGeneration[bufferIndex][i] == gSamplePlaybackGeneration[i])
+			gSamplePendingOutputFrames[i] += gDmaBufferSampleFrames[bufferIndex][i];
+	}
+}
+
+static void ReleaseQueuedSampleBuffer(uint32 bufferIndex)
+{
+	for (uint32 i = 0; i < MAXCHANNELS + MAX2DCHANNELS; i++) {
+		if (gDmaBufferSampleGeneration[bufferIndex][i] != gSamplePlaybackGeneration[i])
+			continue;
+		uint32 frames = gDmaBufferSampleFrames[bufferIndex][i];
+		if (frames >= gSamplePendingOutputFrames[i])
+			gSamplePendingOutputFrames[i] = 0;
+		else
+			gSamplePendingOutputFrames[i] -= frames;
+	}
+}
+
+static void CompleteDmaBufferPlayback(uint32 bufferIndex)
+{
+	ReleaseQueuedSampleBuffer(bufferIndex);
+	for (uint32 i = 0; i < MAX_STREAMS; i++) {
+		if (gDmaBufferSlotGeneration[bufferIndex][i] == gStreamPlaybackGeneration[i])
+			gStreamPlayedOutputFrames[i] += gDmaBufferSlotFrames[bufferIndex][i];
+	}
+	gDmaBufferStates[bufferIndex] = GC_BUFFER_FREE;
+}
+
+static bool DmaBufferHasSampleAudio(uint32 bufferIndex)
+{
+	for (uint32 i = 0; i < MAXCHANNELS + MAX2DCHANNELS; i++) {
+		if (gDmaBufferSampleFrames[bufferIndex][i] != 0)
+			return true;
+	}
+	return false;
+}
+
+static bool StreamHasQueuedReadyAudio(uint32 streamIndex)
+{
+	u32 level;
+	bool queued = false;
+	_CPU_ISR_Disable(level);
+	for (uint32 i = 0; i < GC_DMA_BUFFER_COUNT; i++) {
+		if (gDmaBufferStates[i] == GC_BUFFER_READY && gDmaBufferSlotFrames[i][streamIndex] != 0) {
+			queued = true;
+			break;
+		}
+	}
+	_CPU_ISR_Restore(level);
+	return queued;
+}
 
 static void ResetDmaReadyQueue()
 {
 	gDmaReadyHead = 0;
 	gDmaReadyTail = 0;
 	gDmaReadyCount = 0;
+}
+
+static void InvalidateReadyDmaBuffers()
+{
+	u32 level;
+	_CPU_ISR_Disable(level);
+	uint8 keptBuffers[GC_DMA_BUFFER_COUNT];
+	uint32 keptCount = 0;
+	uint32 queuedCount = gDmaReadyCount;
+
+	for (uint32 n = 0; n < queuedCount; n++) {
+		uint32 i = gDmaReadyQueue[(gDmaReadyHead + n) % GC_DMA_BUFFER_COUNT];
+		if (i >= GC_DMA_BUFFER_COUNT || gDmaBufferStates[i] != GC_BUFFER_READY)
+			continue;
+		if (DmaBufferHasSampleAudio(i)) {
+			memcpy(gDmaBuffers[i], gDmaSampleOnlyBuffers[i], GC_DMA_BUFFER_SIZE);
+			DCFlushRange(gDmaBuffers[i], GC_DMA_BUFFER_SIZE);
+			memset(gDmaBufferSlotFrames[i], 0, sizeof(gDmaBufferSlotFrames[i]));
+			memset(gDmaBufferSlotGeneration[i], 0, sizeof(gDmaBufferSlotGeneration[i]));
+			keptBuffers[keptCount++] = uint8(i);
+			continue;
+		}
+		ReleaseQueuedSampleBuffer(i);
+		gDmaBufferStates[i] = GC_BUFFER_FREE;
+		memset(gDmaBufferSlotFrames[i], 0, sizeof(gDmaBufferSlotFrames[i]));
+		memset(gDmaBufferSlotGeneration[i], 0, sizeof(gDmaBufferSlotGeneration[i]));
+		memset(gDmaBufferSampleFrames[i], 0, sizeof(gDmaBufferSampleFrames[i]));
+		memset(gDmaBufferSampleGeneration[i], 0, sizeof(gDmaBufferSampleGeneration[i]));
+	}
+
+	for (uint32 i = 0; i < keptCount; i++)
+		gDmaReadyQueue[i] = keptBuffers[i];
+	gDmaReadyHead = 0;
+	gDmaReadyTail = keptCount % GC_DMA_BUFFER_COUNT;
+	gDmaReadyCount = uint8(keptCount);
+	_CPU_ISR_Restore(level);
 }
 
 /* Call with audio interrupts disabled. */
@@ -1520,6 +1706,7 @@ static bool8 AnyActiveSampleChannels()
 static void CloseStreamSlot(uint32 index)
 {
 	tGcStreamSlot &slot = gStreamSlots[index];
+	ResetStreamPlaybackClock(index);
 	delete slot.decoder;
 	slot.decoder = NULL;
 	slot.preloaded = FALSE;
@@ -1532,10 +1719,11 @@ static void CloseStreamSlot(uint32 index)
 	slot.ResetRuntime();
 }
 
-static void ResetSlotForPlayback(tGcStreamSlot &slot, uint32 startPosMs)
+static void ResetSlotForPlayback(uint32 streamIndex, uint32 startPosMs)
 {
+	tGcStreamSlot &slot = gStreamSlots[streamIndex];
+	ResetStreamPlaybackClock(streamIndex);
 	slot.startPosMs = startPosMs;
-	slot.playedOutputFrames = 0;
 	slot.sourceEnded = FALSE;
 	slot.sourceFramesValid = 0;
 	slot.sourceFramePos = 0;
@@ -1671,21 +1859,51 @@ static uint32 MixSlotIntoBuffer(tGcStreamSlot &slot, int32 *mixBuffer, uint32 ou
 	return framesRendered;
 }
 
+static void ConvertMixBufferToPcm(const int32 *mixBuffer, int16 *outputBuffer)
+{
+	for (uint32 i = 0; i < GC_DMA_BUFFER_FRAMES * 2; i++) {
+		int64 magnitude = mixBuffer[i] < 0 ? -int64(mixBuffer[i]) : int64(mixBuffer[i]);
+		int64 softened = magnitude;
+		if (magnitude > 16384) {
+			if (magnitude >= 49152) {
+				softened = 32767;
+			} else {
+				int64 overKnee = magnitude - 16384;
+				softened = 16384 + overKnee - ((overKnee * overKnee) >> 16);
+			}
+		}
+		if (softened > 32767)
+			softened = 32767;
+		outputBuffer[i] = int16(mixBuffer[i] < 0 ? -softened : softened);
+	}
+}
+
 static bool FillDmaBuffer(uint32 bufferIndex)
 {
 	memset(gMixBuffer, 0, sizeof(gMixBuffer));
 	memset(gDmaBufferSlotFrames[bufferIndex], 0, sizeof(gDmaBufferSlotFrames[bufferIndex]));
+	memset(gDmaBufferSlotGeneration[bufferIndex], 0, sizeof(gDmaBufferSlotGeneration[bufferIndex]));
+	memset(gDmaBufferSampleFrames[bufferIndex], 0, sizeof(gDmaBufferSampleFrames[bufferIndex]));
+	memset(gDmaBufferSampleGeneration[bufferIndex], 0, sizeof(gDmaBufferSampleGeneration[bufferIndex]));
 
-	bool hasAudio = false;
+	bool hasSampleAudio = false;
 	for (uint32 i = 0; i < MAXCHANNELS + MAX2DCHANNELS; i++) {
 		uint32 frames = MixSampleChannelIntoBuffer(gSampleChannels[i], gMixBuffer, GC_DMA_BUFFER_FRAMES);
+		gDmaBufferSampleFrames[bufferIndex][i] = frames;
+		gDmaBufferSampleGeneration[bufferIndex][i] = gSamplePlaybackGeneration[i];
 		if (frames != 0)
-			hasAudio = true;
+			hasSampleAudio = true;
 	}
+	if (hasSampleAudio)
+		ConvertMixBufferToPcm(gMixBuffer, gDmaSampleOnlyBuffers[bufferIndex]);
+	else
+		memset(gDmaSampleOnlyBuffers[bufferIndex], 0, GC_DMA_BUFFER_SIZE);
 
+	bool hasAudio = hasSampleAudio;
 	for (uint32 i = 0; i < MAX_STREAMS; i++) {
 		uint32 frames = MixSlotIntoBuffer(gStreamSlots[i], gMixBuffer, GC_DMA_BUFFER_FRAMES);
 		gDmaBufferSlotFrames[bufferIndex][i] = frames;
+		gDmaBufferSlotGeneration[bufferIndex][i] = gStreamPlaybackGeneration[i];
 		if (frames != 0)
 			hasAudio = true;
 	}
@@ -1693,70 +1911,151 @@ static bool FillDmaBuffer(uint32 bufferIndex)
 	if (!hasAudio)
 		return false;
 
-	int64 peak = 0;
-	for (uint32 i = 0; i < GC_DMA_BUFFER_FRAMES * 2; i++) {
-		int64 magnitude = gMixBuffer[i] < 0 ? -int64(gMixBuffer[i]) : int64(gMixBuffer[i]);
-		if (magnitude > peak)
-			peak = magnitude;
-	}
-
-	uint32 gainQ16 = 1U << 16;
-	if (peak > 32767)
-		gainQ16 = uint32((int64(32767) << 16) / peak);
-
-	for (uint32 i = 0; i < GC_DMA_BUFFER_FRAMES * 2; i++) {
-		int32 limited = int32((int64(gMixBuffer[i]) * gainQ16) >> 16);
-		gDmaBuffers[bufferIndex][i] = ClampToInt16(limited);
-	}
+	ConvertMixBufferToPcm(gMixBuffer, gDmaBuffers[bufferIndex]);
 
 	DCFlushRange(gDmaBuffers[bufferIndex], GC_DMA_BUFFER_SIZE);
 	return true;
 }
 
-static void TryFillReadyBuffers()
+static void TryFillReadyBuffersLocked()
 {
-	if (!AnyActiveUnpausedStreams() && !AnyActiveSampleChannels())
+	gDmaExpectingAudio = AnyActiveUnpausedStreams() || AnyActiveSampleChannels();
+	if (!gDmaExpectingAudio)
 		return;
 
 	for (uint32 i = 0; i < GC_DMA_BUFFER_COUNT; i++) {
 		if (gDmaBufferStates[i] != GC_BUFFER_FREE)
 			continue;
-		if (!FillDmaBuffer(i))
+
+		u64 fillStart = gettime();
+		bool filled = FillDmaBuffer(i);
+		uint32 fillTimeUs = uint32(ticks_to_microsecs(gettime() - fillStart));
+		if (fillTimeUs > gDmaMaximumFillTimeUs)
+			gDmaMaximumFillTimeUs = fillTimeUs;
+		if (!filled)
 			break;
+		gDmaBuffersFilled++;
 
 		u32 level;
 		_CPU_ISR_Disable(level);
 		bool queued = gDmaBufferStates[i] == GC_BUFFER_FREE && PushDmaReadyBuffer(i);
-		if (queued)
+		if (queued) {
 			gDmaBufferStates[i] = GC_BUFFER_READY;
+			AccountQueuedSampleBuffer(i);
+		}
 		_CPU_ISR_Restore(level);
 		if (!queued)
 			break;
 	}
+
+	gDmaExpectingAudio = AnyActiveUnpausedStreams() || AnyActiveSampleChannels();
+}
+
+static void SignalAudioProducer()
+{
+	gAudioProducerWakeRequested = TRUE;
+	if (gAudioProducerSemaphore != LWP_SEM_NULL)
+		LWP_SemPost(gAudioProducerSemaphore);
+}
+
+static void *AudioProducerMain(void *)
+{
+	const struct timespec waitTime = { 0, 5000000 };
+	while (!gAudioProducerStop) {
+		LWP_SemTimedWait(gAudioProducerSemaphore, &waitTime);
+		if (gAudioProducerStop)
+			break;
+		if (!gAudioProducerWakeRequested)
+			continue;
+		gAudioProducerWakeRequested = FALSE;
+
+		cAudioStateLock lock;
+		TryFillReadyBuffersLocked();
+	}
+	return NULL;
+}
+
+static bool StartAudioProducer()
+{
+	if (gAudioProducerRunning)
+		return true;
+	if (gAudioStateMutex == LWP_MUTEX_NULL && LWP_MutexInit(&gAudioStateMutex, true) != 0)
+		return false;
+	if (gAudioProducerSemaphore == LWP_SEM_NULL && LWP_SemInit(&gAudioProducerSemaphore, 0, 1) != 0)
+		return false;
+
+	gAudioProducerStop = FALSE;
+	gAudioProducerWakeRequested = FALSE;
+	if (LWP_CreateThread(&gAudioProducerThread, AudioProducerMain, NULL,
+	                     gAudioProducerStack, sizeof(gAudioProducerStack),
+	                     LWP_PRIO_NORMAL + 16) != 0) {
+		gAudioProducerThread = LWP_THREAD_NULL;
+		return false;
+	}
+	gAudioProducerRunning = TRUE;
+	return true;
+}
+
+static void StopAudioProducer()
+{
+	if (gAudioProducerRunning) {
+		gAudioProducerStop = TRUE;
+		SignalAudioProducer();
+		LWP_JoinThread(gAudioProducerThread, NULL);
+		gAudioProducerThread = LWP_THREAD_NULL;
+		gAudioProducerRunning = FALSE;
+	}
+	if (gAudioProducerSemaphore != LWP_SEM_NULL) {
+		LWP_SemDestroy(gAudioProducerSemaphore);
+		gAudioProducerSemaphore = LWP_SEM_NULL;
+	}
+}
+
+static void DestroyAudioStateMutex()
+{
+	if (gAudioStateMutex != LWP_MUTEX_NULL) {
+		LWP_MutexDestroy(gAudioStateMutex);
+		gAudioStateMutex = LWP_MUTEX_NULL;
+	}
+}
+
+static void RequestAudioFillLocked()
+{
+	if (gAudioProducerRunning)
+		SignalAudioProducer();
+	else
+		TryFillReadyBuffersLocked();
 }
 
 static void AudioDmaCallback()
 {
 	u32 level;
 	_CPU_ISR_Disable(level);
+	gDmaOutputBufferCount++;
 
-	if (gCurrentDmaBuffer >= 0 && gCurrentDmaBuffer < int32(GC_DMA_BUFFER_COUNT)) {
-		for (uint32 i = 0; i < MAX_STREAMS; i++)
-			gStreamSlots[i].playedOutputFrames += gDmaBufferSlotFrames[gCurrentDmaBuffer][i];
-		gDmaBufferStates[gCurrentDmaBuffer] = GC_BUFFER_FREE;
-	}
+	if (gPlayingDmaBuffer >= 0 && gPlayingDmaBuffer < int32(GC_DMA_BUFFER_COUNT))
+		CompleteDmaBufferPlayback((uint32)gPlayingDmaBuffer);
+
+	gPlayingDmaBuffer = gSubmittedDmaBuffer;
+	gSubmittedDmaBuffer = -1;
 
 	int32 nextBuffer = PopDmaReadyBuffer();
+	if (gDmaExpectingAudio && gDmaReadyCount < gDmaMinimumReadyDepth)
+		gDmaMinimumReadyDepth = gDmaReadyCount;
 
-	gCurrentDmaBuffer = nextBuffer;
 	if (nextBuffer >= 0) {
 		gDmaBufferStates[nextBuffer] = GC_BUFFER_PLAYING;
 		AUDIO_InitDMA((u32)gDmaBuffers[nextBuffer], GC_DMA_BUFFER_SIZE);
+		gSubmittedDmaBuffer = nextBuffer;
 	} else {
+		gDmaSilenceBufferCount++;
+		if (gDmaExpectingAudio)
+			gDmaUnderrunCount++;
 		AUDIO_InitDMA((u32)gSilenceBuffer, GC_DMA_BUFFER_SIZE);
 	}
 
 	_CPU_ISR_Restore(level);
+	gAudioProducerWakeRequested = TRUE;
 }
 
 static void StartAudioDmaIfNeeded()
@@ -1769,9 +2068,21 @@ static void StartAudioDmaIfNeeded()
 
 	for (uint32 i = 0; i < GC_DMA_BUFFER_COUNT; i++) {
 		gDmaBufferStates[i] = GC_BUFFER_FREE;
+		memset(gDmaSampleOnlyBuffers[i], 0, sizeof(gDmaSampleOnlyBuffers[i]));
 		memset(gDmaBufferSlotFrames[i], 0, sizeof(gDmaBufferSlotFrames[i]));
+		memset(gDmaBufferSlotGeneration[i], 0, sizeof(gDmaBufferSlotGeneration[i]));
+		memset(gDmaBufferSampleFrames[i], 0, sizeof(gDmaBufferSampleFrames[i]));
+		memset(gDmaBufferSampleGeneration[i], 0, sizeof(gDmaBufferSampleGeneration[i]));
 	}
+	memset((void *)gSamplePendingOutputFrames, 0, sizeof(gSamplePendingOutputFrames));
 	ResetDmaReadyQueue();
+	gDmaExpectingAudio = FALSE;
+	gDmaUnderrunCount = 0;
+	gDmaSilenceBufferCount = 0;
+	gDmaOutputBufferCount = 0;
+	gDmaMinimumReadyDepth = GC_DMA_BUFFER_COUNT;
+	gDmaBuffersFilled = 0;
+	gDmaMaximumFillTimeUs = 0;
 
 	AUDIO_Init(NULL);
 	AUDIO_SetDSPSampleRate(AI_SAMPLERATE_48KHZ);
@@ -1779,9 +2090,35 @@ static void StartAudioDmaIfNeeded()
 	AUDIO_InitDMA((u32)gSilenceBuffer, GC_DMA_BUFFER_SIZE);
 	AUDIO_StartDMA();
 
-	gCurrentDmaBuffer = -1;
+	gPlayingDmaBuffer = -1;
+	gSubmittedDmaBuffer = -1;
 	gDmaActive = TRUE;
 }
+
+#if GC_AUDIO_DEBUG_LOG
+static void LogDmaDiagnostics()
+{
+	static uint32 serviceCallsUntilLog = 240;
+	if (--serviceCallsUntilLog != 0)
+		return;
+	serviceCallsUntilLog = 240;
+
+	u32 level;
+	_CPU_ISR_Disable(level);
+	uint32 underruns = gDmaUnderrunCount;
+	uint32 silenceBuffers = gDmaSilenceBufferCount;
+	uint32 outputBuffers = gDmaOutputBufferCount;
+	uint32 minimumReadyDepth = gDmaMinimumReadyDepth;
+	uint32 readyDepth = gDmaReadyCount;
+	uint32 buffersFilled = gDmaBuffersFilled;
+	uint32 maximumFillTimeUs = gDmaMaximumFillTimeUs;
+	_CPU_ISR_Restore(level);
+
+	GC_AUDIO_LOG("[GC-AUDIO] dma out=%u filled=%u underruns=%u silence=%u ready=%u minReady=%u maxFill=%uus\n",
+	             outputBuffers, buffersFilled, underruns, silenceBuffers, readyDepth,
+	             minimumReadyDepth, maximumFillTimeUs);
+}
+#endif
 
 }
 #endif
@@ -1882,6 +2219,8 @@ cSampleManager::Initialise(void)
 
 	for (uint32 i = 0; i < MAX_STREAMS; i++) {
 		gStreamLoopedFlag[i] = FALSE;
+		gStreamPlaybackGeneration[i] = 0;
+		gStreamPlayedOutputFrames[i] = 0;
 		gStreamSlots[i].decoder = NULL;
 		#ifdef WII
 		gStreamSlots[i].sourceBuffer = (int16*)MemoryMgrMallocMem2(sizeof(int16) * GC_SOURCE_BUFFER_FRAMES * 2, 32);
@@ -1924,6 +2263,8 @@ cSampleManager::Initialise(void)
 			gStreamLength[i] = length;
 	}
 
+	if (!StartAudioProducer())
+		printf("[GC-AUDIO] WARN: producer thread init failed; using synchronous refill\n");
 	StartAudioDmaIfNeeded();
 	_bSampmanInitialised = TRUE;
 	return TRUE;
@@ -1943,23 +2284,33 @@ cSampleManager::Terminate(void)
 		AUDIO_StopDMA();
 		AUDIO_RegisterDMACallback(NULL);
 		gDmaActive = FALSE;
-		gCurrentDmaBuffer = -1;
+		if (gPlayingDmaBuffer >= 0 && gPlayingDmaBuffer < int32(GC_DMA_BUFFER_COUNT))
+			gDmaBufferStates[gPlayingDmaBuffer] = GC_BUFFER_FREE;
+		if (gSubmittedDmaBuffer >= 0 && gSubmittedDmaBuffer < int32(GC_DMA_BUFFER_COUNT))
+			gDmaBufferStates[gSubmittedDmaBuffer] = GC_BUFFER_FREE;
+		gPlayingDmaBuffer = -1;
+		gSubmittedDmaBuffer = -1;
 	}
+	StopAudioProducer();
 	ResetDmaReadyQueue();
 
-	for (uint32 i = 0; i < MAX_STREAMS; i++) {
-		CloseStreamSlot(i);
-		#ifdef WII
-		MemoryMgrFreeMem2(gStreamSlots[i].sourceBuffer);
-		#else
-		free(gStreamSlots[i].sourceBuffer);
-		#endif
-		gStreamSlots[i].sourceBuffer = NULL;
-	}
+	{
+		cAudioStateLock lock;
+		for (uint32 i = 0; i < MAX_STREAMS; i++) {
+			CloseStreamSlot(i);
+			#ifdef WII
+			MemoryMgrFreeMem2(gStreamSlots[i].sourceBuffer);
+			#else
+			free(gStreamSlots[i].sourceBuffer);
+			#endif
+			gStreamSlots[i].sourceBuffer = NULL;
+		}
 
-	FreeSampleBankMemory();
-	CloseSampleBankFiles();
-	ResetSampleBankState();
+		FreeSampleBankMemory();
+		CloseSampleBankFiles();
+		ResetSampleBankState();
+	}
+	DestroyAudioStateMutex();
 
 	_bSampmanInitialised = FALSE;
 #endif
@@ -1983,6 +2334,9 @@ cSampleManager::UpdateEffectsVolume(void)
 void
 cSampleManager::SetEffectsMasterVolume(uint8 nVolume)
 {
+#ifdef GAMECUBE
+	cAudioStateLock lock;
+#endif
 	m_nEffectsVolume = Min((uint32)nVolume, (uint32)MAX_VOLUME);
 
 #ifdef GAMECUBE
@@ -2003,6 +2357,9 @@ cSampleManager::SetEffectsMasterVolume(uint8 nVolume)
 void
 cSampleManager::SetMusicMasterVolume(uint8 nVolume)
 {
+#ifdef GAMECUBE
+	cAudioStateLock lock;
+#endif
 	m_nMusicVolume = Min((uint32)nVolume, (uint32)MAX_VOLUME);
 
 #ifdef GAMECUBE
@@ -2023,12 +2380,18 @@ cSampleManager::SetMusicMasterVolume(uint8 nVolume)
 void
 cSampleManager::SetMP3BoostVolume(uint8 nVolume)
 {
+#ifdef GAMECUBE
+	cAudioStateLock lock;
+#endif
 	m_nMP3BoostVolume = Min((uint32)nVolume, (uint32)MAX_VOLUME);
 }
 
 void
 cSampleManager::SetEffectsFadeVolume(uint8 nVolume)
 {
+#ifdef GAMECUBE
+	cAudioStateLock lock;
+#endif
 	m_nEffectsFadeVolume = Min((uint32)nVolume, (uint32)MAX_VOLUME);
 
 #ifdef GAMECUBE
@@ -2049,6 +2412,9 @@ cSampleManager::SetEffectsFadeVolume(uint8 nVolume)
 void
 cSampleManager::SetMusicFadeVolume(uint8 nVolume)
 {
+#ifdef GAMECUBE
+	cAudioStateLock lock;
+#endif
 	m_nMusicFadeVolume = Min((uint32)nVolume, (uint32)MAX_VOLUME);
 
 #ifdef GAMECUBE
@@ -2069,6 +2435,9 @@ cSampleManager::SetMusicFadeVolume(uint8 nVolume)
 void
 cSampleManager::SetMonoMode(bool8 nMode)
 {
+#ifdef GAMECUBE
+	cAudioStateLock lock;
+#endif
 	m_nMonoMode = nMode;
 }
 
@@ -2078,6 +2447,7 @@ cSampleManager::LoadSampleBank(uint8 nBank)
 	ASSERT(nBank < MAX_SFX_BANKS);
 
 #ifdef GAMECUBE
+	cAudioStateLock lock;
 	if (!GC_AUDIO_ENABLED)
 		return FALSE;
 	if (nBank >= MAX_SFX_BANKS || gSampleDataFile == NULL || gSampleBankMemoryStartAddress[nBank] == NULL || gSampleBankSize[nBank] == 0)
@@ -2103,6 +2473,7 @@ cSampleManager::UnloadSampleBank(uint8 nBank)
 	ASSERT(nBank < MAX_SFX_BANKS);
 
 #ifdef GAMECUBE
+	cAudioStateLock lock;
 	if (nBank < MAX_SFX_BANKS)
 		gSampleBankLoaded[nBank] = FALSE;
 #endif
@@ -2178,6 +2549,7 @@ cSampleManager::LoadPedComment(uint32 nComment)
 	ASSERT(nComment < TOTAL_AUDIO_SAMPLES);
 
 #ifdef GAMECUBE
+	cAudioStateLock lock;
 	if (!GC_AUDIO_ENABLED || gSampleDataFile == NULL || nComment >= TOTAL_AUDIO_SAMPLES)
 		return FALSE;
 	if (m_aSamples[nComment].nSize == 0)
@@ -2257,6 +2629,7 @@ cSampleManager::SetChannelReverbFlag(uint32 nChannel, bool8 nReverbFlag)
 	ASSERT(nChannel < MAXCHANNELS + MAX2DCHANNELS);
 
 #ifdef GAMECUBE
+	cAudioStateLock lock;
 	gSampleChannels[nChannel].reverbFlag = nReverbFlag != FALSE;
 #else
 	(void)nReverbFlag;
@@ -2269,7 +2642,14 @@ cSampleManager::InitialiseChannel(uint32 nChannel, uint32 nSfx, uint8 nBank)
 	ASSERT(nChannel < MAXCHANNELS + MAX2DCHANNELS);
 
 #ifdef GAMECUBE
+	cAudioStateLock lock;
 	if (!GC_AUDIO_ENABLED || nSfx >= TOTAL_AUDIO_SAMPLES)
+		return FALSE;
+	u32 level;
+	_CPU_ISR_Disable(level);
+	bool8 hasPendingOutput = gSamplePendingOutputFrames[nChannel] != 0;
+	_CPU_ISR_Restore(level);
+	if (hasPendingOutput)
 		return FALSE;
 
 	if (nBank >= MAX_SFX_BANKS)
@@ -2291,6 +2671,7 @@ cSampleManager::InitialiseChannel(uint32 nChannel, uint32 nSfx, uint8 nBank)
 		return FALSE;
 
 	tGcSampleChannel &channel = gSampleChannels[nChannel];
+	ResetSamplePlaybackClock(nChannel);
 	ResetSampleChannel(channel);
 	UpdateSampleChannelVolume(channel, m_nEffectsVolume, m_nEffectsFadeVolume);
 	channel.initialised = TRUE;
@@ -2308,6 +2689,7 @@ cSampleManager::InitialiseChannel(uint32 nChannel, uint32 nSfx, uint8 nBank)
 	channel.stepQ16 = ComputeChannelStepQ16(channel.frequency);
 	if (channel.stepQ16 == 0)
 		channel.stepQ16 = ComputeChannelStepQ16(channel.baseFrequency != 0 ? channel.baseFrequency : DIGITALRATE);
+	channel.edgeRampFrames = ComputeSampleEdgeRampFrames(channel.sampleCount, channel.stepQ16);
 
 	return TRUE;
 #else
@@ -2323,6 +2705,7 @@ cSampleManager::SetChannelEmittingVolume(uint32 nChannel, uint32 nVolume)
 	ASSERT(nChannel < MAXCHANNELS + MAX2DCHANNELS);
 
 #ifdef GAMECUBE
+	cAudioStateLock lock;
 	tGcSampleChannel &channel = gSampleChannels[nChannel];
 	channel.requestedVolume = ClampVolume127(nVolume);
 	UpdateSampleChannelVolume(channel, m_nEffectsVolume, m_nEffectsFadeVolume);
@@ -2338,6 +2721,7 @@ cSampleManager::SetChannel3DPosition(uint32 nChannel, float fX, float fY, float 
 	ASSERT(nChannel < MAXCHANNELS + MAX2DCHANNELS);
 
 #ifdef GAMECUBE
+	cAudioStateLock lock;
 	gSampleChannels[nChannel].position = CVector(fX, fY, fZ);
 #else
 	(void)fX;
@@ -2353,6 +2737,7 @@ cSampleManager::SetChannel3DDistances(uint32 nChannel, float fMax, float fMin)
 	ASSERT(nChannel < MAXCHANNELS + MAX2DCHANNELS);
 
 #ifdef GAMECUBE
+	cAudioStateLock lock;
 	gSampleChannels[nChannel].maxDistance = fMax;
 	(void)fMin;
 #else
@@ -2368,6 +2753,7 @@ cSampleManager::SetChannelVolume(uint32 nChannel, uint32 nVolume)
 	ASSERT(nChannel < MAXCHANNELS + MAX2DCHANNELS);
 
 #ifdef GAMECUBE
+	cAudioStateLock lock;
 	tGcSampleChannel &channel = gSampleChannels[nChannel];
 	channel.requestedVolume = ClampVolume127(nVolume);
 	UpdateSampleChannelVolume(channel, m_nEffectsVolume, m_nEffectsFadeVolume);
@@ -2382,6 +2768,7 @@ cSampleManager::SetChannelPan(uint32 nChannel, uint32 nPan)
 	ASSERT(nChannel < MAXCHANNELS + MAX2DCHANNELS);
 
 #ifdef GAMECUBE
+	cAudioStateLock lock;
 	gSampleChannels[nChannel].pan = ClampPan127(nPan);
 #else
 	(void)nPan;
@@ -2394,9 +2781,11 @@ cSampleManager::SetChannelFrequency(uint32 nChannel, uint32 nFreq)
 	ASSERT(nChannel < MAXCHANNELS + MAX2DCHANNELS);
 
 #ifdef GAMECUBE
+	cAudioStateLock lock;
 	tGcSampleChannel &channel = gSampleChannels[nChannel];
 	channel.frequency = nFreq;
 	channel.stepQ16 = ComputeChannelStepQ16(nFreq);
+	channel.edgeRampFrames = ComputeSampleEdgeRampFrames(channel.sampleCount, channel.stepQ16);
 	if (nFreq == 0)
 		channel.active = FALSE;
 #else
@@ -2410,6 +2799,7 @@ cSampleManager::SetChannelLoopPoints(uint32 nChannel, uint32 nLoopStart, int32 n
 	ASSERT(nChannel < MAXCHANNELS + MAX2DCHANNELS);
 
 #ifdef GAMECUBE
+	cAudioStateLock lock;
 	gSampleChannels[nChannel].loopStartBytes = nLoopStart;
 	gSampleChannels[nChannel].loopEndBytes = nLoopEnd;
 #else
@@ -2424,6 +2814,7 @@ cSampleManager::SetChannelLoopCount(uint32 nChannel, uint32 nLoopCount)
 	ASSERT(nChannel < MAXCHANNELS + MAX2DCHANNELS);
 
 #ifdef GAMECUBE
+	cAudioStateLock lock;
 	gSampleChannels[nChannel].loopCount = nLoopCount;
 #else
 	(void)nLoopCount;
@@ -2436,7 +2827,12 @@ cSampleManager::GetChannelUsedFlag(uint32 nChannel)
 	ASSERT(nChannel < MAXCHANNELS + MAX2DCHANNELS);
 
 #ifdef GAMECUBE
-	return gSampleChannels[nChannel].active;
+	cAudioStateLock lock;
+	u32 level;
+	_CPU_ISR_Disable(level);
+	bool8 hasPendingOutput = gSamplePendingOutputFrames[nChannel] != 0;
+	_CPU_ISR_Restore(level);
+	return gSampleChannels[nChannel].active || hasPendingOutput;
 #else
 	return FALSE;
 #endif
@@ -2448,6 +2844,7 @@ cSampleManager::StartChannel(uint32 nChannel)
 	ASSERT(nChannel < MAXCHANNELS + MAX2DCHANNELS);
 
 #ifdef GAMECUBE
+	cAudioStateLock lock;
 	tGcSampleChannel &channel = gSampleChannels[nChannel];
 	if (!GC_AUDIO_ENABLED || !channel.initialised || channel.sampleData == NULL || channel.sampleCount == 0 || channel.stepQ16 == 0) {
 		channel.active = FALSE;
@@ -2456,7 +2853,7 @@ cSampleManager::StartChannel(uint32 nChannel)
 
 	channel.active = TRUE;
 	channel.paused = FALSE;
-	TryFillReadyBuffers();
+	RequestAudioFillLocked();
 #endif
 }
 
@@ -2466,6 +2863,8 @@ cSampleManager::StopChannel(uint32 nChannel)
 	ASSERT(nChannel < MAXCHANNELS + MAX2DCHANNELS);
 
 #ifdef GAMECUBE
+	cAudioStateLock lock;
+	/* The DMA mixer may still contain this channel after rendering stops. */
 	ResetSampleChannel(gSampleChannels[nChannel]);
 #endif
 }
@@ -2481,9 +2880,13 @@ cSampleManager::PreloadStreamedFile(tTrack nFile, uint8 nStream)
 	if (nFile >= TOTAL_STREAMED_SOUNDS)
 		return;
 
+	CGcStreamDecoder *decoder = OpenTrackDecoder(nFile);
+	cAudioStateLock lock;
+	if (gStreamSlots[nStream].active || StreamHasQueuedReadyAudio(nStream))
+		InvalidateReadyDmaBuffers();
 	CloseStreamSlot(nStream);
 	tGcStreamSlot &slot = gStreamSlots[nStream];
-	slot.decoder = OpenTrackDecoder(nFile);
+	slot.decoder = decoder;
 	if (slot.decoder == NULL)
 		return;
 
@@ -2504,8 +2907,13 @@ cSampleManager::PauseStream(bool8 nPauseFlag, uint8 nStream)
 	ASSERT(nStream < MAX_STREAMS);
 
 #ifdef GAMECUBE
-	if (gStreamSlots[nStream].decoder)
+	cAudioStateLock lock;
+	if (gStreamSlots[nStream].decoder && gStreamSlots[nStream].paused != (nPauseFlag != FALSE)) {
+		if (gStreamSlots[nStream].active || StreamHasQueuedReadyAudio(nStream))
+			InvalidateReadyDmaBuffers();
 		gStreamSlots[nStream].paused = nPauseFlag != FALSE;
+	}
+	RequestAudioFillLocked();
 #endif
 }
 
@@ -2515,17 +2923,20 @@ cSampleManager::StartPreloadedStreamedFile(uint8 nStream)
 	ASSERT(nStream < MAX_STREAMS);
 
 #ifdef GAMECUBE
+	cAudioStateLock lock;
 	if (!GC_AUDIO_ENABLED)
 		return;
 	tGcStreamSlot &slot = gStreamSlots[nStream];
 	if (!slot.decoder)
 		return;
 
-	ResetSlotForPlayback(slot, 0);
+	if (slot.active || StreamHasQueuedReadyAudio(nStream))
+		InvalidateReadyDmaBuffers();
+	ResetSlotForPlayback(nStream, 0);
 	slot.active = TRUE;
 	slot.paused = FALSE;
 	slot.preloaded = TRUE;
-	TryFillReadyBuffers();
+	RequestAudioFillLocked();
 #endif
 }
 
@@ -2540,9 +2951,13 @@ cSampleManager::StartStreamedFile(tTrack nFile, uint32 nPos, uint8 nStream)
 	if (nFile >= TOTAL_STREAMED_SOUNDS)
 		return FALSE;
 
+	CGcStreamDecoder *decoder = OpenTrackDecoder(nFile);
+	cAudioStateLock lock;
+	if (gStreamSlots[nStream].active || StreamHasQueuedReadyAudio(nStream))
+		InvalidateReadyDmaBuffers();
 	CloseStreamSlot(nStream);
 	tGcStreamSlot &slot = gStreamSlots[nStream];
-	slot.decoder = OpenTrackDecoder(nFile);
+	slot.decoder = decoder;
 	if (slot.decoder == NULL)
 		return FALSE;
 
@@ -2553,10 +2968,10 @@ cSampleManager::StartStreamedFile(tTrack nFile, uint32 nPos, uint8 nStream)
 	slot.pan = 63;
 	slot.mixVolume = MAX_VOLUME;
 	slot.effectFlag = FALSE;
-	ResetSlotForPlayback(slot, nPos);
+	ResetSlotForPlayback(nStream, nPos);
 	slot.active = TRUE;
 	slot.paused = FALSE;
-	TryFillReadyBuffers();
+	RequestAudioFillLocked();
 	return TRUE;
 #else
 	return FALSE;
@@ -2569,7 +2984,11 @@ cSampleManager::StopStreamedFile(uint8 nStream)
 	ASSERT(nStream < MAX_STREAMS);
 
 #ifdef GAMECUBE
+	cAudioStateLock lock;
+	if (gStreamSlots[nStream].active || StreamHasQueuedReadyAudio(nStream))
+		InvalidateReadyDmaBuffers();
 	CloseStreamSlot(nStream);
+	RequestAudioFillLocked();
 #endif
 }
 
@@ -2579,11 +2998,16 @@ cSampleManager::GetStreamedFilePosition(uint8 nStream)
 	ASSERT(nStream < MAX_STREAMS);
 
 #ifdef GAMECUBE
+	cAudioStateLock lock;
 	tGcStreamSlot &slot = gStreamSlots[nStream];
 	if (!slot.decoder)
 		return 0;
 
-	uint32 playedMs = SamplesToMs(GC_OUTPUT_RATE, slot.playedOutputFrames);
+	u32 level;
+	_CPU_ISR_Disable(level);
+	uint64 playedOutputFrames = gStreamPlayedOutputFrames[nStream];
+	_CPU_ISR_Restore(level);
+	uint32 playedMs = SamplesToMs(GC_OUTPUT_RATE, playedOutputFrames);
 	uint32 pos = slot.startPosMs + playedMs;
 	if (slot.loop && slot.lengthMs > 0)
 		pos %= slot.lengthMs;
@@ -2605,6 +3029,7 @@ cSampleManager::SetStreamedVolumeAndPan(uint8 nVolume, uint8 nPan, bool8 nEffect
 	ASSERT(nStream < MAX_STREAMS);
 
 #ifdef GAMECUBE
+	cAudioStateLock lock;
 #ifdef GTA_PS2
 	uint8 pan = nLRPan;
 #else
@@ -2654,6 +3079,7 @@ cSampleManager::IsStreamPlaying(uint8 nStream)
 	ASSERT(nStream < MAX_STREAMS);
 
 #ifdef GAMECUBE
+	cAudioStateLock lock;
 	return gStreamSlots[nStream].active;
 #else
 	return FALSE;
@@ -2664,7 +3090,15 @@ void
 cSampleManager::Service(void)
 {
 #ifdef GAMECUBE
-	TryFillReadyBuffers();
+	if (gAudioProducerRunning) {
+		SignalAudioProducer();
+	} else {
+		cAudioStateLock lock;
+		TryFillReadyBuffersLocked();
+	}
+#if GC_AUDIO_DEBUG_LOG
+	LogDmaDiagnostics();
+#endif
 #endif
 }
 
@@ -2672,6 +3106,7 @@ bool8
 cSampleManager::InitialiseSampleBanks(void)
 {
 #ifdef GAMECUBE
+	/* Initialisation runs before the producer thread is started. */
 	if (!GC_AUDIO_ENABLED)
 		return TRUE;
 
@@ -2735,14 +3170,17 @@ cSampleManager::SetStreamedFileLoopFlag(bool8 nLoopFlag, uint8 nChannel)
 {
 #ifdef GAMECUBE
 	ASSERT(nChannel < MAX_STREAMS);
+	cAudioStateLock lock;
 	gStreamLoopedFlag[nChannel] = nLoopFlag != FALSE;
 	gStreamSlots[nChannel].loop = nLoopFlag != FALSE;
 #endif
 }
 
+#ifdef EXTERNAL_3D_SOUND
 int8 cSampleManager::AutoDetect3DProviders()
 {
 	return GC_AUDIO_ENABLED ? 0 : -1;
 }
+#endif
 
 #endif

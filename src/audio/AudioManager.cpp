@@ -1252,7 +1252,12 @@ cAudioManager::ProcessActiveQueues()
 			{
 				for (uint8 j = 0; j < m_nActiveSamples; j++) {
 					uint8 k = (j + m_nChannelOffset) % m_nActiveSamples;
-					if (!m_asActiveSamples[k].m_bIsBeingPlayed) {
+					if (!m_asActiveSamples[k].m_bIsBeingPlayed
+#ifdef GAMECUBE
+						// Do not reuse a channel while its pre-rendered DMA tail is audible.
+						&& !SampleManager.GetChannelUsedFlag(k)
+#endif
+					) {
 						if (sample.m_nLoopCount > 0) {
 							samplesPerFrame = sample.m_nFrequency / m_nTimeSpent;
 							samplesToPlay = sample.m_nLoopCount * SampleManager.GetSampleLength(sample.m_nSampleIndex);
