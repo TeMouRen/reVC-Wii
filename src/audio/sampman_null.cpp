@@ -41,9 +41,20 @@ static const bool8 GC_AUDIO_ENABLED =
 static const uint32 GC_OUTPUT_RATE = 48000;
 static const uint32 GC_DMA_BUFFER_SIZE = 8192;
 static const uint32 GC_DMA_BUFFER_FRAMES = GC_DMA_BUFFER_SIZE / (sizeof(int16) * 2);
-static const uint32 GC_DMA_BUFFER_COUNT = 3;
-static const uint32 GC_SOURCE_BUFFER_FRAMES = 4096;
-static const uint32 GC_IDSP_READ_CACHE_SIZE = 64 * 1024;
+/* Four 42.7 ms buffers add one block of scheduling headroom without the
+ * latency of a much deeper ready queue. Stream I/O runs on another thread. */
+static const uint32 GC_DMA_BUFFER_COUNT = 4;
+static const uint32 GC_SOURCE_BUFFER_FRAMES = 8192;
+static const uint32 GC_STREAM_DECODE_CHUNK_FRAMES = 2048;
+static const uint32 GC_STREAM_DECODE_RETRY_LIMIT = 8;
+static const uint32 GC_SFX_RESAMPLE_FRAC_BITS = 14;
+static const uint32 GC_SFX_RESAMPLE_FRAC_MASK = (1U << GC_SFX_RESAMPLE_FRAC_BITS) - 1;
+static const uint32 GC_STREAM_RESAMPLE_FRAC_BITS = 14;
+static const uint32 GC_STREAM_RESAMPLE_FRAC_MASK = (1U << GC_STREAM_RESAMPLE_FRAC_BITS) - 1;
+/* Cap each compressed refill at 32 KiB instead of holding a 64 KiB logical
+ * read. A file offset may still make this straddle two physical clusters. */
+static const uint32 GC_IDSP_READ_CACHE_SIZE = 32 * 1024;
+static const uint32 GC_IDSP_SECTOR_SIZE = 2048;
 static const uint32 GC_SFX_EDGE_RAMP_FRAMES = 64;
 
 static const uint32 GC_ADPCM_FRAME_SIZE = 8;
@@ -63,6 +74,8 @@ enum eDmaBufferState
 	GC_BUFFER_FREE = 0,
 	GC_BUFFER_READY,
 	GC_BUFFER_PLAYING,
+	/* Reserved by the producer while it performs decode/file I/O. */
+	GC_BUFFER_FILLING,
 };
 
 struct tAdpcmHist
@@ -92,8 +105,8 @@ struct tGcSampleChannel
 	CVector position;
 	const int16 *sampleData;
 	uint32 sampleCount;
-	uint32 cursorQ16;
-	uint32 stepQ16;
+	uint32 cursorFixed;
+	uint32 stepFixed;
 	uint32 renderedOutputFrames;
 	uint32 edgeRampFrames;
 };
@@ -273,8 +286,8 @@ static void ResetSampleChannel(tGcSampleChannel &channel)
 	channel.position = CVector(0.0f, 0.0f, 0.0f);
 	channel.sampleData = NULL;
 	channel.sampleCount = 0;
-	channel.cursorQ16 = 0;
-	channel.stepQ16 = 0;
+	channel.cursorFixed = 0;
+	channel.stepFixed = 0;
 	channel.renderedOutputFrames = 0;
 	channel.edgeRampFrames = 0;
 }
@@ -440,23 +453,23 @@ static bool8 BuildSampleBankOffsets(const tSample *samples)
 	return gSampleBankSize[SFX_BANK_0] != 0;
 }
 
-static uint32 ComputeChannelStepQ16(uint32 frequency)
+static uint32 ComputeChannelStepFixed(uint32 frequency)
 {
 	if (frequency == 0)
 		return 0;
-	uint64 step = (uint64(frequency) << 16) / GC_OUTPUT_RATE;
+	uint64 step = ((uint64(frequency) << GC_SFX_RESAMPLE_FRAC_BITS) + GC_OUTPUT_RATE / 2) / GC_OUTPUT_RATE;
 	if (step == 0)
 		step = 1;
 	return uint32(step);
 }
 
-static uint32 ComputeSampleEdgeRampFrames(uint32 sampleCount, uint32 stepQ16)
+static uint32 ComputeSampleEdgeRampFrames(uint32 sampleCount, uint32 stepFixed)
 {
-	if (sampleCount == 0 || stepQ16 == 0)
+	if (sampleCount == 0 || stepFixed == 0)
 		return 0;
 
-	uint64 durationQ16 = uint64(sampleCount) << 16;
-	uint64 outputFrames = (durationQ16 + stepQ16 - 1) / stepQ16;
+	uint64 durationFixed = uint64(sampleCount) << GC_SFX_RESAMPLE_FRAC_BITS;
+	uint64 outputFrames = (durationFixed + stepFixed - 1) / stepFixed;
 	return uint32(Min(uint64(GC_SFX_EDGE_RAMP_FRAMES), outputFrames / 2));
 }
 
@@ -545,7 +558,7 @@ static int32 BytesToLoopEndSampleIndex(int32 bytes)
 
 static bool RenderNextSampleChannelFrame(tGcSampleChannel &channel, int16 &outL, int16 &outR)
 {
-	if (!channel.active || channel.paused || channel.sampleData == NULL || channel.sampleCount == 0 || channel.stepQ16 == 0)
+	if (!channel.active || channel.paused || channel.sampleData == NULL || channel.sampleCount == 0 || channel.stepFixed == 0)
 		return false;
 
 	const bool looping = channel.loopCount == 0 || channel.loopCount > 1;
@@ -558,7 +571,7 @@ static bool RenderNextSampleChannelFrame(tGcSampleChannel &channel, int16 &outL,
 	if (loopEndSample > int32(loopStart) && uint32(loopEndSample) <= channel.sampleCount)
 		loopEnd = uint32(loopEndSample);
 
-	uint32 sampleIndex = channel.cursorQ16 >> 16;
+	uint32 sampleIndex = channel.cursorFixed >> GC_SFX_RESAMPLE_FRAC_BITS;
 	if (sampleIndex >= channel.sampleCount || (looping && sampleIndex >= loopEnd)) {
 		if (!looping) {
 			channel.active = FALSE;
@@ -566,11 +579,11 @@ static bool RenderNextSampleChannelFrame(tGcSampleChannel &channel, int16 &outL,
 		}
 		if (channel.loopCount > 1)
 			channel.loopCount--;
-		channel.cursorQ16 = loopStart << 16;
+		channel.cursorFixed = loopStart << GC_SFX_RESAMPLE_FRAC_BITS;
 		sampleIndex = loopStart;
 	}
 
-	uint32 fractional = channel.cursorQ16 & 0xffff;
+	uint32 fractional = channel.cursorFixed & GC_SFX_RESAMPLE_FRAC_MASK;
 	uint32 nextIndex = sampleIndex + 1;
 	if (looping && nextIndex >= loopEnd)
 		nextIndex = loopStart;
@@ -579,17 +592,17 @@ static bool RenderNextSampleChannelFrame(tGcSampleChannel &channel, int16 &outL,
 
 	int32 currentSample = channel.sampleData[sampleIndex];
 	int32 nextSample = channel.sampleData[nextIndex];
-	int32 interpolated = currentSample + int32((int64(nextSample - currentSample) * fractional) >> 16);
+	int32 interpolated = currentSample + ((nextSample - currentSample) * int32(fractional) >> GC_SFX_RESAMPLE_FRAC_BITS);
 	int16 mono = int16(interpolated);
 	outL = mono;
 	outR = mono;
 
-	channel.cursorQ16 += channel.stepQ16;
+	channel.cursorFixed += channel.stepFixed;
 
-	if (looping && (channel.cursorQ16 >> 16) >= loopEnd) {
+	if (looping && (channel.cursorFixed >> GC_SFX_RESAMPLE_FRAC_BITS) >= loopEnd) {
 		if (channel.loopCount > 1)
 			channel.loopCount--;
-		channel.cursorQ16 = loopStart << 16;
+		channel.cursorFixed = loopStart << GC_SFX_RESAMPLE_FRAC_BITS;
 	}
 
 	return true;
@@ -621,19 +634,24 @@ static uint32 MixSampleChannelIntoBuffer(tGcSampleChannel &channel, int32 *mixBu
 			edgeGainQ16 = ((channel.renderedOutputFrames + 1) << 16) / channel.edgeRampFrames;
 
 		if (channel.edgeRampFrames != 0 && channel.loopCount == 1) {
-			uint64 sampleEndQ16 = uint64(channel.sampleCount) << 16;
-			uint64 remainingQ16 = channel.cursorQ16 < sampleEndQ16 ? sampleEndQ16 - channel.cursorQ16 : 0;
-			uint64 remainingFrames = (remainingQ16 + channel.stepQ16 - 1) / channel.stepQ16;
-			uint64 currentAndRemainingFrames = remainingFrames + 1;
-			if (currentAndRemainingFrames <= channel.edgeRampFrames) {
-				uint32 endGainQ16 = uint32((currentAndRemainingFrames << 16) / channel.edgeRampFrames);
-				edgeGainQ16 = Min(edgeGainQ16, endGainQ16);
+			uint64 sampleEndFixed = uint64(channel.sampleCount) << GC_SFX_RESAMPLE_FRAC_BITS;
+			uint64 remainingFixed = channel.cursorFixed < sampleEndFixed ? sampleEndFixed - channel.cursorFixed : 0;
+			/* Most of a one-shot sample is far from its end ramp. Avoid the
+			 * 64-bit division until the remaining fixed-point distance is within
+			 * the ramp window. */
+			if (remainingFixed <= uint64(channel.edgeRampFrames) * channel.stepFixed) {
+				uint64 remainingFrames = (remainingFixed + channel.stepFixed - 1) / channel.stepFixed;
+				uint64 currentAndRemainingFrames = remainingFrames + 1;
+				if (currentAndRemainingFrames <= channel.edgeRampFrames) {
+					uint32 endGainQ16 = uint32((currentAndRemainingFrames << 16) / channel.edgeRampFrames);
+					edgeGainQ16 = Min(edgeGainQ16, endGainQ16);
+				}
 			}
 		}
 
 		uint32 outIndex = framesRendered * 2;
-		int32 rampedLeft = int32((int64(left) * edgeGainQ16) >> 16);
-		int32 rampedRight = int32((int64(right) * edgeGainQ16) >> 16);
+		int32 rampedLeft = edgeGainQ16 == (1U << 16) ? int32(left) : int32((int64(left) * edgeGainQ16) >> 16);
+		int32 rampedRight = edgeGainQ16 == (1U << 16) ? int32(right) : int32((int64(right) * edgeGainQ16) >> 16);
 		mixBuffer[outIndex + 0] += (rampedLeft * int32(leftGain)) / MAX_VOLUME;
 		mixBuffer[outIndex + 1] += (rampedRight * int32(rightGain)) / MAX_VOLUME;
 		channel.renderedOutputFrames++;
@@ -951,16 +969,32 @@ class CIdspStreamDecoder : public CGcStreamDecoder
 		if (m_pReadCache == NULL || m_ReadCacheCapacityBlocks == 0 || blockIndex >= m_BlockCount)
 			return false;
 
-		uint32 blocksToRead = Min(m_ReadCacheCapacityBlocks, m_BlockCount - blockIndex);
+		/* IDSP audio begins after a 0x100-byte header.  Align steady-state
+		 * cache windows to DVD sectors so the Wii VFS can use direct DMA instead
+		 * of allocating a bounce buffer for every radio refill. */
+		uint32 cacheFirstBlock = blockIndex;
+		if (m_CombinedBlockSize != 0 && GC_IDSP_SECTOR_SIZE % m_CombinedBlockSize == 0) {
+			uint32 blocksPerSector = GC_IDSP_SECTOR_SIZE / m_CombinedBlockSize;
+			uint32 firstAlignedBlock = (GC_IDSP_SECTOR_SIZE - (m_AudioDataOffset % GC_IDSP_SECTOR_SIZE)) % GC_IDSP_SECTOR_SIZE;
+			if (firstAlignedBlock % m_CombinedBlockSize == 0) {
+				firstAlignedBlock /= m_CombinedBlockSize;
+				if (blockIndex >= firstAlignedBlock)
+					cacheFirstBlock = firstAlignedBlock + ((blockIndex - firstAlignedBlock) / blocksPerSector) * blocksPerSector;
+			}
+		}
+
+		uint32 blocksToRead = Min(m_ReadCacheCapacityBlocks, m_BlockCount - cacheFirstBlock);
+		if (blockIndex < cacheFirstBlock)
+			blocksToRead = Min(blocksToRead, cacheFirstBlock - blockIndex);
 		uint32 bytesToRead = blocksToRead * m_CombinedBlockSize;
-		uint64 offset = uint64(m_AudioDataOffset) + uint64(blockIndex) * m_CombinedBlockSize;
+		uint64 offset = uint64(m_AudioDataOffset) + uint64(cacheFirstBlock) * m_CombinedBlockSize;
 		uint64 dataEnd = uint64(m_AudioDataOffset) + uint64(m_AudioDataSize) * m_ChannelCount;
 		if (offset + bytesToRead > dataEnd || fseek(m_pFile, long(offset), SEEK_SET) != 0)
 			return false;
 		if (fread(m_pReadCache, 1, bytesToRead, m_pFile) != bytesToRead)
 			return false;
 
-		m_ReadCacheFirstBlock = blockIndex;
+		m_ReadCacheFirstBlock = cacheFirstBlock;
 		m_ReadCacheBlockCount = blocksToRead;
 		return true;
 	}
@@ -1370,6 +1404,7 @@ struct tGcStreamSlot
 {
 	CGcStreamDecoder *decoder;
 	bool8 preloaded;
+	bool8 openPending;
 	bool8 active;
 	bool8 paused;
 	bool8 loop;
@@ -1378,23 +1413,30 @@ struct tGcStreamSlot
 	uint8 pan;
 	uint32 mixVolume;
 	uint32 lengthMs;
+	tTrack pendingTrack;
+	uint32 pendingStartPosMs;
 	uint32 startPosMs;
-	uint64 resampleStep;
-	uint64 resampleFrac;
+	uint32 resampleStep;
+	uint32 resampleFrac;
 	bool8 sourceEnded;
 	uint32 sourceFramesValid;
 	uint32 sourceFramePos;
+	uint8 decodeRetryCount;
 	int16 *sourceBuffer;
 
 	void ResetRuntime()
 	{
+		openPending = FALSE;
 		active = FALSE;
 		paused = FALSE;
 		sourceEnded = FALSE;
 		sourceFramesValid = 0;
 		sourceFramePos = 0;
+		decodeRetryCount = 0;
 		resampleStep = 0;
 		resampleFrac = 0;
+		pendingTrack = NO_TRACK;
+		pendingStartPosMs = 0;
 		startPosMs = 0;
 	}
 };
@@ -1426,16 +1468,45 @@ static volatile uint32 gDmaMinimumReadyDepth = GC_DMA_BUFFER_COUNT;
 static volatile uint32 gDmaBuffersFilled = 0;
 static volatile uint32 gDmaMaximumFillTimeUs = 0;
 static mutex_t gAudioStateMutex = LWP_MUTEX_NULL;
+static mutex_t gAudioFillMutex = LWP_MUTEX_NULL;
+static mutex_t gStreamDecodeMutex = LWP_MUTEX_NULL;
 static sem_t gAudioProducerSemaphore = LWP_SEM_NULL;
 static lwp_t gAudioProducerThread = LWP_THREAD_NULL;
 static volatile bool8 gAudioProducerStop = FALSE;
 static volatile bool8 gAudioProducerRunning = FALSE;
 static volatile bool8 gAudioProducerWakeRequested = FALSE;
+static volatile bool8 gAudioProducerFilling = FALSE;
 static uint8 gAudioProducerStack[32 * 1024] ATTRIBUTE_ALIGN(32);
+static sem_t gStreamDecoderSemaphore = LWP_SEM_NULL;
+static lwp_t gStreamDecoderThread = LWP_THREAD_NULL;
+static volatile bool8 gStreamDecoderStop = FALSE;
+static volatile bool8 gStreamDecoderRunning = FALSE;
+static uint8 gStreamDecoderStack[32 * 1024] ATTRIBUTE_ALIGN(32);
+static int16 gStreamDecodeBuffer[GC_STREAM_DECODE_CHUNK_FRAMES * 2] ATTRIBUTE_ALIGN(32);
+static sem_t gPedCommentLoaderSemaphore = LWP_SEM_NULL;
+static lwp_t gPedCommentLoaderThread = LWP_THREAD_NULL;
+static volatile bool8 gPedCommentLoaderStop = FALSE;
+static volatile bool8 gPedCommentLoaderRunning = FALSE;
+static volatile uint32 gPedCommentPending = NO_SAMPLE;
+static volatile uint32 gPedCommentLoading = NO_SAMPLE;
+static uint32 gPedCommentPendingOffset = 0;
+static uint32 gPedCommentPendingSize = 0;
+static uint8 gPedSlotLoading[MAX_PEDSFX];
+static uint8 gPedSlotClaimFrames[MAX_PEDSFX];
+static uint8 *gPedCommentLoadBuffer = NULL;
+static FILE *gPedCommentDataFile = NULL;
+static uint8 gPedCommentLoaderStack[16 * 1024] ATTRIBUTE_ALIGN(32);
 static int16 gDmaBuffers[GC_DMA_BUFFER_COUNT][GC_DMA_BUFFER_FRAMES * 2] ATTRIBUTE_ALIGN(32);
 static int16 gDmaSampleOnlyBuffers[GC_DMA_BUFFER_COUNT][GC_DMA_BUFFER_FRAMES * 2] ATTRIBUTE_ALIGN(32);
 static int16 gSilenceBuffer[GC_DMA_BUFFER_FRAMES * 2] ATTRIBUTE_ALIGN(32);
 static int32 gMixBuffer[GC_DMA_BUFFER_FRAMES * 2];
+
+static CGcStreamDecoder *gDeferredStreamDecoders[MAX_STREAMS * 4];
+static uint32 gDeferredStreamDecoderCount = 0;
+
+static void SignalAudioProducer();
+static void SignalStreamDecoder();
+static void SignalPedCommentLoader();
 
 class cAudioStateLock
 {
@@ -1453,6 +1524,42 @@ public:
 	{
 		if (m_locked)
 			LWP_MutexUnlock(gAudioStateMutex);
+	}
+};
+
+class cAudioFillLock
+{
+	bool m_locked;
+
+public:
+	cAudioFillLock() : m_locked(false)
+	{
+		if (gAudioFillMutex != LWP_MUTEX_NULL)
+			m_locked = LWP_MutexLock(gAudioFillMutex) == 0;
+	}
+
+	~cAudioFillLock()
+	{
+		if (m_locked)
+			LWP_MutexUnlock(gAudioFillMutex);
+	}
+};
+
+class cStreamDecodeLock
+{
+	bool m_locked;
+
+public:
+	cStreamDecodeLock() : m_locked(false)
+	{
+		if (gStreamDecodeMutex != LWP_MUTEX_NULL)
+			m_locked = LWP_MutexLock(gStreamDecodeMutex) == 0;
+	}
+
+	~cStreamDecodeLock()
+	{
+		if (m_locked)
+			LWP_MutexUnlock(gStreamDecodeMutex);
 	}
 };
 
@@ -1668,20 +1775,39 @@ static CGcStreamDecoder *OpenTrackDecoder(tTrack track)
 	if (!IsSupportedGcRadioTrack(track))
 		return NULL;
 
-	const char *path = GetTrackPath(track);
-	if (path == NULL) {
-		if (IsDirectPs2RadioWhitelistTrack(track))
-			GC_AUDIO_LOG("[GC-AUDIO] whitelist radio %s has no playable direct path\n", GetRadioTrackLabel(track));
+	tTrack pathTrack = track;
+#ifndef GTA_PS2
+	if (pathTrack == STREAMED_SOUND_RADIO_MP3_PLAYER)
+		pathTrack = STREAMED_SOUND_RADIO_WILD;
+#endif
+	uint32 sampleRate = IsThisTrackAt16KHz(pathTrack) ? 16000 : 32000;
+
+	/* Opening through GetTrackPath first probes the same packaged file with a
+	 * second fopen. Try the known packaged path directly, then fall back to the
+	 * direct PS2 VB candidates only if its decoder cannot be opened. */
+	CGcStreamDecoder *decoder = NULL;
+#ifdef PS2_AUDIO_PATHS
+	const char *packagedPath = pathTrack < CountOfPS2Table() ? PS2StreamedNameTable[pathTrack] : NULL;
+	decoder = OpenStreamDecoder(packagedPath, sampleRate);
+	if (decoder != NULL) {
+		GC_AUDIO_LOG("[GC-AUDIO] streaming radio %s from %s\n", GetRadioTrackLabel(pathTrack), packagedPath);
+		return decoder;
+	}
+#endif
+
+	if (!IsDirectPs2RadioWhitelistTrack(pathTrack))
+		return NULL;
+	const char *directPath = ResolveDirectPs2RadioPath(pathTrack);
+	if (directPath == NULL) {
+		GC_AUDIO_LOG("[GC-AUDIO] whitelist radio %s has no playable direct path\n", GetRadioTrackLabel(pathTrack));
 		return NULL;
 	}
 
-	CGcStreamDecoder *decoder = OpenStreamDecoder(path, IsThisTrackAt16KHz(track) ? 16000 : 32000);
-	if (IsDirectPs2RadioWhitelistTrack(track)) {
-		if (decoder)
-			GC_AUDIO_LOG("[GC-AUDIO] streaming radio %s from %s\n", GetRadioTrackLabel(track), path);
-		else
-			GC_AUDIO_LOG("[GC-AUDIO] failed to open radio %s from %s\n", GetRadioTrackLabel(track), path);
-	}
+	decoder = OpenStreamDecoder(directPath, sampleRate);
+	if (decoder)
+		GC_AUDIO_LOG("[GC-AUDIO] streaming radio %s from %s\n", GetRadioTrackLabel(pathTrack), directPath);
+	else
+		GC_AUDIO_LOG("[GC-AUDIO] failed to open radio %s from %s\n", GetRadioTrackLabel(pathTrack), directPath);
 	return decoder;
 }
 
@@ -1703,11 +1829,35 @@ static bool8 AnyActiveSampleChannels()
 	return FALSE;
 }
 
+static void RetireStreamDecoderLocked(CGcStreamDecoder *decoder)
+{
+	if (decoder == NULL)
+		return;
+	if (!gAudioProducerFilling) {
+		delete decoder;
+		return;
+	}
+
+	if (gDeferredStreamDecoderCount < ARRAY_SIZE(gDeferredStreamDecoders))
+		gDeferredStreamDecoders[gDeferredStreamDecoderCount++] = decoder;
+	/* A full retire list is intentionally leaked rather than freed while in use. */
+}
+
+static void CollectRetiredStreamDecodersLocked()
+{
+	if (gAudioProducerFilling)
+		return;
+	for (uint32 i = 0; i < gDeferredStreamDecoderCount; i++)
+		delete gDeferredStreamDecoders[i];
+	memset(gDeferredStreamDecoders, 0, sizeof(gDeferredStreamDecoders));
+	gDeferredStreamDecoderCount = 0;
+}
+
 static void CloseStreamSlot(uint32 index)
 {
 	tGcStreamSlot &slot = gStreamSlots[index];
 	ResetStreamPlaybackClock(index);
-	delete slot.decoder;
+	RetireStreamDecoderLocked(slot.decoder);
 	slot.decoder = NULL;
 	slot.preloaded = FALSE;
 	slot.loop = FALSE;
@@ -1727,8 +1877,9 @@ static void ResetSlotForPlayback(uint32 streamIndex, uint32 startPosMs)
 	slot.sourceEnded = FALSE;
 	slot.sourceFramesValid = 0;
 	slot.sourceFramePos = 0;
+	slot.decodeRetryCount = 0;
 	slot.resampleFrac = 0;
-	slot.resampleStep = slot.decoder ? ((uint64)slot.decoder->GetSampleRate() << 32) / GC_OUTPUT_RATE : 0;
+	slot.resampleStep = slot.decoder ? uint32((uint64(slot.decoder->GetSampleRate()) << GC_STREAM_RESAMPLE_FRAC_BITS) + GC_OUTPUT_RATE / 2) / GC_OUTPUT_RATE : 0;
 	if (slot.decoder)
 		slot.decoder->SeekMS(startPosMs);
 }
@@ -1754,6 +1905,7 @@ static bool RefillSourceBuffer(tGcStreamSlot &slot, uint32 minimumFrames)
 	if (!slot.decoder)
 		return false;
 
+	bool rewound = false;
 	while (slot.sourceFramesValid - slot.sourceFramePos < minimumFrames) {
 		if (slot.sourceFramePos != 0)
 			CompactSourceBuffer(slot);
@@ -1764,12 +1916,13 @@ static bool RefillSourceBuffer(tGcStreamSlot &slot, uint32 minimumFrames)
 		uint32 capacity = GC_SOURCE_BUFFER_FRAMES - slot.sourceFramesValid;
 		uint32 decoded = slot.decoder->DecodeFrames(slot.sourceBuffer + slot.sourceFramesValid * 2, capacity);
 		if (decoded == 0) {
-			if (slot.loop && slot.lengthMs > 0) {
+			if (slot.loop && slot.lengthMs > 0 && !rewound) {
 				slot.decoder->SeekMS(0);
 				slot.sourceEnded = FALSE;
 				slot.sourceFramesValid = 0;
 				slot.sourceFramePos = 0;
 				slot.resampleFrac = 0;
+				rewound = true;
 				continue;
 			}
 			slot.sourceEnded = TRUE;
@@ -1787,7 +1940,10 @@ static bool RenderNextOutputFrame(tGcStreamSlot &slot, int16 &outL, int16 &outR)
 		return false;
 
 	if (slot.sourceFramesValid - slot.sourceFramePos == 0) {
-		if (!RefillSourceBuffer(slot, 2) && slot.sourceFramesValid - slot.sourceFramePos == 0)
+		/* The stream thread owns normal decoding. Only use the old synchronous
+		 * path if that thread could not be started. */
+		if (gStreamDecoderRunning ||
+		    (!RefillSourceBuffer(slot, 2) && slot.sourceFramesValid - slot.sourceFramePos == 0))
 			return false;
 	}
 
@@ -1795,7 +1951,7 @@ static bool RenderNextOutputFrame(tGcStreamSlot &slot, int16 &outL, int16 &outR)
 	if (available == 0)
 		return false;
 
-	if (available == 1 && !slot.sourceEnded)
+	if (available == 1 && !slot.sourceEnded && !gStreamDecoderRunning)
 		RefillSourceBuffer(slot, 2);
 
 	available = slot.sourceFramesValid - slot.sourceFramePos;
@@ -1808,15 +1964,15 @@ static bool RenderNextOutputFrame(tGcStreamSlot &slot, int16 &outL, int16 &outR)
 		bR = slot.sourceBuffer[(slot.sourceFramePos + 1) * 2 + 1];
 	}
 
-	uint64 frac = slot.resampleFrac;
-	int64 diffL = int64(bL) - int64(aL);
-	int64 diffR = int64(bR) - int64(aR);
-	outL = int16(int64(aL) + ((diffL * int64(frac)) >> 32));
-	outR = int16(int64(aR) + ((diffR * int64(frac)) >> 32));
+	uint32 frac = slot.resampleFrac;
+	int32 diffL = int32(bL) - int32(aL);
+	int32 diffR = int32(bR) - int32(aR);
+	outL = int16(int32(aL) + ((diffL * int32(frac)) >> GC_STREAM_RESAMPLE_FRAC_BITS));
+	outR = int16(int32(aR) + ((diffR * int32(frac)) >> GC_STREAM_RESAMPLE_FRAC_BITS));
 
 	slot.resampleFrac += slot.resampleStep;
-	uint32 advance = uint32(slot.resampleFrac >> 32);
-	slot.resampleFrac &= 0xFFFFFFFFULL;
+	uint32 advance = slot.resampleFrac >> GC_STREAM_RESAMPLE_FRAC_BITS;
+	slot.resampleFrac &= GC_STREAM_RESAMPLE_FRAC_MASK;
 	slot.sourceFramePos += advance;
 
 	if (slot.sourceFramePos > (GC_SOURCE_BUFFER_FRAMES / 2))
@@ -1844,7 +2000,10 @@ static uint32 MixSlotIntoBuffer(tGcStreamSlot &slot, int32 *mixBuffer, uint32 ou
 		int16 left;
 		int16 right;
 		if (!RenderNextOutputFrame(slot, left, right)) {
-			slot.active = FALSE;
+			/* A temporarily empty predecode ring only silences this stream. It
+			 * must not stop the slot or block memory-resident SFX. */
+			if (slot.sourceEnded)
+				slot.active = FALSE;
 			break;
 		}
 
@@ -1878,7 +2037,15 @@ static void ConvertMixBufferToPcm(const int32 *mixBuffer, int16 *outputBuffer)
 	}
 }
 
-static bool FillDmaBuffer(uint32 bufferIndex)
+struct tGcAudioFillSnapshot
+{
+	tGcSampleChannel sampleChannels[MAXCHANNELS + MAX2DCHANNELS];
+	tGcStreamSlot streamSlots[MAX_STREAMS];
+	uint32 sampleGeneration[MAXCHANNELS + MAX2DCHANNELS];
+	uint32 streamGeneration[MAX_STREAMS];
+};
+
+static bool FillDmaBuffer(uint32 bufferIndex, tGcAudioFillSnapshot &snapshot)
 {
 	memset(gMixBuffer, 0, sizeof(gMixBuffer));
 	memset(gDmaBufferSlotFrames[bufferIndex], 0, sizeof(gDmaBufferSlotFrames[bufferIndex]));
@@ -1888,9 +2055,9 @@ static bool FillDmaBuffer(uint32 bufferIndex)
 
 	bool hasSampleAudio = false;
 	for (uint32 i = 0; i < MAXCHANNELS + MAX2DCHANNELS; i++) {
-		uint32 frames = MixSampleChannelIntoBuffer(gSampleChannels[i], gMixBuffer, GC_DMA_BUFFER_FRAMES);
+		uint32 frames = MixSampleChannelIntoBuffer(snapshot.sampleChannels[i], gMixBuffer, GC_DMA_BUFFER_FRAMES);
 		gDmaBufferSampleFrames[bufferIndex][i] = frames;
-		gDmaBufferSampleGeneration[bufferIndex][i] = gSamplePlaybackGeneration[i];
+		gDmaBufferSampleGeneration[bufferIndex][i] = snapshot.sampleGeneration[i];
 		if (frames != 0)
 			hasSampleAudio = true;
 	}
@@ -1901,9 +2068,9 @@ static bool FillDmaBuffer(uint32 bufferIndex)
 
 	bool hasAudio = hasSampleAudio;
 	for (uint32 i = 0; i < MAX_STREAMS; i++) {
-		uint32 frames = MixSlotIntoBuffer(gStreamSlots[i], gMixBuffer, GC_DMA_BUFFER_FRAMES);
+		uint32 frames = MixSlotIntoBuffer(snapshot.streamSlots[i], gMixBuffer, GC_DMA_BUFFER_FRAMES);
 		gDmaBufferSlotFrames[bufferIndex][i] = frames;
-		gDmaBufferSlotGeneration[bufferIndex][i] = gStreamPlaybackGeneration[i];
+		gDmaBufferSlotGeneration[bufferIndex][i] = snapshot.streamGeneration[i];
 		if (frames != 0)
 			hasAudio = true;
 	}
@@ -1917,45 +2084,512 @@ static bool FillDmaBuffer(uint32 bufferIndex)
 	return true;
 }
 
-static void TryFillReadyBuffersLocked()
+static bool TryFillReadyBuffers()
 {
-	gDmaExpectingAudio = AnyActiveUnpausedStreams() || AnyActiveSampleChannels();
-	if (!gDmaExpectingAudio)
-		return;
-
-	for (uint32 i = 0; i < GC_DMA_BUFFER_COUNT; i++) {
-		if (gDmaBufferStates[i] != GC_BUFFER_FREE)
-			continue;
-
-		u64 fillStart = gettime();
-		bool filled = FillDmaBuffer(i);
-		uint32 fillTimeUs = uint32(ticks_to_microsecs(gettime() - fillStart));
-		if (fillTimeUs > gDmaMaximumFillTimeUs)
-			gDmaMaximumFillTimeUs = fillTimeUs;
-		if (!filled)
-			break;
-		gDmaBuffersFilled++;
+	cAudioFillLock fillLock;
+	tGcAudioFillSnapshot snapshot;
+	int32 bufferIndex = -1;
+	{
+		cAudioStateLock lock;
+		gDmaExpectingAudio = AnyActiveUnpausedStreams() || AnyActiveSampleChannels();
+		if (!gDmaExpectingAudio || gAudioProducerFilling)
+			return false;
 
 		u32 level;
 		_CPU_ISR_Disable(level);
-		bool queued = gDmaBufferStates[i] == GC_BUFFER_FREE && PushDmaReadyBuffer(i);
-		if (queued) {
-			gDmaBufferStates[i] = GC_BUFFER_READY;
-			AccountQueuedSampleBuffer(i);
+		for (uint32 i = 0; i < GC_DMA_BUFFER_COUNT; i++) {
+			if (gDmaBufferStates[i] == GC_BUFFER_FREE) {
+				gDmaBufferStates[i] = GC_BUFFER_FILLING;
+				bufferIndex = int32(i);
+				break;
+			}
 		}
 		_CPU_ISR_Restore(level);
-		if (!queued)
-			break;
+		if (bufferIndex < 0)
+			return false;
+
+		for (uint32 i = 0; i < MAXCHANNELS + MAX2DCHANNELS; i++) {
+			snapshot.sampleChannels[i] = gSampleChannels[i];
+			snapshot.sampleGeneration[i] = gSamplePlaybackGeneration[i];
+		}
+		for (uint32 i = 0; i < MAX_STREAMS; i++) {
+			snapshot.streamSlots[i] = gStreamSlots[i];
+			snapshot.streamGeneration[i] = gStreamPlaybackGeneration[i];
+		}
+		gAudioProducerFilling = TRUE;
 	}
 
-	gDmaExpectingAudio = AnyActiveUnpausedStreams() || AnyActiveSampleChannels();
+	u64 fillStart = gettime();
+	bool filled = FillDmaBuffer(uint32(bufferIndex), snapshot);
+	uint32 fillTimeUs = uint32(ticks_to_microsecs(gettime() - fillStart));
+
+	bool queued = false;
+	{
+		cAudioStateLock lock;
+		gAudioProducerFilling = FALSE;
+		CollectRetiredStreamDecodersLocked();
+		if (fillTimeUs > gDmaMaximumFillTimeUs)
+			gDmaMaximumFillTimeUs = fillTimeUs;
+
+		for (uint32 i = 0; i < MAXCHANNELS + MAX2DCHANNELS; i++) {
+			if (snapshot.sampleGeneration[i] != gSamplePlaybackGeneration[i])
+				continue;
+			bool channelFinished = gSampleChannels[i].active && !snapshot.sampleChannels[i].active;
+			gSampleChannels[i].cursorFixed = snapshot.sampleChannels[i].cursorFixed;
+			gSampleChannels[i].active = snapshot.sampleChannels[i].active;
+			gSampleChannels[i].renderedOutputFrames = snapshot.sampleChannels[i].renderedOutputFrames;
+			if (channelFinished) {
+				gSampleChannels[i].initialised = FALSE;
+				gSampleChannels[i].sampleData = NULL;
+				gSampleChannels[i].sampleCount = 0;
+			}
+		}
+		for (uint32 i = 0; i < MAX_STREAMS; i++) {
+			if (snapshot.streamGeneration[i] != gStreamPlaybackGeneration[i])
+				continue;
+			gStreamSlots[i].active = snapshot.streamSlots[i].active;
+			gStreamSlots[i].sourceEnded = snapshot.streamSlots[i].sourceEnded;
+			gStreamSlots[i].sourceFramesValid = snapshot.streamSlots[i].sourceFramesValid;
+			gStreamSlots[i].sourceFramePos = snapshot.streamSlots[i].sourceFramePos;
+			gStreamSlots[i].resampleFrac = snapshot.streamSlots[i].resampleFrac;
+		}
+
+		u32 level;
+		_CPU_ISR_Disable(level);
+		if (filled)
+			queued = gDmaBufferStates[bufferIndex] == GC_BUFFER_FILLING && PushDmaReadyBuffer(uint32(bufferIndex));
+		if (queued) {
+			gDmaBufferStates[bufferIndex] = GC_BUFFER_READY;
+			AccountQueuedSampleBuffer(uint32(bufferIndex));
+		} else {
+			gDmaBufferStates[bufferIndex] = GC_BUFFER_FREE;
+		}
+		_CPU_ISR_Restore(level);
+		if (queued)
+			gDmaBuffersFilled++;
+		if (queued)
+			SignalStreamDecoder();
+
+		gDmaExpectingAudio = AnyActiveUnpausedStreams() || AnyActiveSampleChannels();
+		if (!gDmaExpectingAudio)
+			return false;
+		if (!filled)
+			return false;
+		for (uint32 i = 0; i < GC_DMA_BUFFER_COUNT; i++) {
+			if (gDmaBufferStates[i] == GC_BUFFER_FREE)
+				return true;
+		}
+	}
+	return false;
 }
 
 static void SignalAudioProducer()
 {
+	u32 level;
+	_CPU_ISR_Disable(level);
 	gAudioProducerWakeRequested = TRUE;
-	if (gAudioProducerSemaphore != LWP_SEM_NULL)
+	_CPU_ISR_Restore(level);
+	if (gAudioProducerRunning && gAudioProducerSemaphore != LWP_SEM_NULL)
 		LWP_SemPost(gAudioProducerSemaphore);
+}
+
+static bool ConsumeAudioProducerWakeRequest()
+{
+	u32 level;
+	_CPU_ISR_Disable(level);
+	bool requested = gAudioProducerWakeRequested != FALSE;
+	gAudioProducerWakeRequested = FALSE;
+	_CPU_ISR_Restore(level);
+	return requested;
+}
+
+static bool OpenPendingStream(uint32 streamIndex)
+{
+	tTrack track = NO_TRACK;
+	uint32 startPosMs = 0;
+	uint32 generation = 0;
+	{
+		cAudioFillLock fillLock;
+		cAudioStateLock stateLock;
+		tGcStreamSlot &slot = gStreamSlots[streamIndex];
+		if (!slot.active || !slot.openPending)
+			return false;
+		track = slot.pendingTrack;
+		startPosMs = slot.pendingStartPosMs;
+		generation = gStreamPlaybackGeneration[streamIndex];
+	}
+
+	CGcStreamDecoder *decoder = OpenTrackDecoder(track);
+	if (decoder != NULL)
+		decoder->SeekMS(startPosMs);
+
+	bool accepted = false;
+	{
+		cAudioFillLock fillLock;
+		cAudioStateLock stateLock;
+		tGcStreamSlot &slot = gStreamSlots[streamIndex];
+		if (!slot.active || !slot.openPending || slot.pendingTrack != track ||
+		    slot.pendingStartPosMs != startPosMs ||
+		    gStreamPlaybackGeneration[streamIndex] != generation) {
+			accepted = false;
+		} else {
+			slot.openPending = FALSE;
+			slot.pendingTrack = NO_TRACK;
+			slot.pendingStartPosMs = 0;
+			if (decoder == NULL) {
+				slot.active = FALSE;
+				slot.preloaded = FALSE;
+			} else {
+				slot.decoder = decoder;
+				slot.preloaded = TRUE;
+				slot.lengthMs = decoder->GetLengthMS();
+				slot.resampleStep = uint32((uint64(decoder->GetSampleRate()) << GC_STREAM_RESAMPLE_FRAC_BITS) +
+				                           GC_OUTPUT_RATE / 2) / GC_OUTPUT_RATE;
+				slot.sourceEnded = FALSE;
+				slot.sourceFramesValid = 0;
+				slot.sourceFramePos = 0;
+				slot.decodeRetryCount = 0;
+				slot.resampleFrac = 0;
+				accepted = true;
+			}
+		}
+	}
+	if (!accepted)
+		delete decoder;
+
+	SignalAudioProducer();
+	return true;
+}
+
+static bool DecodeStreamChunk(uint32 streamIndex)
+{
+	cStreamDecodeLock decodeLock;
+	CGcStreamDecoder *decoder = NULL;
+	uint32 requestFrames = 0;
+	bool8 canLoop = FALSE;
+	uint32 generation = 0;
+	bool retryLater = false;
+
+	{
+		cAudioFillLock fillLock;
+		cAudioStateLock stateLock;
+		tGcStreamSlot &slot = gStreamSlots[streamIndex];
+		if (!slot.active || slot.paused || slot.decoder == NULL)
+			return false;
+		if (slot.sourceEnded && !(slot.loop && slot.lengthMs > 0))
+			return false;
+
+		CompactSourceBuffer(slot);
+		uint32 freeFrames = GC_SOURCE_BUFFER_FRAMES - slot.sourceFramesValid;
+		if (freeFrames == 0)
+			return false;
+
+		decoder = slot.decoder;
+		canLoop = slot.loop && slot.lengthMs > 0;
+		generation = gStreamPlaybackGeneration[streamIndex];
+		requestFrames = Min(freeFrames, GC_STREAM_DECODE_CHUNK_FRAMES);
+	}
+
+	uint32 decoded = decoder->DecodeFrames(gStreamDecodeBuffer, requestFrames);
+	if (decoded == 0 && canLoop) {
+		decoder->SeekMS(0);
+		decoded = decoder->DecodeFrames(gStreamDecodeBuffer, requestFrames);
+	}
+
+	{
+		cAudioFillLock fillLock;
+		cAudioStateLock stateLock;
+		tGcStreamSlot &slot = gStreamSlots[streamIndex];
+		if (slot.decoder != decoder || gStreamPlaybackGeneration[streamIndex] != generation)
+			return false;
+
+		CompactSourceBuffer(slot);
+		uint32 freeFrames = GC_SOURCE_BUFFER_FRAMES - slot.sourceFramesValid;
+		if (decoded > freeFrames)
+			decoded = freeFrames;
+		if (decoded != 0) {
+			memcpy(slot.sourceBuffer + slot.sourceFramesValid * 2,
+			       gStreamDecodeBuffer, sizeof(int16) * decoded * 2);
+			slot.sourceFramesValid += decoded;
+			slot.sourceEnded = FALSE;
+			slot.decodeRetryCount = 0;
+		} else {
+			if (canLoop && slot.decodeRetryCount < GC_STREAM_DECODE_RETRY_LIMIT) {
+				slot.decodeRetryCount++;
+				slot.sourceEnded = FALSE;
+				retryLater = true;
+			} else {
+				slot.sourceEnded = TRUE;
+				slot.resampleFrac = 0;
+			}
+		}
+	}
+
+	SignalAudioProducer();
+	if (retryLater)
+		SignalStreamDecoder();
+	return decoded != 0;
+}
+
+static void *StreamDecoderMain(void *)
+{
+	while (!gStreamDecoderStop) {
+		LWP_SemWait(gStreamDecoderSemaphore);
+		if (gStreamDecoderStop)
+			break;
+
+		bool progress;
+		do {
+			progress = false;
+			for (uint32 i = 0; i < MAX_STREAMS; i++) {
+				progress = OpenPendingStream(i) || progress;
+				progress = DecodeStreamChunk(i) || progress;
+			}
+		} while (progress && !gStreamDecoderStop);
+	}
+	return NULL;
+}
+
+static void SignalStreamDecoder()
+{
+	if (gStreamDecoderRunning && gStreamDecoderSemaphore != LWP_SEM_NULL)
+		LWP_SemPost(gStreamDecoderSemaphore);
+}
+
+static bool StartStreamDecoder()
+{
+	if (gStreamDecoderRunning)
+		return true;
+	if (gStreamDecodeMutex == LWP_MUTEX_NULL && LWP_MutexInit(&gStreamDecodeMutex, true) != 0)
+		return false;
+	if (gStreamDecoderSemaphore == LWP_SEM_NULL && LWP_SemInit(&gStreamDecoderSemaphore, 0, 1) != 0)
+		return false;
+
+	gStreamDecoderStop = FALSE;
+	if (LWP_CreateThread(&gStreamDecoderThread, StreamDecoderMain, NULL,
+	                     gStreamDecoderStack, sizeof(gStreamDecoderStack),
+	                     LWP_PRIO_NORMAL + 12) != 0) {
+		gStreamDecoderThread = LWP_THREAD_NULL;
+		return false;
+	}
+	gStreamDecoderRunning = TRUE;
+	return true;
+}
+
+static void StopStreamDecoder()
+{
+	if (gStreamDecoderRunning) {
+		gStreamDecoderStop = TRUE;
+		SignalStreamDecoder();
+		LWP_JoinThread(gStreamDecoderThread, NULL);
+		gStreamDecoderThread = LWP_THREAD_NULL;
+		gStreamDecoderRunning = FALSE;
+	}
+	if (gStreamDecoderSemaphore != LWP_SEM_NULL) {
+		LWP_SemDestroy(gStreamDecoderSemaphore);
+		gStreamDecoderSemaphore = LWP_SEM_NULL;
+	}
+}
+
+static bool PedCommentSlotIsReferencedLocked(uint32 slotIndex)
+{
+	uint8 *slotMemory = gSampleBankMemoryStartAddress[SFX_BANK_PED_COMMENTS];
+	if (slotMemory == NULL || slotIndex >= MAX_PEDSFX)
+		return true;
+
+	const int16 *slotData = (const int16 *)(slotMemory + PED_BLOCKSIZE * slotIndex);
+	for (uint32 i = 0; i < MAXCHANNELS + MAX2DCHANNELS; i++) {
+		const tGcSampleChannel &channel = gSampleChannels[i];
+		if (channel.initialised && channel.sampleData == slotData)
+			return true;
+	}
+	return false;
+}
+
+static int32 ReservePedCommentSlotLocked()
+{
+	for (uint32 offset = 0; offset < MAX_PEDSFX; offset++) {
+		uint32 slotIndex = (gCurrentPedSlot + offset) % MAX_PEDSFX;
+		if (!gPedSlotLoading[slotIndex] && gPedSlotClaimFrames[slotIndex] == 0 &&
+		    !PedCommentSlotIsReferencedLocked(slotIndex))
+			return int32(slotIndex);
+	}
+	return -1;
+}
+
+static bool TakePedCommentLoadRequest(uint32 &sample, uint32 &fileOffset, uint32 &sizeBytes, uint32 &slotIndex)
+{
+	cAudioFillLock fillLock;
+	cAudioStateLock stateLock;
+	if (gPedCommentLoaderStop || gPedCommentPending == NO_SAMPLE)
+		return false;
+
+	int32 freeSlot = ReservePedCommentSlotLocked();
+	if (freeSlot < 0)
+		return false;
+
+	sample = gPedCommentPending;
+	fileOffset = gPedCommentPendingOffset;
+	sizeBytes = gPedCommentPendingSize;
+	slotIndex = uint32(freeSlot);
+	gPedCommentPending = NO_SAMPLE;
+	gPedCommentPendingOffset = 0;
+	gPedCommentPendingSize = 0;
+	gPedCommentLoading = sample;
+	gPedSlotLoading[slotIndex] = TRUE;
+	gPedSlotClaimFrames[slotIndex] = 0;
+	gPedSlotSfx[slotIndex] = NO_SAMPLE;
+	gPedSlotSfxAddr[slotIndex] = NULL;
+	gCurrentPedSlot = uint8((slotIndex + 1) % MAX_PEDSFX);
+	return true;
+}
+
+static bool ReadPedComment(uint32 fileOffset, uint32 sizeBytes)
+{
+	if (gPedCommentDataFile == NULL || gPedCommentLoadBuffer == NULL || sizeBytes == 0 || sizeBytes > PED_BLOCKSIZE)
+		return false;
+	if (fseek(gPedCommentDataFile, long(fileOffset), SEEK_SET) != 0)
+		return false;
+	if (fread(gPedCommentLoadBuffer, 1, sizeBytes, gPedCommentDataFile) != sizeBytes)
+		return false;
+	ByteSwapPcm16Buffer(gPedCommentLoadBuffer, sizeBytes);
+	return true;
+}
+
+static void CompletePedCommentLoad(uint32 sample, uint32 sizeBytes, uint32 slotIndex, bool loaded)
+{
+	cAudioFillLock fillLock;
+	cAudioStateLock stateLock;
+	if (slotIndex >= MAX_PEDSFX || !gPedSlotLoading[slotIndex] || gPedCommentLoading != sample)
+		return;
+
+	uint8 *slotMemory = gSampleBankMemoryStartAddress[SFX_BANK_PED_COMMENTS];
+	if (loaded && !gPedCommentLoaderStop && slotMemory != NULL) {
+		uint8 *destination = slotMemory + PED_BLOCKSIZE * slotIndex;
+		memcpy(destination, gPedCommentLoadBuffer, sizeBytes);
+		gPedSlotSfx[slotIndex] = int32(sample);
+		gPedSlotSfxAddr[slotIndex] = destination;
+	}
+
+	gPedSlotLoading[slotIndex] = FALSE;
+	gPedCommentLoading = NO_SAMPLE;
+}
+
+static void *PedCommentLoaderMain(void *)
+{
+	const struct timespec retryWait = { 0, 5000000 };
+	while (!gPedCommentLoaderStop) {
+		LWP_SemTimedWait(gPedCommentLoaderSemaphore, &retryWait);
+		if (gPedCommentLoaderStop)
+			break;
+
+		uint32 sample = NO_SAMPLE;
+		uint32 fileOffset = 0;
+		uint32 sizeBytes = 0;
+		uint32 slotIndex = 0;
+		if (!TakePedCommentLoadRequest(sample, fileOffset, sizeBytes, slotIndex))
+			continue;
+
+		bool loaded = ReadPedComment(fileOffset, sizeBytes);
+		CompletePedCommentLoad(sample, sizeBytes, slotIndex, loaded);
+	}
+	return NULL;
+}
+
+static void SignalPedCommentLoader()
+{
+	if (gPedCommentLoaderRunning && gPedCommentLoaderSemaphore != LWP_SEM_NULL)
+		LWP_SemPost(gPedCommentLoaderSemaphore);
+}
+
+static bool StartPedCommentLoader()
+{
+	if (gPedCommentLoaderRunning)
+		return true;
+	if (gAudioStateMutex == LWP_MUTEX_NULL || gAudioFillMutex == LWP_MUTEX_NULL)
+		return false;
+	if (gSampleBankMemoryStartAddress[SFX_BANK_PED_COMMENTS] == NULL)
+		return false;
+
+	gPedCommentDataFile = fopen(GC_SAMPLE_BANK_DATA_PATH, "rb");
+	if (gPedCommentDataFile == NULL)
+		return false;
+	gPedCommentLoadBuffer = AllocAlignedAudioBuffer(PED_BLOCKSIZE);
+	if (gPedCommentLoadBuffer == NULL) {
+		fclose(gPedCommentDataFile);
+		gPedCommentDataFile = NULL;
+		return false;
+	}
+	if (LWP_SemInit(&gPedCommentLoaderSemaphore, 0, 1) != 0) {
+#ifdef WII
+		MemoryMgrFreeMem2(gPedCommentLoadBuffer);
+#else
+		free(gPedCommentLoadBuffer);
+#endif
+		gPedCommentLoadBuffer = NULL;
+		fclose(gPedCommentDataFile);
+		gPedCommentDataFile = NULL;
+		return false;
+	}
+
+	gPedCommentLoaderStop = FALSE;
+	gPedCommentPending = NO_SAMPLE;
+	gPedCommentLoading = NO_SAMPLE;
+	gPedCommentPendingOffset = 0;
+	gPedCommentPendingSize = 0;
+	memset(gPedSlotLoading, 0, sizeof(gPedSlotLoading));
+	memset(gPedSlotClaimFrames, 0, sizeof(gPedSlotClaimFrames));
+	if (LWP_CreateThread(&gPedCommentLoaderThread, PedCommentLoaderMain, NULL,
+	                     gPedCommentLoaderStack, sizeof(gPedCommentLoaderStack),
+	                     LWP_PRIO_NORMAL + 10) != 0) {
+		LWP_SemDestroy(gPedCommentLoaderSemaphore);
+		gPedCommentLoaderSemaphore = LWP_SEM_NULL;
+#ifdef WII
+		MemoryMgrFreeMem2(gPedCommentLoadBuffer);
+#else
+		free(gPedCommentLoadBuffer);
+#endif
+		gPedCommentLoadBuffer = NULL;
+		fclose(gPedCommentDataFile);
+		gPedCommentDataFile = NULL;
+		gPedCommentLoaderThread = LWP_THREAD_NULL;
+		return false;
+	}
+	gPedCommentLoaderRunning = TRUE;
+	return true;
+}
+
+static void StopPedCommentLoader()
+{
+	if (gPedCommentLoaderRunning) {
+		gPedCommentLoaderStop = TRUE;
+		SignalPedCommentLoader();
+		LWP_JoinThread(gPedCommentLoaderThread, NULL);
+		gPedCommentLoaderThread = LWP_THREAD_NULL;
+		gPedCommentLoaderRunning = FALSE;
+	}
+	if (gPedCommentLoaderSemaphore != LWP_SEM_NULL) {
+		LWP_SemDestroy(gPedCommentLoaderSemaphore);
+		gPedCommentLoaderSemaphore = LWP_SEM_NULL;
+	}
+	if (gPedCommentDataFile != NULL) {
+		fclose(gPedCommentDataFile);
+		gPedCommentDataFile = NULL;
+	}
+	if (gPedCommentLoadBuffer != NULL) {
+#ifdef WII
+		MemoryMgrFreeMem2(gPedCommentLoadBuffer);
+#else
+		free(gPedCommentLoadBuffer);
+#endif
+		gPedCommentLoadBuffer = NULL;
+	}
+	gPedCommentPending = NO_SAMPLE;
+	gPedCommentLoading = NO_SAMPLE;
+	gPedCommentPendingOffset = 0;
+	gPedCommentPendingSize = 0;
+	memset(gPedSlotLoading, 0, sizeof(gPedSlotLoading));
+	memset(gPedSlotClaimFrames, 0, sizeof(gPedSlotClaimFrames));
 }
 
 static void *AudioProducerMain(void *)
@@ -1965,12 +2599,12 @@ static void *AudioProducerMain(void *)
 		LWP_SemTimedWait(gAudioProducerSemaphore, &waitTime);
 		if (gAudioProducerStop)
 			break;
-		if (!gAudioProducerWakeRequested)
+		if (!ConsumeAudioProducerWakeRequest())
 			continue;
-		gAudioProducerWakeRequested = FALSE;
 
-		cAudioStateLock lock;
-		TryFillReadyBuffersLocked();
+		bool refillNeeded = TryFillReadyBuffers();
+		if (refillNeeded && !gAudioProducerStop)
+			SignalAudioProducer();
 	}
 	return NULL;
 }
@@ -1981,6 +2615,8 @@ static bool StartAudioProducer()
 		return true;
 	if (gAudioStateMutex == LWP_MUTEX_NULL && LWP_MutexInit(&gAudioStateMutex, true) != 0)
 		return false;
+	if (gAudioFillMutex == LWP_MUTEX_NULL && LWP_MutexInit(&gAudioFillMutex, true) != 0)
+		return false;
 	if (gAudioProducerSemaphore == LWP_SEM_NULL && LWP_SemInit(&gAudioProducerSemaphore, 0, 1) != 0)
 		return false;
 
@@ -1988,7 +2624,7 @@ static bool StartAudioProducer()
 	gAudioProducerWakeRequested = FALSE;
 	if (LWP_CreateThread(&gAudioProducerThread, AudioProducerMain, NULL,
 	                     gAudioProducerStack, sizeof(gAudioProducerStack),
-	                     LWP_PRIO_NORMAL + 16) != 0) {
+	                     LWP_PRIO_NORMAL + 4) != 0) {
 		gAudioProducerThread = LWP_THREAD_NULL;
 		return false;
 	}
@@ -2013,6 +2649,14 @@ static void StopAudioProducer()
 
 static void DestroyAudioStateMutex()
 {
+	if (gStreamDecodeMutex != LWP_MUTEX_NULL) {
+		LWP_MutexDestroy(gStreamDecodeMutex);
+		gStreamDecodeMutex = LWP_MUTEX_NULL;
+	}
+	if (gAudioFillMutex != LWP_MUTEX_NULL) {
+		LWP_MutexDestroy(gAudioFillMutex);
+		gAudioFillMutex = LWP_MUTEX_NULL;
+	}
 	if (gAudioStateMutex != LWP_MUTEX_NULL) {
 		LWP_MutexDestroy(gAudioStateMutex);
 		gAudioStateMutex = LWP_MUTEX_NULL;
@@ -2023,8 +2667,10 @@ static void RequestAudioFillLocked()
 {
 	if (gAudioProducerRunning)
 		SignalAudioProducer();
-	else
-		TryFillReadyBuffersLocked();
+	else {
+		/* The synchronous fallback is serviced from cSampleManager::Service(). */
+		gAudioProducerWakeRequested = TRUE;
+	}
 }
 
 static void AudioDmaCallback()
@@ -2054,8 +2700,8 @@ static void AudioDmaCallback()
 		AUDIO_InitDMA((u32)gSilenceBuffer, GC_DMA_BUFFER_SIZE);
 	}
 
-	_CPU_ISR_Restore(level);
 	gAudioProducerWakeRequested = TRUE;
+	_CPU_ISR_Restore(level);
 }
 
 static void StartAudioDmaIfNeeded()
@@ -2197,6 +2843,9 @@ cSampleManager::Initialise(void)
 		return TRUE;
 
 	ResetSampleBankState();
+	gAudioProducerFilling = FALSE;
+	gDeferredStreamDecoderCount = 0;
+	memset(gDeferredStreamDecoders, 0, sizeof(gDeferredStreamDecoders));
 
 	for (int32 i = 0; i < TOTAL_AUDIO_SAMPLES; i++) {
 		m_aSamples[i].nOffset = 0;
@@ -2265,6 +2914,10 @@ cSampleManager::Initialise(void)
 
 	if (!StartAudioProducer())
 		printf("[GC-AUDIO] WARN: producer thread init failed; using synchronous refill\n");
+	if (!StartStreamDecoder())
+		printf("[GC-AUDIO] WARN: stream decoder thread init failed; using synchronous stream decode\n");
+	if (!StartPedCommentLoader())
+		printf("[GC-AUDIO] WARN: ped comment loader init failed; ped comments disabled\n");
 	StartAudioDmaIfNeeded();
 	_bSampmanInitialised = TRUE;
 	return TRUE;
@@ -2291,7 +2944,11 @@ cSampleManager::Terminate(void)
 		gPlayingDmaBuffer = -1;
 		gSubmittedDmaBuffer = -1;
 	}
+	/* Stop the consumer before destroying the decoder wake semaphore; the DMA
+	 * producer can still signal the decoder while it drains its last buffer. */
+	StopPedCommentLoader();
 	StopAudioProducer();
+	StopStreamDecoder();
 	ResetDmaReadyQueue();
 
 	{
@@ -2497,9 +3154,10 @@ cSampleManager::IsMissionAudioLoaded(uint8 nSlot, uint32 nSample)
 	ASSERT(nSlot < MISSION_AUDIO_COUNT);
 
 #ifdef GAMECUBE
-	(void)nSlot;
 	if (nSample >= TOTAL_AUDIO_SAMPLES)
 		return LOADING_STATUS_NOT_LOADED;
+	if (nSlot == MISSION_AUDIO_PLAYER_COMMENT)
+		return IsPedCommentLoaded(nSample);
 	return LOADING_STATUS_LOADED;
 #else
 	return LOADING_STATUS_NOT_LOADED;
@@ -2512,8 +3170,11 @@ cSampleManager::LoadMissionAudio(uint8 nSlot, uint32 nSample)
 	ASSERT(nSlot < MISSION_AUDIO_COUNT);
 
 #ifdef GAMECUBE
-	(void)nSlot;
-	return nSample < TOTAL_AUDIO_SAMPLES;
+	if (nSample >= TOTAL_AUDIO_SAMPLES)
+		return FALSE;
+	if (nSlot == MISSION_AUDIO_PLAYER_COMMENT)
+		return LoadPedComment(nSample);
+	return TRUE;
 #else
 	return FALSE;
 #endif
@@ -2525,7 +3186,18 @@ cSampleManager::IsPedCommentLoaded(uint32 nComment)
 	ASSERT(nComment < TOTAL_AUDIO_SAMPLES);
 
 #ifdef GAMECUBE
-	return _GetPedCommentSlot(nComment) >= 0 ? LOADING_STATUS_LOADED : LOADING_STATUS_NOT_LOADED;
+	cAudioStateLock lock;
+	int32 loadedSlot = _GetPedCommentSlot(nComment);
+	if (loadedSlot >= 0) {
+		/* Keep the cache entry alive while AudioLogic transfers the comment
+		 * from its loading queue to a mixer channel. The channel reference
+		 * becomes the long-lived pin once InitialiseChannel succeeds. */
+		gPedSlotClaimFrames[loadedSlot] = 4;
+		return LOADING_STATUS_LOADED;
+	}
+	if (gPedCommentPending == nComment || gPedCommentLoading == nComment)
+		return LOADING_STATUS_LOADING;
+	return LOADING_STATUS_NOT_LOADED;
 #else
 	return LOADING_STATUS_NOT_LOADED;
 #endif
@@ -2549,29 +3221,22 @@ cSampleManager::LoadPedComment(uint32 nComment)
 	ASSERT(nComment < TOTAL_AUDIO_SAMPLES);
 
 #ifdef GAMECUBE
-	cAudioStateLock lock;
-	if (!GC_AUDIO_ENABLED || gSampleDataFile == NULL || nComment >= TOTAL_AUDIO_SAMPLES)
+	if (!GC_AUDIO_ENABLED || !gPedCommentLoaderRunning || nComment >= TOTAL_AUDIO_SAMPLES)
 		return FALSE;
 	if (m_aSamples[nComment].nSize == 0)
 		return FALSE;
-
-	uint8 *slotMem = gSampleBankMemoryStartAddress[SFX_BANK_PED_COMMENTS];
-	if (slotMem == NULL)
-		return FALSE;
-
-	if (fseek(gSampleDataFile, long(m_aSamples[nComment].nOffset), SEEK_SET) != 0)
-		return FALSE;
-
-	uint8 *dst = slotMem + PED_BLOCKSIZE * gCurrentPedSlot;
 	if (m_aSamples[nComment].nSize > PED_BLOCKSIZE)
 		return FALSE;
-	if (fread(dst, 1, m_aSamples[nComment].nSize, gSampleDataFile) != m_aSamples[nComment].nSize)
-		return FALSE;
-	ByteSwapPcm16Buffer(dst, m_aSamples[nComment].nSize);
 
-	gPedSlotSfx[gCurrentPedSlot] = int32(nComment);
-	gPedSlotSfxAddr[gCurrentPedSlot] = dst;
-	gCurrentPedSlot = (gCurrentPedSlot + 1) % MAX_PEDSFX;
+	cAudioStateLock lock;
+	if (_GetPedCommentSlot(nComment) >= 0 || gPedCommentPending == nComment || gPedCommentLoading == nComment)
+		return TRUE;
+	if (gPedCommentPending == NO_SAMPLE) {
+		gPedCommentPending = nComment;
+		gPedCommentPendingOffset = m_aSamples[nComment].nOffset;
+		gPedCommentPendingSize = m_aSamples[nComment].nSize;
+		SignalPedCommentLoader();
+	}
 	return TRUE;
 #else
 	return FALSE;
@@ -2659,8 +3324,13 @@ cSampleManager::InitialiseChannel(uint32 nChannel, uint32 nSfx, uint8 nBank)
 		return FALSE;
 
 	if (nBank == SFX_BANK_PED_COMMENTS) {
-		if (IsPedCommentLoaded(nSfx) != LOADING_STATUS_LOADED && !LoadPedComment(nSfx))
-			return FALSE;
+		uint8 loadStatus = IsPedCommentLoaded(nSfx);
+		if (loadStatus != LOADING_STATUS_LOADED) {
+			if (loadStatus == LOADING_STATUS_NOT_LOADED && !LoadPedComment(nSfx))
+				return FALSE;
+			if (IsPedCommentLoaded(nSfx) != LOADING_STATUS_LOADED)
+				return FALSE;
+		}
 	} else if (IsSampleBankLoaded(nBank) != LOADING_STATUS_LOADED && !LoadSampleBank(nBank)) {
 		return FALSE;
 	}
@@ -2685,11 +3355,16 @@ cSampleManager::InitialiseChannel(uint32 nChannel, uint32 nSfx, uint8 nBank)
 	channel.loopCount = 1;
 	channel.sampleData = sampleData;
 	channel.sampleCount = sampleCount;
-	channel.cursorQ16 = 0;
-	channel.stepQ16 = ComputeChannelStepQ16(channel.frequency);
-	if (channel.stepQ16 == 0)
-		channel.stepQ16 = ComputeChannelStepQ16(channel.baseFrequency != 0 ? channel.baseFrequency : DIGITALRATE);
-	channel.edgeRampFrames = ComputeSampleEdgeRampFrames(channel.sampleCount, channel.stepQ16);
+	channel.cursorFixed = 0;
+	channel.stepFixed = ComputeChannelStepFixed(channel.frequency);
+	if (channel.stepFixed == 0)
+		channel.stepFixed = ComputeChannelStepFixed(channel.baseFrequency != 0 ? channel.baseFrequency : DIGITALRATE);
+	channel.edgeRampFrames = ComputeSampleEdgeRampFrames(channel.sampleCount, channel.stepFixed);
+	if (nBank == SFX_BANK_PED_COMMENTS) {
+		int32 pedSlot = _GetPedCommentSlot(nSfx);
+		if (pedSlot >= 0)
+			gPedSlotClaimFrames[pedSlot] = 0;
+	}
 
 	return TRUE;
 #else
@@ -2784,8 +3459,8 @@ cSampleManager::SetChannelFrequency(uint32 nChannel, uint32 nFreq)
 	cAudioStateLock lock;
 	tGcSampleChannel &channel = gSampleChannels[nChannel];
 	channel.frequency = nFreq;
-	channel.stepQ16 = ComputeChannelStepQ16(nFreq);
-	channel.edgeRampFrames = ComputeSampleEdgeRampFrames(channel.sampleCount, channel.stepQ16);
+	channel.stepFixed = ComputeChannelStepFixed(nFreq);
+	channel.edgeRampFrames = ComputeSampleEdgeRampFrames(channel.sampleCount, channel.stepFixed);
 	if (nFreq == 0)
 		channel.active = FALSE;
 #else
@@ -2846,7 +3521,9 @@ cSampleManager::StartChannel(uint32 nChannel)
 #ifdef GAMECUBE
 	cAudioStateLock lock;
 	tGcSampleChannel &channel = gSampleChannels[nChannel];
-	if (!GC_AUDIO_ENABLED || !channel.initialised || channel.sampleData == NULL || channel.sampleCount == 0 || channel.stepQ16 == 0) {
+	/* Invalidate any producer snapshot taken before this start. */
+	ResetSamplePlaybackClock(nChannel);
+	if (!GC_AUDIO_ENABLED || !channel.initialised || channel.sampleData == NULL || channel.sampleCount == 0 || channel.stepFixed == 0) {
 		channel.active = FALSE;
 		return;
 	}
@@ -2865,6 +3542,7 @@ cSampleManager::StopChannel(uint32 nChannel)
 #ifdef GAMECUBE
 	cAudioStateLock lock;
 	/* The DMA mixer may still contain this channel after rendering stops. */
+	ResetSamplePlaybackClock(nChannel);
 	ResetSampleChannel(gSampleChannels[nChannel]);
 #endif
 }
@@ -2881,6 +3559,8 @@ cSampleManager::PreloadStreamedFile(tTrack nFile, uint8 nStream)
 		return;
 
 	CGcStreamDecoder *decoder = OpenTrackDecoder(nFile);
+	cStreamDecodeLock decodeLock;
+	cAudioFillLock fillLock;
 	cAudioStateLock lock;
 	if (gStreamSlots[nStream].active || StreamHasQueuedReadyAudio(nStream))
 		InvalidateReadyDmaBuffers();
@@ -2907,12 +3587,15 @@ cSampleManager::PauseStream(bool8 nPauseFlag, uint8 nStream)
 	ASSERT(nStream < MAX_STREAMS);
 
 #ifdef GAMECUBE
+	cStreamDecodeLock decodeLock;
+	cAudioFillLock fillLock;
 	cAudioStateLock lock;
 	if (gStreamSlots[nStream].decoder && gStreamSlots[nStream].paused != (nPauseFlag != FALSE)) {
 		if (gStreamSlots[nStream].active || StreamHasQueuedReadyAudio(nStream))
 			InvalidateReadyDmaBuffers();
 		gStreamSlots[nStream].paused = nPauseFlag != FALSE;
 	}
+	SignalStreamDecoder();
 	RequestAudioFillLocked();
 #endif
 }
@@ -2923,6 +3606,8 @@ cSampleManager::StartPreloadedStreamedFile(uint8 nStream)
 	ASSERT(nStream < MAX_STREAMS);
 
 #ifdef GAMECUBE
+	cStreamDecodeLock decodeLock;
+	cAudioFillLock fillLock;
 	cAudioStateLock lock;
 	if (!GC_AUDIO_ENABLED)
 		return;
@@ -2936,6 +3621,7 @@ cSampleManager::StartPreloadedStreamedFile(uint8 nStream)
 	slot.active = TRUE;
 	slot.paused = FALSE;
 	slot.preloaded = TRUE;
+	SignalStreamDecoder();
 	RequestAudioFillLocked();
 #endif
 }
@@ -2948,29 +3634,45 @@ cSampleManager::StartStreamedFile(tTrack nFile, uint32 nPos, uint8 nStream)
 #ifdef GAMECUBE
 	if (!GC_AUDIO_ENABLED)
 		return FALSE;
-	if (nFile >= TOTAL_STREAMED_SOUNDS)
+	if (nFile >= TOTAL_STREAMED_SOUNDS || !IsSupportedGcRadioTrack(nFile))
 		return FALSE;
 
-	CGcStreamDecoder *decoder = OpenTrackDecoder(nFile);
+	CGcStreamDecoder *decoder = NULL;
+	if (!gStreamDecoderRunning) {
+		decoder = OpenTrackDecoder(nFile);
+		if (decoder == NULL)
+			return FALSE;
+	}
+	cStreamDecodeLock decodeLock;
+	cAudioFillLock fillLock;
 	cAudioStateLock lock;
 	if (gStreamSlots[nStream].active || StreamHasQueuedReadyAudio(nStream))
 		InvalidateReadyDmaBuffers();
 	CloseStreamSlot(nStream);
 	tGcStreamSlot &slot = gStreamSlots[nStream];
 	slot.decoder = decoder;
-	if (slot.decoder == NULL)
-		return FALSE;
-
-	slot.preloaded = TRUE;
+	slot.preloaded = decoder != NULL;
 	slot.loop = gStreamLoopedFlag[nStream];
-	slot.lengthMs = slot.decoder->GetLengthMS();
+	slot.lengthMs = decoder != NULL ? decoder->GetLengthMS() : 0;
 	slot.requestedVolume = MAX_VOLUME;
 	slot.pan = 63;
-	slot.mixVolume = MAX_VOLUME;
+	/* The caller applies the station volume immediately after StartStreamedFile.
+	 * Start silent so a higher-priority producer cannot queue one full-volume
+	 * block before that setter runs. */
+	slot.mixVolume = 0;
 	slot.effectFlag = FALSE;
-	ResetSlotForPlayback(nStream, nPos);
+	if (decoder != NULL) {
+		ResetSlotForPlayback(nStream, nPos);
+	} else {
+		slot.ResetRuntime();
+		slot.openPending = TRUE;
+		slot.pendingTrack = nFile;
+		slot.pendingStartPosMs = nPos;
+		slot.startPosMs = nPos;
+	}
 	slot.active = TRUE;
 	slot.paused = FALSE;
+	SignalStreamDecoder();
 	RequestAudioFillLocked();
 	return TRUE;
 #else
@@ -2984,6 +3686,8 @@ cSampleManager::StopStreamedFile(uint8 nStream)
 	ASSERT(nStream < MAX_STREAMS);
 
 #ifdef GAMECUBE
+	cStreamDecodeLock decodeLock;
+	cAudioFillLock fillLock;
 	cAudioStateLock lock;
 	if (gStreamSlots[nStream].active || StreamHasQueuedReadyAudio(nStream))
 		InvalidateReadyDmaBuffers();
@@ -3093,9 +3797,16 @@ cSampleManager::Service(void)
 	if (gAudioProducerRunning) {
 		SignalAudioProducer();
 	} else {
-		cAudioStateLock lock;
-		TryFillReadyBuffersLocked();
+		TryFillReadyBuffers();
 	}
+	{
+		cAudioStateLock lock;
+		for (uint32 i = 0; i < MAX_PEDSFX; i++) {
+			if (gPedSlotClaimFrames[i] != 0)
+				gPedSlotClaimFrames[i]--;
+		}
+	}
+	SignalPedCommentLoader();
 #if GC_AUDIO_DEBUG_LOG
 	LogDmaDiagnostics();
 #endif
@@ -3170,6 +3881,8 @@ cSampleManager::SetStreamedFileLoopFlag(bool8 nLoopFlag, uint8 nChannel)
 {
 #ifdef GAMECUBE
 	ASSERT(nChannel < MAX_STREAMS);
+	cStreamDecodeLock decodeLock;
+	cAudioFillLock fillLock;
 	cAudioStateLock lock;
 	gStreamLoopedFlag[nChannel] = nLoopFlag != FALSE;
 	gStreamSlots[nChannel].loop = nLoopFlag != FALSE;

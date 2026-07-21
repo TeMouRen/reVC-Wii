@@ -496,6 +496,12 @@ cMusicManager::ServiceFrontEndMode()
 		m_nNextTrack = m_nFrontendTrack;
 		m_nNextLoopFlag = m_FrontendLoopFlag;
 	}
+	if (m_nPlayingTrack >= STREAMED_SOUND_RADIO_WILD && m_nPlayingTrack <= STREAMED_SOUND_RADIO_POLICE &&
+	    m_nPlayingTrack == m_nNextTrack && !m_bVerifyNextTrackStartedToPlay &&
+	    !SampleManager.IsStreamPlaying()) {
+		m_nPlayingTrack = NO_TRACK;
+		m_bTrackChangeStarted = FALSE;
+	}
 
 	if (m_nNextTrack != m_nPlayingTrack) {
 		m_bTrackChangeStarted = TRUE;
@@ -518,14 +524,19 @@ cMusicManager::ServiceFrontEndMode()
 				uint32 trackStartPos = (m_nNextTrack <= STREAMED_SOUND_RADIO_POLICE) ? GetTrackStartPos(m_nNextTrack) : 0;
 				if (m_nNextTrack != NO_TRACK) {
 					SampleManager.SetStreamedFileLoopFlag(m_nNextLoopFlag);
-					SampleManager.StartStreamedFile(m_nNextTrack, trackStartPos);
-					m_nVolumeLatency = 3;
-					m_nCurrentVolume = 0;
-					m_nMaxVolume = MAX_RADIO_VOLUME;
-					SampleManager.SetStreamedVolumeAndPan(m_nCurrentVolume, SURROUND_PAN(63, 30), FALSE);
-					if (m_nNextTrack < STREAMED_SOUND_CITY_AMBIENT)
-						m_nLastTrackServiceTime = CTimer::GetTimeInMillisecondsPauseMode();
-					m_bVerifyNextTrackStartedToPlay = TRUE;
+					if (SampleManager.StartStreamedFile(m_nNextTrack, trackStartPos)) {
+						m_nVolumeLatency = 3;
+						m_nCurrentVolume = 0;
+						m_nMaxVolume = MAX_RADIO_VOLUME;
+						SampleManager.SetStreamedVolumeAndPan(m_nCurrentVolume, SURROUND_PAN(63, 30), FALSE);
+						if (m_nNextTrack < STREAMED_SOUND_CITY_AMBIENT)
+							m_nLastTrackServiceTime = CTimer::GetTimeInMillisecondsPauseMode();
+						m_bVerifyNextTrackStartedToPlay = TRUE;
+					} else {
+						m_nPlayingTrack = NO_TRACK;
+						m_bTrackChangeStarted = FALSE;
+						m_bVerifyNextTrackStartedToPlay = FALSE;
+					}
 				}
 			}
 		}
@@ -995,6 +1006,15 @@ cMusicManager::ServiceTrack(CVehicle *veh, CPed *ped)
 		bRadioStatsRecorded = FALSE;
 		m_nPlayingTrack = NO_TRACK;
 	}
+	/* StartStreamedFile queues Wii decoder creation asynchronously. If that
+	 * background open fails after the pending stream was acknowledged, move the
+	 * state machine back to its normal start branch instead of leaving the radio
+	 * permanently silent. */
+	if (m_nPlayingTrack != NO_TRACK && m_nPlayingTrack == m_nNextTrack &&
+	    !m_bVerifyNextTrackStartedToPlay && !SampleManager.IsStreamPlaying()) {
+		m_nPlayingTrack = NO_TRACK;
+		m_bTrackChangeStarted = FALSE;
+	}
 
 	if (m_nNextTrack != m_nPlayingTrack) {
 		m_bTrackChangeStarted = TRUE;
@@ -1041,19 +1061,24 @@ cMusicManager::ServiceTrack(CVehicle *veh, CPed *ped)
 				uint32 pos = GetTrackStartPos(m_nNextTrack);
 				if (m_nNextTrack != NO_TRACK) {
 					SampleManager.SetStreamedFileLoopFlag(TRUE);
-					SampleManager.StartStreamedFile(m_nNextTrack, pos);
-					if (m_nFrontendTrack >= STREAMED_SOUND_CITY_AMBIENT && m_nFrontendTrack <= STREAMED_SOUND_AMBSIL_AMBIENT) {
-						ComputeAmbienceVol(TRUE, volume);
-						SampleManager.SetStreamedVolumeAndPan(volume, SURROUND_PAN(63, 30), TRUE);
+					if (SampleManager.StartStreamedFile(m_nNextTrack, pos)) {
+						if (m_nFrontendTrack >= STREAMED_SOUND_CITY_AMBIENT && m_nFrontendTrack <= STREAMED_SOUND_AMBSIL_AMBIENT) {
+							ComputeAmbienceVol(TRUE, volume);
+							SampleManager.SetStreamedVolumeAndPan(volume, SURROUND_PAN(63, 30), TRUE);
+						} else {
+							m_nVolumeLatency = 10;
+							m_nCurrentVolume = 0;
+							m_nMaxVolume = MAX_RADIO_VOLUME;
+							SampleManager.SetStreamedVolumeAndPan(m_nCurrentVolume, SURROUND_PAN(63, 30), FALSE);
+						}
+						if (m_nNextTrack < STREAMED_SOUND_CITY_AMBIENT)
+							m_nLastTrackServiceTime = CTimer::GetTimeInMillisecondsPauseMode();
+						m_bVerifyNextTrackStartedToPlay = TRUE;
 					} else {
-						m_nVolumeLatency = 10;
-						m_nCurrentVolume = 0;
-						m_nMaxVolume = MAX_RADIO_VOLUME;
-						SampleManager.SetStreamedVolumeAndPan(m_nCurrentVolume, SURROUND_PAN(63, 30), FALSE);
-					} 
-					if (m_nNextTrack < STREAMED_SOUND_CITY_AMBIENT)
-						m_nLastTrackServiceTime = CTimer::GetTimeInMillisecondsPauseMode();
-					m_bVerifyNextTrackStartedToPlay = TRUE;
+						m_nPlayingTrack = NO_TRACK;
+						m_bTrackChangeStarted = FALSE;
+						m_bVerifyNextTrackStartedToPlay = FALSE;
+					}
 				}
 			}
 		}

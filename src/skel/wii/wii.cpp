@@ -33,6 +33,7 @@
 #include "Timer.h"
 #include "main.h"
 #include "DMAudio.h"
+#include "sampman.h"
 #include "MemoryMgr.h"     // GC: CMemoryHeap custom allocator
 #include "HandlingMgr.h"
 #include "Streaming.h"
@@ -53,6 +54,8 @@ static bool        gWiiPresentedThisFrame = false;
 static double      gWiiLastFrontendLoopMarkMs = 0.0;
 static double      gWiiLastGameLoopMarkMs = 0.0;
 static uint32      gWiiOuterVsyncDiagSeq = 0;
+static u32         gWiiNextGameRetrace = 0;
+static bool        gWiiGameRetraceTargetValid = false;
 
 extern "C" void WiiRecordOuterVSyncWait(double waitMs, double frameLoopMs);
 
@@ -61,13 +64,43 @@ WiiResetLoopTimingMarks(void)
 {
     gWiiLastFrontendLoopMarkMs = 0.0;
     gWiiLastGameLoopMarkMs = 0.0;
+    gWiiNextGameRetrace = 0;
+    gWiiGameRetraceTargetValid = false;
+}
+
+static void
+WiiApplyFrontendAudioSettings(void)
+{
+    DMAudio.SetMusicMasterVolume(FrontEndMenuManager.m_PrefsMusicVolume);
+    DMAudio.SetEffectsMasterVolume(FrontEndMenuManager.m_PrefsSfxVolume);
+    DMAudio.SetMP3BoostVolume(FrontEndMenuManager.m_PrefsMP3BoostVolume);
+    if (FrontEndMenuManager.m_PrefsRadioStation < WILDSTYLE ||
+        FrontEndMenuManager.m_PrefsRadioStation > WAVE)
+        FrontEndMenuManager.m_PrefsRadioStation = WILDSTYLE;
+    DMAudio.SetRadioInCar(FrontEndMenuManager.m_PrefsRadioStation);
+}
+
+static void
+WiiRestoreAudioFadeAfterLoad(void)
+{
+    DMAudio.SetEffectsFadeVol(MAX_VOLUME);
+    DMAudio.SetMusicFadeVol(MAX_VOLUME);
 }
 
 static void
 WiiWaitForVideoSyncAndMeasure(bool frontendLoop)
 {
     const double beforeWaitMs = RsTimer();
-    VIDEO_WaitVSync();
+    if (frontendLoop) {
+        VIDEO_WaitVSync();
+    } else {
+        if (!gWiiGameRetraceTargetValid)
+            gWiiNextGameRetrace = VIDEO_GetRetraceCount() + 1;
+
+        const u32 actualRetrace = VIDEO_WaitForRetrace(gWiiNextGameRetrace);
+        gWiiNextGameRetrace = actualRetrace + 2;
+        gWiiGameRetraceTargetValid = true;
+    }
     const double afterWaitMs = RsTimer();
 
     double &lastLoopMarkMs = frontendLoop ? gWiiLastFrontendLoopMarkMs : gWiiLastGameLoopMarkMs;
@@ -930,6 +963,7 @@ int main(int argc, char *argv[]) {
         SYS_Report("[reVC-WII] FATAL: InitialiseOnceAfterRW failed.\n");
         while (true) { VIDEO_WaitVSync(); }
     }
+    WiiApplyFrontendAudioSettings();
 
     // FrontendIdle() â?PC/PS2 èåä¸»å¾ªç?(å®ä¹å?main.cpp)
     // æ¯å®æ?Idle() æ´è½»é? ä¸å è½½æ¸¸ææ°æ®ãä¸åå§åä¸çãä¸æ¸²æ3D
@@ -976,10 +1010,11 @@ int main(int argc, char *argv[]) {
                 CGame::ShutDownForRestart();
                 CTimer::Stop();
                 CGame::InitialiseWhenRestarting();
-                DMAudio.ChangeMusicMode(MUSICMODE_GAME);
                 FrontEndMenuManager.m_bWantToRestart = false;
                 SYS_Report("[reVC-WII] Synthetic first restart/load complete.\n");
             }
+            WiiRestoreAudioFadeAfterLoad();
+            DMAudio.ChangeMusicMode(MUSICMODE_GAME);
             CMBlur::ResetHistory();
             SYS_Report("[reVC-WII] Reset blur history after InitialiseGame()\n");
             if (!WiiShouldPreserveScriptSplash()) {
@@ -1059,6 +1094,7 @@ int main(int argc, char *argv[]) {
             }
 
             CGame::InitialiseWhenRestarting();
+            WiiRestoreAudioFadeAfterLoad();
             DMAudio.ChangeMusicMode(MUSICMODE_GAME);
             FrontEndMenuManager.m_bWantToRestart = false;
             CMBlur::ResetHistory();

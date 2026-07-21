@@ -245,6 +245,35 @@ int         _gdwCdStreamFlags;
 
 void *CdStreamThread(void *channelId);
 
+#ifdef GAMECUBE
+/* gcm_read_r serialises each logical read against radio I/O. Cap world-stream
+ * ownership to 32 KiB at a time so radio can run between large gta3.img
+ * transfers. The absolute disc offset may make a chunk cross a cluster. */
+static const size_t GC_CDSTREAM_READ_CHUNK_SIZE = 32 * 1024;
+
+static ssize_t
+CdStreamReadInterleaved(int fd, void *buffer, size_t size)
+{
+    u8 *dst = (u8 *)buffer;
+    size_t total = 0;
+
+    while (total < size) {
+        size_t chunk = size - total;
+        if (chunk > GC_CDSTREAM_READ_CHUNK_SIZE)
+            chunk = GC_CDSTREAM_READ_CHUNK_SIZE;
+
+        ssize_t got = read(fd, dst + total, chunk);
+        if (got < 0)
+            return -1;
+        if (got == 0)
+            break;
+        total += (size_t)got;
+    }
+
+    return (ssize_t)total;
+}
+#endif
+
 static int32
 CdStreamFindImageByFd(int32 fd)
 {
@@ -847,7 +876,11 @@ CdStreamThread(void *param)
                 pChannel->nStatus = STREAM_ERROR;
             } else {
                 // [F8] read 戻り値 + 短読み出しチェック
+#ifdef GAMECUBE
+                ssize_t bytesRead = CdStreamReadInterleaved(pChannel->hFile, pChannel->pBuffer, readSize);
+#else
                 ssize_t bytesRead = read(pChannel->hFile, pChannel->pBuffer, readSize);
+#endif
                 if (bytesRead == -1) {
                     CDTRACE("read failed: ch=%d fd=%d img=%d name='%s' sector=%u seek=%lu expect=%lu fileSize=%lu errno=%d",
                             channel, pChannel->hFile, imageIndex, imageName,

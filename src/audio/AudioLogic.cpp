@@ -2247,6 +2247,7 @@ cAudioManager::ProcessPlayersVehicleEngine(cVehicleParams& params, CVehicle* veh
 	bool8 lostTraction = FALSE;
 	bool8 isMoped = FALSE;
 	bool8 processedAccelSampleStopped = FALSE;
+	bool8 replaceAccelChannel = FALSE;
 	static uint32 gearSoundStartTime = CTimer::GetTimeInMilliseconds();
 #ifdef GTA_PS2
 	uint8 nChannel = m_bIsSurround ? CHANNEL_DTS_PLAYER_VEHICLE_ENGINE : CHANNEL_PLAYER_VEHICLE_ENGINE;
@@ -2411,10 +2412,10 @@ cAudioManager::ProcessPlayersVehicleEngine(cVehicleParams& params, CVehicle* veh
 		noGearBox = TRUE;
 		break;
 	}
-	if (channelUsed && nCruising == 0 && !noGearBox) {
+	if (channelUsed && !bAccelSampleStopped && nCruising == 0 && !noGearBox) {
 		gearSoundLength -= 1000;
 		if (CTimer::GetTimeInMilliseconds() - gearSoundStartTime > gearSoundLength) {
-			channelUsed = FALSE;
+			replaceAccelChannel = TRUE;
 			gearSoundStartTime = CTimer::GetTimeInMilliseconds();
 		}
 	} else
@@ -2490,11 +2491,16 @@ PlayCruising:
 #ifndef EXTERNAL_3D_SOUND
 				m_sQueueSample.m_nPan = ComputePan(m_sQueueSample.m_fDistance, &pos);
 #endif
+				if (replaceAccelChannel) {
+					/* Advance the staged engine voice before its silent tail reaches
+					 * the software mixer's pending-buffer guard. */
+					SampleManager.StopChannel(nChannel);
+					channelUsed = FALSE;
+				}
 				if (bAccelSampleStopped) {
 					if (CurrentPretendGear != 1 || currentGear != 2)
 						CurrentPretendGear = Max(1, currentGear - 1);
 					processedAccelSampleStopped = TRUE;
-					bAccelSampleStopped = FALSE;
 				}
 
 				if (!channelUsed) {
@@ -2520,27 +2526,30 @@ PlayCruising:
 #endif
 				}
 
+				if (!channelUsed || !bAccelSampleStopped) {
 #ifdef EXTERNAL_3D_SOUND
-				SampleManager.SetChannelEmittingVolume(CHANNEL_PLAYER_VEHICLE_ENGINE, PLAYER_VEHICLE_ENGINE_VOLUME);
-				SampleManager.SetChannel3DPosition(CHANNEL_PLAYER_VEHICLE_ENGINE, pos.x, pos.y, pos.z);
-				SampleManager.SetChannel3DDistances(CHANNEL_PLAYER_VEHICLE_ENGINE, VEHICLE_ENGINE_MAX_DIST, VEHICLE_ENGINE_MAX_DIST / 4.0f);
+					SampleManager.SetChannelEmittingVolume(CHANNEL_PLAYER_VEHICLE_ENGINE, PLAYER_VEHICLE_ENGINE_VOLUME);
+					SampleManager.SetChannel3DPosition(CHANNEL_PLAYER_VEHICLE_ENGINE, pos.x, pos.y, pos.z);
+					SampleManager.SetChannel3DDistances(CHANNEL_PLAYER_VEHICLE_ENGINE, VEHICLE_ENGINE_MAX_DIST, VEHICLE_ENGINE_MAX_DIST / 4.0f);
 #else
-				SampleManager.SetChannelVolume(nChannel, ComputeVolume(PLAYER_VEHICLE_ENGINE_VOLUME, VEHICLE_ENGINE_MAX_DIST, m_sQueueSample.m_fDistance));
-				SampleManager.SetChannelPan(nChannel, m_sQueueSample.m_nPan);
+					SampleManager.SetChannelVolume(nChannel, ComputeVolume(PLAYER_VEHICLE_ENGINE_VOLUME, VEHICLE_ENGINE_MAX_DIST, m_sQueueSample.m_fDistance));
+					SampleManager.SetChannelPan(nChannel, m_sQueueSample.m_nPan);
 #endif
-				freq = GearFreqAdj[CurrentPretendGear] + freqModifier + 22050;
-				if (engineSoundType == SFX_BANK_TRUCK)
-					freq >>= 1;
+					freq = GearFreqAdj[CurrentPretendGear] + freqModifier + 22050;
+					if (engineSoundType == SFX_BANK_TRUCK)
+						freq >>= 1;
 #ifdef USE_TIME_SCALE_FOR_AUDIO
-				SampleManager.SetChannelFrequency(nChannel, freq * CTimer::GetTimeScale());
+					SampleManager.SetChannelFrequency(nChannel, freq * CTimer::GetTimeScale());
 #else
-				SampleManager.SetChannelFrequency(nChannel, freq);
+					SampleManager.SetChannelFrequency(nChannel, freq);
 #endif
+				}
 				if (!channelUsed) {
 #ifdef AUDIO_REVERB
 					SampleManager.SetChannelReverbFlag(nChannel, m_bDynamicAcousticModelingStatus != FALSE);
 #endif
 					SampleManager.StartChannel(nChannel);
+					bAccelSampleStopped = FALSE;
 				}
 			}
 		}

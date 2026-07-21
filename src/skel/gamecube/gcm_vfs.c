@@ -33,6 +33,7 @@
 
 #include <gccore.h>           /* SYS_Report, memalign, u8/u32/s64 … */
 #include <ogc/dvd.h>          /* DVD_ReadAbsPrio, dvdcmdblk          */
+#include <ogc/mutex.h>
 #ifdef WII
 #include <di/di.h>
 #include <ogc/cache.h>
@@ -79,6 +80,8 @@ static s64         g_disc_base_offset  = 0;
 static bool        g_disc_uses_wii_clusters = false;
 static bool        g_disc_wii_offsets_are_words = false;
 static u32         g_open_sequence = 1u;
+static mutex_t     g_disc_io_mutex = LWP_MUTEX_NULL;
+static volatile bool g_vfs_shutting_down = false;
 
 /* ================================================================
  * Open-file handle  (newlib allocates structSize bytes for us)
@@ -225,14 +228,14 @@ static bool wii_di_read_abs_aligned_chunked(void *buf, u32 len, s64 off)
 static bool dvd_read_abs_aligned(void *buf, u32 len, s64 off) {
 #ifdef WII
     if (g_disc_uses_wii_clusters) {
-        if ((off & (GCM_SECTOR_SIZE - 1u)) != 0)
-            return false;
-        return wii_di_read_abs_aligned_chunked(buf, len, off);
+		if ((off & (GCM_SECTOR_SIZE - 1u)) != 0)
+			return false;
+		return wii_di_read_abs_aligned_chunked(buf, len, off);
     }
 #endif
-    dvdcmdblk blk;
-    u32 alen = (len + (GCM_SECTOR_SIZE - 1u)) & ~(GCM_SECTOR_SIZE - 1u);
-    return DVD_ReadAbsPrio(&blk, buf, (s32)alen, off, 2) > 0;
+	dvdcmdblk blk;
+	u32 alen = (len + (GCM_SECTOR_SIZE - 1u)) & ~(GCM_SECTOR_SIZE - 1u);
+	return DVD_ReadAbsPrio(&blk, buf, (s32)alen, off, 2) > 0;
 }
 
 static bool dvd_read_abs_exact(void *buf, u32 len, s64 off)
@@ -621,10 +624,19 @@ static int gcm_open_r(struct _reent *r,
         r->_errno = EROFS;
         return -1;
     }
-    if (!g_fst) {
+    if (g_vfs_shutting_down || !g_fst) {
         r->_errno = ENODEV;
         return -1;
     }
+	if (g_disc_io_mutex == LWP_MUTEX_NULL || LWP_MutexLock(g_disc_io_mutex) != 0) {
+		r->_errno = EIO;
+		return -1;
+	}
+	if (g_vfs_shutting_down || !g_fst) {
+		LWP_MutexUnlock(g_disc_io_mutex);
+		r->_errno = ENODEV;
+		return -1;
+	}
 
     /* ── 剥离 "dvd:" 前缀及前导斜杠 ────────────────────────
      * [FIX-VFS] 原代码只剥离 "dvd:"，结果 search_path = "/neo/neo.txd"
@@ -648,6 +660,7 @@ static int gcm_open_r(struct _reent *r,
     if (!fst_find_file(search_path, &disc_off, &file_sz)) {
         SYS_Report("[GCM_VFS] ERROR: '%s' not found in FST tree!\n", search_path);
         r->_errno = ENOENT;
+		LWP_MutexUnlock(g_disc_io_mutex);
         return -1;
     }
 
@@ -666,6 +679,7 @@ static int gcm_open_r(struct _reent *r,
         SYS_Report("[GCM_VFS] open seq=%u path='%s' disc=0x%08X size=%u flags=0x%X\n",
                    h->open_seq, h->debug_path, h->disc_offset, h->file_size, flags);
     }
+	LWP_MutexUnlock(g_disc_io_mutex);
     return 0;
 }
 
@@ -681,6 +695,10 @@ static ssize_t gcm_read_r(struct _reent *r,
 {
     GCMFileHandle *h = (GCMFileHandle *)fd;
 
+    if (g_vfs_shutting_down) {
+        r->_errno = ENODEV;
+        return -1;
+    }
     if (h->current_pos >= h->file_size) return 0; /* EOF */
 
     /* Clamp to remaining bytes */
@@ -688,6 +706,15 @@ static ssize_t gcm_read_r(struct _reent *r,
     if (h->current_pos + to_read > h->file_size)
         to_read = h->file_size - h->current_pos;
     if (to_read == 0u) return 0;
+	if (g_disc_io_mutex == LWP_MUTEX_NULL || LWP_MutexLock(g_disc_io_mutex) != 0) {
+		r->_errno = EIO;
+		return -1;
+	}
+	if (g_vfs_shutting_down) {
+		LWP_MutexUnlock(g_disc_io_mutex);
+		r->_errno = ENODEV;
+		return -1;
+	}
 
 
     u32 abs_off     = h->disc_offset + h->current_pos;
@@ -712,6 +739,7 @@ static ssize_t gcm_read_r(struct _reent *r,
                        h->disc_offset, h->current_pos, (unsigned long)len,
                        (unsigned long)to_read, h->file_size, aligned_off);
             r->_errno = EIO;
+			LWP_MutexUnlock(g_disc_io_mutex);
             return -1;
         }
         if (!h->first_read_logged && h->current_pos == 0u && gcm_path_is_focus(h->debug_path)) {
@@ -730,6 +758,7 @@ static ssize_t gcm_read_r(struct _reent *r,
             h->first_read_logged = 1u;
         }
         h->current_pos += (u32)to_read;
+		LWP_MutexUnlock(g_disc_io_mutex);
         return (ssize_t)to_read;
     }
 
@@ -755,6 +784,7 @@ static ssize_t gcm_read_r(struct _reent *r,
                    alloc_sz, h->disc_offset, h->current_pos, (unsigned long)len,
                    (unsigned long)to_read, h->file_size);
         r->_errno = ENOMEM;
+		LWP_MutexUnlock(g_disc_io_mutex);
         return -1;
     }
 
@@ -764,6 +794,7 @@ static ssize_t gcm_read_r(struct _reent *r,
                    h->disc_offset, h->current_pos, (unsigned long)len,
                    (unsigned long)to_read, h->file_size, aligned_off, alloc_sz, skip);
         r->_errno = EIO;
+		LWP_MutexUnlock(g_disc_io_mutex);
         return -1;
     }
     memcpy(ptr, bounce + skip, to_read);
@@ -786,6 +817,7 @@ static ssize_t gcm_read_r(struct _reent *r,
     }
 
     h->current_pos += (u32)to_read;
+	LWP_MutexUnlock(g_disc_io_mutex);
     return (ssize_t)to_read;
 }
 
@@ -833,6 +865,15 @@ static int gcm_fstat_r(struct _reent *r, void *fd, struct stat *st) {
 
 /* stat_r 也需要剥离前缀 */
 static int gcm_stat_r(struct _reent *r, const char *path, struct stat *st) {
+	if (g_vfs_shutting_down || !g_fst || g_disc_io_mutex == LWP_MUTEX_NULL || LWP_MutexLock(g_disc_io_mutex) != 0) {
+		r->_errno = ENODEV;
+		return -1;
+	}
+	if (g_vfs_shutting_down || !g_fst) {
+		LWP_MutexUnlock(g_disc_io_mutex);
+		r->_errno = ENODEV;
+		return -1;
+	}
     const char *search_path = path;
     if (strncmp(search_path, "dvd:", 4) == 0) {
         search_path += 4;
@@ -844,12 +885,14 @@ static int gcm_stat_r(struct _reent *r, const char *path, struct stat *st) {
     u32 disc_off = 0u, file_sz = 0u;
     if (!fst_find_file(search_path, &disc_off, &file_sz)) {
         r->_errno = ENOENT;
+		LWP_MutexUnlock(g_disc_io_mutex);
         return -1;
     }
     memset(st, 0, sizeof(struct stat));
     st->st_size  = (off_t)file_sz;
     st->st_mode  = S_IFREG | S_IRUSR | S_IRGRP | S_IROTH;
     st->st_nlink = 1;
+	LWP_MutexUnlock(g_disc_io_mutex);
     return 0;
 }
 
@@ -874,6 +917,11 @@ static const devoptab_t s_gcm_devoptab = {
 
 bool GCM_VFS_Mount(void) {
     if (g_fst_raw_buf) return true;   /* idempotent */
+	if (g_disc_io_mutex == LWP_MUTEX_NULL && LWP_MutexInit(&g_disc_io_mutex, false) != 0) {
+		SYS_Report("[GCM_VFS] ERROR: cannot create disc I/O mutex\n");
+		return false;
+	}
+	g_vfs_shutting_down = false;
 
     /* [OLD-GCM_VFS] One-time mount trace used during VFS bring-up.
     SYS_Report("[GCM_VFS] Mounting disc VFS...\n"); */
@@ -980,7 +1028,10 @@ register_device:
 }
 
 void GCM_VFS_Unmount(void) {
-    if (!g_fst_raw_buf) return;
+	if (!g_fst_raw_buf) return;
+
+	g_vfs_shutting_down = true;
+	bool io_locked = g_disc_io_mutex != LWP_MUTEX_NULL && LWP_MutexLock(g_disc_io_mutex) == 0;
 
     RemoveDevice("dvd");
 
@@ -994,6 +1045,8 @@ void GCM_VFS_Unmount(void) {
     g_disc_base_offset  = 0;
     g_disc_uses_wii_clusters = false;
     g_disc_wii_offsets_are_words = false;
+	if (io_locked)
+		LWP_MutexUnlock(g_disc_io_mutex);
 
     /* [OLD-GCM_VFS] Unmount trace used during VFS bring-up.
     SYS_Report("[GCM_VFS] Unmounted.\n"); */

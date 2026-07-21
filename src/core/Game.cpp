@@ -108,35 +108,30 @@
 
 #ifdef WII
 static bool
-WiiShouldThrottlePopulationWork(void)
+WiiShouldThrottleOptionalWorldWork(uint32 cadenceMask)
 {
 	if(CGame::playingIntro || CReplay::IsPlayingBack())
 		return false;
 
-	if(CTimer::GetTimeStepInMilliseconds() >= 24)
-		return true;
-
-	CVehicle *veh = FindPlayerVehicle();
-	if(veh == nil)
+	// The Wii game loop targets 29.97 FPS, so a normal frame is about 33 ms.
+	// Only shed optional generation work on genuinely late frames, and still
+	// let it run periodically so traffic and population can recover.
+	if(CTimer::GetTimeStepInMilliseconds() < 50)
 		return false;
 
-	return veh->m_vecMoveSpeed.Magnitude2D() > 0.09f;
+	return (CTimer::GetFrameCounter() & cadenceMask) != 0;
+}
+
+static bool
+WiiShouldThrottlePopulationWork(void)
+{
+	return WiiShouldThrottleOptionalWorldWork(3);
 }
 
 static bool
 WiiShouldThrottleTrafficGeneration(void)
 {
-	if(CGame::playingIntro || CReplay::IsPlayingBack())
-		return false;
-
-	if(CTimer::GetTimeStepInMilliseconds() >= 24)
-		return true;
-
-	CVehicle *veh = FindPlayerVehicle();
-	if(veh == nil)
-		return false;
-
-	return veh->m_vecMoveSpeed.Magnitude2D() > 0.11f;
+	return WiiShouldThrottleOptionalWorldWork(7);
 }
 #endif
 
@@ -1054,6 +1049,7 @@ void CGame::Process(void)
 	CStreaming::Update();
 	uint32 processTime = CTimer::GetCurrentTimeInCycles() / CTimer::GetCyclesPerMillisecond() - startTime;
 #ifdef WII
+	const bool wiiStreamingOverBudget = processTime >= 2;
 	const bool wiiThrottlePopulation = WiiShouldThrottlePopulationWork();
 	const bool wiiThrottleTraffic = WiiShouldThrottleTrafficGeneration();
 #endif
@@ -1105,7 +1101,16 @@ void CGame::Process(void)
 #else
 		if (processTime >= 2) {
 #endif
+		#ifdef WII
+			// Streaming can legitimately take several milliseconds on the Wii.
+			// Do not let that permanently suppress random population work.
+			if ((CTimer::GetFrameCounter() & 3) == 0)
+				CPopulation::Update(!wiiThrottlePopulation);
+			else
+				CPopulation::Update(false);
+		#else
 			CPopulation::Update(false);
+		#endif
 		} else {
 			uint32 startTime = CTimer::GetCurrentTimeInCycles() / CTimer::GetCyclesPerMillisecond();
 			CPopulation::Update(
@@ -1157,7 +1162,14 @@ void CGame::Process(void)
 		if (!CReplay::IsPlayingBack())
 		{
 			PUSH_MEMID(MEMID_CARS);
+			#ifdef WII
+			const bool wiiTrafficBudgetAvailable =
+				(!wiiStreamingOverBudget && processTime < 2) ||
+				(CTimer::GetFrameCounter() & 7) == 0;
+			if (wiiTrafficBudgetAvailable && !CGame::playingIntro
+			#else
 			if (processTime < 2 && !CGame::playingIntro
+			#endif
 #ifdef WII
 				&& !wiiThrottleTraffic
 #endif
