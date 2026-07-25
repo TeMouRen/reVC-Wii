@@ -697,10 +697,6 @@ CPed::SetObjective(eObjective newObj, CVector dest)
 				m_acceptableHeadingOffset = m_attractor->GetAcceptableHeading();
 			}
 			bUsePedNodeSeek = false;
-			if (newObj == OBJECTIVE_GOTO_AREA_ON_FOOT &&
-				!CWorld::IsWanderPathClear(GetPosition(), m_nextRoutePointPos, 0.5f, 4)) {
-				bUsePedNodeSeek = true;
-			}
 			if (sq(m_distanceToCountSeekDone) > (m_nextRoutePointPos - GetPosition()).MagnitudeSqr2D()) {
 				if (!IsUseAttractorObjective(m_objective))
 					return;
@@ -1597,6 +1593,7 @@ CPed::ProcessObjective(void)
 							if (m_pNextPathNode)
 								m_vecSeekPos = CPathFind::TakeWidthIntoAccountForWandering(m_pNextPathNode, m_randomSeed);
 						}
+						CVector seekPos = m_vecSeekPos;
 						SetSeek(m_vecSeekPos, m_distanceToCountSeekDone);
 					}
 				}
@@ -1904,8 +1901,12 @@ CPed::ProcessObjective(void)
 					}
 					break;
 				}
-				SetObjective(OBJECTIVE_RUN_TO_AREA, m_nextRoutePointPos);
+				// Falls to different objectives in III and VC
+#ifdef FIX_BUGS
 				break;
+#else
+				// fall through
+#endif
 			}
 			case OBJECTIVE_GOTO_SEAT_ON_FOOT:
 			case OBJECTIVE_GOTO_ATM_ON_FOOT:
@@ -5744,9 +5745,8 @@ CPed::FindBestCoordsFromNodes(CVector unused, CVector *bestCoords)
 
 	CVector seekObjPos = m_vecSeekPos;
 	seekObjPos.z += 1.0f;
-	bool hasDirectLine = CWorld::GetIsLineOfSightClear(ourPos, seekObjPos, true, false, false, true, false, false, false);
-	bool hasClearWanderPath = CWorld::IsWanderPathClear(ourPos, m_vecSeekPos, 0.5f, 4);
-	if (hasDirectLine && hasClearWanderPath)
+
+	if (CWorld::GetIsLineOfSightClear(ourPos, seekObjPos, true, false, false, true, false, false, false))
 		return false;
 
 	m_pNextPathNode = nil;

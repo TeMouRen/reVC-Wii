@@ -640,13 +640,8 @@ CPathFind::PreparePathDataForType(uint8 type, CTempNode *tempnodes, CPathInfoFor
 
 	// Calculate internal nodes, store them and connect them to defining object
 	for(i = 0; i < m_numMapObjects; i++){
-		int modelIdx = m_mapObjects[i]->GetModelIndex();
-		if(modelIdx >= PATHNODESIZE){
-			printf("[PATH] ERROR: mapObject[%d] modelIdx=%d >= PATHNODESIZE=%d!\n", i, modelIdx, PATHNODESIZE);
-			continue;
-		}
 		tileStart = m_numPathNodes;
-		start = 12 * modelIdx;
+		start = 12 * m_mapObjects[i]->GetModelIndex();
 		for(j = 0; j < 12; j++){
 			if(objectpathinfo[start + j].type == NodeTypeIntern){
 				CalcNodeCoors(

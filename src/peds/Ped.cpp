@@ -5908,23 +5908,17 @@ void
 CPed::SetSeek(CVector pos, float distanceToCountDone)
 {
 	if (!IsPedInControl()
-		|| (m_nPedState == PED_SEEK_POS && m_vecSeekPos.x == pos.x && m_vecSeekPos.y == pos.y))
+		|| (m_nPedState == PED_SEEK_POS && m_vecSeekPos.x == pos.x && m_vecSeekPos.y == pos.y) || m_nPedState == PED_FOLLOW_PATH)
 		return;
 
 	if (!CWeaponInfo::GetWeaponInfo(GetWeapon()->m_eWeaponType)->IsFlagSet(WEAPONFLAG_CANAIM_WITHARM)) {
 		ClearPointGunAt();
 	}
 
-	if (m_nPedState == PED_FOLLOW_PATH)
-		ClearFollowPath();
-
 	if (m_nPedState != PED_SEEK_POS)
 		SetStoredState();
 
 	SetPedState(PED_SEEK_POS);
-	m_nPedStateTimer = 0;
-	m_actionX = 0.0f;
-	m_actionY = 0.0f;
 	m_distanceToCountSeekDone = distanceToCountDone;
 	m_vecSeekPos = pos;
 	GcTraceKenHeadingRate(this, "set-seek-pos");
@@ -5938,19 +5932,13 @@ CPed::SetSeek(CEntity *seeking, float distanceToCountDone)
 	if (m_nPedState == PED_SEEK_ENTITY && m_pSeekTarget == seeking)
 		return;
 
-	if (!seeking)
+	if (!seeking || m_nPedState == PED_FOLLOW_PATH)
 		return;
-
-	if (m_nPedState == PED_FOLLOW_PATH)
-		ClearFollowPath();
 
 	if (m_nPedState != PED_SEEK_ENTITY)
 		SetStoredState();
 
 	SetPedState(PED_SEEK_ENTITY);
-	m_nPedStateTimer = 0;
-	m_actionX = 0.0f;
-	m_actionY = 0.0f;
 	m_distanceToCountSeekDone = distanceToCountDone;
 	m_pSeekTarget = seeking;
 	m_pSeekTarget->RegisterReference((CEntity **) &m_pSeekTarget);
@@ -6033,9 +6021,6 @@ CPed::Seek(void)
 		nextMove = PEDMOVE_RUN;
 	}
 
-	if (m_nPedState == PED_FOLLOW_PATH)
-		nextMove = m_followPathMoveState;
-
 	if (m_nPedState == PED_SEEK_ENTITY) {
 		if (m_pSeekTarget->IsPed()) {
 			if (((CPed*)m_pSeekTarget)->bInVehicle)
@@ -6045,17 +6030,11 @@ CPed::Seek(void)
 
 	CVector *nextNode = SeekFollowingPath();
 
-	if (m_nPedState == PED_FOLLOW_PATH) {
-		m_nPedStateTimer = 0;
-		m_actionX = 0.0f;
-		m_actionY = 0.0f;
-	}
-
 	if (nextNode || seekPosDist >= distanceToCountItDone) {
 		if (bIsRunning && nextMove != PEDMOVE_SPRINT)
 			nextMove = PEDMOVE_RUN;
 
-		if (m_nPedState != PED_FOLLOW_PATH && CTimer::GetTimeInMilliseconds() <= m_nPedStateTimer) {
+		if (CTimer::GetTimeInMilliseconds() <= m_nPedStateTimer) {
 
 			if (m_actionX != 0.0f && m_actionY != 0.0f) {
 
@@ -6105,7 +6084,7 @@ CPed::Seek(void)
 			if (neededTurn > PI)
 				neededTurn = TWOPI - neededTurn;
 
-			if (m_nPedState != PED_FOLLOW_PATH && neededTurn > HALFPI) {
+			if (neededTurn > HALFPI) {
 				if (seekPosDist >= 1.0f && neededTurn <= DEGTORAD(135.0f)) {
 					if (seekPosDist < 2.0f)
 						nextMove = PEDMOVE_WALK;
@@ -6116,7 +6095,7 @@ CPed::Seek(void)
 		}
 
 		if (((m_nPedState == PED_FLEE_POS || m_nPedState == PED_FLEE_ENTITY) && m_nMoveState < nextMove)
-			|| (m_nPedState != PED_FLEE_POS && m_nPedState != PED_FLEE_ENTITY && m_objective != OBJECTIVE_GOTO_CHAR_ON_FOOT && m_nWaitState == WAITSTATE_FALSE)) {
+			|| (m_nPedState != PED_FLEE_POS && m_nPedState != PED_FLEE_ENTITY && m_nPedState != PED_FOLLOW_PATH && m_objective != OBJECTIVE_GOTO_CHAR_ON_FOOT && m_nWaitState == WAITSTATE_FALSE)) {
 
 			SetMoveState(nextMove);
 		}
@@ -6608,9 +6587,6 @@ CPed::SeekFollowingPath(void)
 {
 	static CVector vecNextPathNode;
 
-	if (m_nPedState != PED_FOLLOW_PATH)
-		return nil;
-
 	if (m_nCurPathNodeId >= m_nNumPathNodes || m_nNumPathNodes == 0)
 		return nil;
 
@@ -6682,8 +6658,6 @@ CPed::SetFollowPath(CVector dest, float radius, eMoveState state, CEntity* walkA
 bool
 CPed::SetFollowPathStatic(void)
 {
-	CPathNode *previousCurPathNode = m_pCurPathNode;
-	bool hadActiveFollowPath = m_nPedState == PED_FOLLOW_PATH && previousCurPathNode != nil && m_nNumPathNodes > 0;
 	ClearFollowPath();
 	if (sq(m_followPathAbortDist) > (GetPosition() - m_followPathDestPos).MagnitudeSqr()
 		&& CWorld::IsWanderPathClear(GetPosition(), m_followPathDestPos, 0.5f, 4)) {
@@ -6697,14 +6671,11 @@ CPed::SetFollowPathStatic(void)
 		}
 		SetPedState(PED_NONE);
 	} else {
-		int32 startNodeId = ThePaths.FindNodeClosestToCoors(GetPosition(), PATH_PED, 999999.9f);
-		int32 targetNodeId = ThePaths.FindNodeClosestToCoors(m_followPathDestPos, PATH_PED, 999999.9f);
-		ThePaths.DoPathSearch(PATH_PED, GetPosition(), startNodeId, m_followPathDestPos, m_pathNodesToGo, &m_nNumPathNodes,
-			ARRAY_SIZE(m_pathNodesToGo), nil, nil, 999999.9f, targetNodeId);
+		ThePaths.DoPathSearch(PATH_PED, GetPosition(), -1, m_followPathDestPos, m_pathNodesToGo, &m_nNumPathNodes,
+			ARRAY_SIZE(m_pathNodesToGo), nil, nil, 999999.9f, -1);
 
 		if (m_nNumPathNodes != 0) {
-			// This heuristic only makes sense while actively replanning an existing follow-path.
-			if (hadActiveFollowPath && m_nNumPathNodes > 1 && m_pathNodesToGo[0] != previousCurPathNode) {
+			if (m_nNumPathNodes > 0 && m_pathNodesToGo[0] != m_pCurPathNode) {
 				for (int i = 0; i < ARRAY_SIZE(m_pathNodesToGo) - 1; i++) {
 					m_pathNodesToGo[i] = m_pathNodesToGo[i+1];
 				}
@@ -6721,9 +6692,9 @@ CPed::SetFollowPathStatic(void)
 			}
 
 			m_nCurPathNodeId = 0;
-			if (hadActiveFollowPath) {
+			if (m_pCurPathNode) {
 				for (int j = 0; j < m_nNumPathNodes; ++j) {
-					if (m_pathNodesToGo[j] == previousCurPathNode) {
+					if (m_pathNodesToGo[j] == m_pCurPathNode) {
 						m_nCurPathNodeId = j;
 						break;
 					}
@@ -6737,11 +6708,6 @@ CPed::SetFollowPathStatic(void)
 				m_nLastPedState = oldLastState;
 
 			SetPedState(PED_FOLLOW_PATH);
-			SetMoveState(m_followPathMoveState);
-		} else if (startNodeId >= 0 && startNodeId == targetNodeId) {
-			// Path search returns zero nodes when both positions resolve to the same ped node.
-			// That's still a valid short seek, not a route failure.
-			SetSeek(m_followPathDestPos, m_distanceToCountSeekDone);
 			SetMoveState(m_followPathMoveState);
 		} else {
 			RestorePreviousState();
