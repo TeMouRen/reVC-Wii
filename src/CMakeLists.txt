@@ -51,7 +51,33 @@ configure_file(
 )
 list(APPEND ${PROJECT}_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/extras/GitSHA1.cpp")
 
+if(WII)
+    if(NOT GCDSPTOOL_EXECUTABLE OR NOT EXISTS "${GCDSPTOOL_EXECUTABLE}")
+        message(FATAL_ERROR "gcdsptool is required to build the Wii IDSP DSP task: ${GCDSPTOOL_EXECUTABLE}")
+    endif()
+    set(GC_IDSP_DSP_TASK_ASM "${CMAKE_CURRENT_SOURCE_DIR}/audio/gc_idsp_decode.asm")
+    set(GC_IDSP_DSP_TASK_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    set(GC_IDSP_DSP_TASK_GENERATED_HEADER "${GC_IDSP_DSP_TASK_GENERATED_DIR}/gc_idsp_decode.h")
+    add_custom_command(
+        OUTPUT "${GC_IDSP_DSP_TASK_GENERATED_HEADER}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${GC_IDSP_DSP_TASK_GENERATED_DIR}"
+        COMMAND "${GCDSPTOOL_EXECUTABLE}" -c "${GC_IDSP_DSP_TASK_ASM}" -o "${GC_IDSP_DSP_TASK_GENERATED_HEADER}"
+        DEPENDS "${GC_IDSP_DSP_TASK_ASM}"
+        COMMENT "Generating Wii DSP microcode header for gc_idsp_decode.asm"
+        VERBATIM
+    )
+    add_custom_target(gc_idsp_decode_generated DEPENDS "${GC_IDSP_DSP_TASK_GENERATED_HEADER}")
+    set_source_files_properties(
+        "${CMAKE_CURRENT_SOURCE_DIR}/audio/GcIdspDspTask.cpp"
+        PROPERTIES OBJECT_DEPENDS "${GC_IDSP_DSP_TASK_GENERATED_HEADER}"
+    )
+endif()
+
 add_executable(${EXECUTABLE} ${${PROJECT}_SOURCES})
+
+if(WII)
+    add_dependencies(${EXECUTABLE} gc_idsp_decode_generated)
+endif()
 
 target_link_libraries(${EXECUTABLE} PRIVATE librw::librw ogc)
 
@@ -68,6 +94,7 @@ target_include_directories(${EXECUTABLE}
     PRIVATE
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>
         $<BUILD_INTERFACE:${${PROJECT}_INCLUDES}>
+        $<$<BOOL:${WII}>:$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/generated>>
 )
 
 target_compile_definitions(${EXECUTABLE}

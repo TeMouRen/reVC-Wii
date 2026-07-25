@@ -8,9 +8,10 @@ set(CMAKE_C_COMPILER "/c/devkitPro/devkitPPC/bin/powerpc-eabi-gcc.exe")
 set(CMAKE_CXX_COMPILER "/c/devkitPro/devkitPPC/bin/powerpc-eabi-g++.exe")
 
 # 2. devkitPro / libogc2 paths
-set(DEVKITPRO "C:/devkitPro")
+set(DEVKITPRO "/c/devkitPro")
 set(LIBOGC2_INC "${DEVKITPRO}/libogc2/include")
 set(LIBOGC2_LIB "${DEVKITPRO}/libogc2/lib/wii")
+set(GCDSPTOOL_EXECUTABLE "${DEVKITPRO}/tools/bin/gcdsptool.exe")
 
 # 3. Wii-specific compile flags
 set(WII_COMPILE_FLAGS "-O2 -mrvl -mcpu=750 -meabi -mhard-float -I${LIBOGC2_INC}")

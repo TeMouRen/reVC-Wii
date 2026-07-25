@@ -436,7 +436,7 @@ enum Config {
 #if (defined SUPPORT_XBOX_SCRIPT && defined SUPPORT_MOBILE_SCRIPT)
 static_assert(false, "SUPPORT_XBOX_SCRIPT and SUPPORT_MOBILE_SCRIPT are mutually exclusive");
 #endif
-#ifdef PC_MENU
+#if defined(PC_MENU) && defined(ENABLE_MISSION_REPLAY)
 #define MISSION_REPLAY // mobile feature
 //#define SIMPLER_MISSIONS // apply simplifications from mobile
 #define USE_MISSION_REPLAY_OVERRIDE_FOR_NON_MOBILE_SCRIPT
@@ -490,9 +490,19 @@ static_assert(false, "SUPPORT_XBOX_SCRIPT and SUPPORT_MOBILE_SCRIPT are mutually
 #define RADIO_SCROLL_TO_PREV_STATION // Won't work without FIX_BUGS
 #define AUDIO_CACHE // cache sound lengths to speed up the cold boot
 #define PS2_AUDIO_CHANNELS // increases the maximum number of audio channels to PS2 value of 43 (PC has 28 originally)
-#define PS2_AUDIO_PATHS // changes audio paths for cutscenes and radio to PS2 paths (needs vbdec on MSS builds)
+#define PS2_AUDIO_PATHS // uses PS2 stream paths; Wii compressed streams are packaged as IDSP
 // Global Wii/GC audio master switch for testing. Set to 0 to disable all audio init/playback/log noise.
 #define GC_AUDIO_MASTER_ENABLE 1
+// Decode Nintendo DSP-ADPCM IDSP streams on the Wii DSP; CPU mixer remains active.
+#define GC_IDSP_DSP_DECODE_ENABLE 1
+// Allow the native PS2 multi-bank VAG SFX backend when AUDIO/SFX.SDT is absent.
+#define GC_PS2_SFX_BANK_ENABLE 1
+// In PS2 SFX mode, read mission dialogue from the matching sfx2 SDT/RAW bank.
+#define GC_PS2_MISSION_BANK_ENABLE 1
+// Dedicated Wii/GC mission dialogue tracing. Keep separate from global audio logging.
+#define GC_MISSION_AUDIO_DEBUG_LOG 1
+// Trace the actual formal cutscene stream reaching the mixer.
+#define GC_CUTSCENE_AUDIO_DEBUG_LOG 1
 // Extra Wii/GC audio debug logging. Keep off unless tracing audio paths.
 #define GC_AUDIO_DEBUG_LOG 0
 //#define AUDIO_OAL_USE_SNDFILE // use libsndfile to decode WAVs instead of our internal decoder

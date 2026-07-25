@@ -96,6 +96,7 @@ typedef struct {
 } GCMFileHandle;
 
 static bool fst_find_file(const char *path, u32 *out_disc_off, u32 *out_file_sz);
+static bool fst_find_file_exact(const char *path, u32 *out_disc_off, u32 *out_file_sz);
 
 /* ================================================================
  * Low-level helpers
@@ -604,6 +605,83 @@ static bool fst_find_file(const char *path,
     }
 
     return false;
+}
+
+static bool fst_find_file_exact(const char *path,
+                                u32        *out_disc_off,
+                                u32        *out_file_sz)
+{
+    if (!g_fst || !path || path[0] == '\0') return false;
+
+    u32 dir_start = 1u;
+    u32 dir_end = g_fst_total_entries;
+    const char *seg = path;
+
+    while (*seg != '\0') {
+        while (*seg == '/') seg++;
+        if (*seg == '\0') break;
+
+        const char *seg_end = strchr(seg, '/');
+        size_t seg_len = seg_end ? (size_t)(seg_end - seg) : strlen(seg);
+        bool is_last = seg_end == NULL;
+        bool entered_dir = false;
+
+        for (u32 i = dir_start; i < dir_end; i++) {
+            const u8 *e = g_fst + i * FST_ENTRY_SZ;
+            bool is_dir = (e[0] & 1u) != 0u;
+            const char *entry_name;
+            size_t entry_name_len;
+            u32 child_end = 0u;
+
+            if (is_dir) {
+                child_end = be32(e + 8);
+                if (child_end < i + 1u || child_end > g_fst_total_entries)
+                    return false;
+            }
+
+            if (!fst_entry_name(e, &entry_name, &entry_name_len))
+                return false;
+
+            bool name_matches = entry_name_len == seg_len &&
+                                strncasecmp(entry_name, seg, seg_len) == 0;
+            if (is_dir) {
+                if (name_matches && !is_last) {
+                    dir_start = i + 1u;
+                    dir_end = child_end;
+                    entered_dir = true;
+                    break;
+                }
+                i = child_end - 1u;
+            } else if (name_matches && is_last) {
+                *out_disc_off = be32(e + 4);
+#ifdef WII
+                if (g_disc_uses_wii_clusters && g_disc_wii_offsets_are_words)
+                    *out_disc_off <<= 2;
+#endif
+                *out_file_sz = be32(e + 8);
+                return true;
+            }
+        }
+
+        if (!entered_dir) return false;
+        seg = seg_end;
+    }
+
+    return false;
+}
+
+bool GCM_VFS_FileExistsExact(const char *path)
+{
+    if (!path) return false;
+
+    if (strncmp(path, "dvd:", 4) == 0)
+        path += 4;
+    while (*path == '/')
+        path++;
+
+    u32 disc_off;
+    u32 file_sz;
+    return fst_find_file_exact(path, &disc_off, &file_sz);
 }
 
 /* ================================================================

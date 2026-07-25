@@ -1163,9 +1163,12 @@ cMusicManager::PreloadCutSceneMusic(tTrack track)
 			WaitVBlank();
 #endif
 		}
-		SampleManager.PreloadStreamedFile(track);
-		SampleManager.SetStreamedVolumeAndPan(MAX_VOLUME, SURROUND_PAN(63, 30), TRUE);
-		m_nPlayingTrack = track;
+		if (SampleManager.PreloadStreamedFile(track)) {
+			SampleManager.SetStreamedVolumeAndPan(MAX_VOLUME, SURROUND_PAN(63, 30), TRUE);
+			m_nPlayingTrack = track;
+		} else {
+			m_nPlayingTrack = NO_TRACK;
+		}
 	}
 }
 

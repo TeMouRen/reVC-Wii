@@ -45,6 +45,12 @@
 #include "Wanted.h"
 #include "debugmenu.h"
 
+#if GC_MISSION_AUDIO_DEBUG_LOG
+#define MISSION_AUDIO_LOG(...) printf("[MISSION-AUDIO] " __VA_ARGS__)
+#else
+#define MISSION_AUDIO_LOG(...) ((void)0)
+#endif
+
 #ifndef GTA_PS2
 #define CHANNEL_PLAYER_VEHICLE_ENGINE m_nActiveSamples
 #endif
@@ -9026,11 +9032,15 @@ cAudioManager::ProcessFrontEnd()
 			m_sQueueSample.m_nSampleIndex = SFX_ARM_BOMB;
 			break;
 		case SOUND_RADIO_CHANGE:
+		{
+			uint32 lastRadioDial = SampleManager.IsUsingPs2SfxBanks() ? SFX_RADIO_DIAL_3 : SFX_RADIO_DIAL_12;
+			uint32 radioDialCount = lastRadioDial - SFX_RADIO_DIAL_1 + 1;
 			m_sQueueSample.m_nSampleIndex = (m_anRandomTable[1] % 2) ? radioDial + 1 : radioDial + 2;
-			if (m_sQueueSample.m_nSampleIndex > SFX_RADIO_DIAL_12)
-				m_sQueueSample.m_nSampleIndex -= 12;
+			if (m_sQueueSample.m_nSampleIndex > lastRadioDial)
+				m_sQueueSample.m_nSampleIndex -= radioDialCount;
 			radioDial = m_sQueueSample.m_nSampleIndex;
 			break;
+		}
 		case SOUND_FRONTEND_HIGHLIGHT_OPTION:
 			stereo = TRUE;
 			frontendUiSound = TRUE;
@@ -9616,7 +9626,7 @@ struct MissionAudioData {
 	uint32 m_nId;
 };
 
-Const MissionAudioData MissionAudioNameSfxAssoc[] = {
+Const MissionAudioData MissionAudioNameTrackAssoc[] = {
 	{"mobring", SFX_MISSION_MOBR1},    {"pagring", SFX_MISSION_PAGER},    {"carrev", SFX_MISSION_CARREV},
 	{"bikerev", SFX_MISSION_BIKEREV},  {"liftop", SFX_MISSION_LIFTOP},    {"liftcl", SFX_MISSION_LIFTCL},
 	{"liftrun", SFX_MISSION_LIFTRUN},  {"liftbel", SFX_MISSION_LIFTBEL},  {"inlift", SFX_MISSION_INLIFT},
@@ -9993,12 +10003,22 @@ Const MissionAudioData MissionAudioNameSfxAssoc[] = {
 	{"bust_27", SFX_MISSION_BUST_27},  {"bust_28", SFX_MISSION_BUST_28},  {nil, 0} };
 
 uint32
-FindMissionAudioSfx(const char *name)
+FindMissionAudioTrack(const char *name)
 {
-	for (uint32 i = 0; MissionAudioNameSfxAssoc[i].m_pName != nil; i++) {
-		if (!CGeneral::faststricmp(MissionAudioNameSfxAssoc[i].m_pName, name))
-			return MissionAudioNameSfxAssoc[i].m_nId;
+	for (uint32 i = 0; MissionAudioNameTrackAssoc[i].m_pName != nil; i++) {
+		if (!CGeneral::faststricmp(MissionAudioNameTrackAssoc[i].m_pName, name)) {
+			uint32 track = MissionAudioNameTrackAssoc[i].m_nId;
+			const char *label = track < ARRAY_SIZE(PS2StreamedNameTable) ? PS2StreamedNameTable[track] : "";
+#if !GC_MISSION_AUDIO_DEBUG_LOG
+			(void)label;
+#endif
+			MISSION_AUDIO_LOG("FindMissionAudioTrack name='%s' -> track=%u label='%s'\n",
+			                  name != nil ? name : "<null>", track, label);
+			return track;
+		}
 	}
+	MISSION_AUDIO_LOG("FindMissionAudioTrack name='%s' -> track=NO_SAMPLE label='<missing>'\n",
+	                  name != nil ? name : "<null>");
 	debug("Can't find mission audio %s", name);
 	return NO_SAMPLE;
 }
@@ -10007,14 +10027,14 @@ const char *
 cAudioManager::GetMissionAudioLoadedLabel(uint8 slot)
 {
 	if (m_bIsInitialised && slot < MISSION_AUDIO_SLOTS && m_nMissionAudioSampleIndex[slot] != NO_SAMPLE) {
-		for (uint32 i = 0; MissionAudioNameSfxAssoc[i].m_pName != nil; i++) {
-			if (m_nMissionAudioSampleIndex[slot] == MissionAudioNameSfxAssoc[i].m_nId)
-				return MissionAudioNameSfxAssoc[i].m_pName;
+		for (uint32 i = 0; MissionAudioNameTrackAssoc[i].m_pName != nil; i++) {
+			if (m_nMissionAudioSampleIndex[slot] == MissionAudioNameTrackAssoc[i].m_nId)
+				return MissionAudioNameTrackAssoc[i].m_pName;
 		}
 	}
 
 #ifdef THIS_IS_STUPID
-	return MissionAudioNameSfxAssoc[0].m_pName; // yeah this is dumb
+	return MissionAudioNameTrackAssoc[0].m_pName; // yeah this is dumb
 #else
 	return "";
 #endif
@@ -10030,23 +10050,34 @@ void
 cAudioManager::PreloadMissionAudio(uint8 slot, Const char *name)
 {
 	if (m_bIsInitialised && slot < MISSION_AUDIO_SLOTS) {
-		uint32 missionAudioSfx = FindMissionAudioSfx(name);
-		if (missionAudioSfx != NO_SAMPLE) {
+		uint32 missionAudioTrack = FindMissionAudioTrack(name);
+		const char *label = missionAudioTrack < ARRAY_SIZE(PS2StreamedNameTable) ? PS2StreamedNameTable[missionAudioTrack] : "";
+#if !GC_MISSION_AUDIO_DEBUG_LOG
+		(void)label;
+#endif
+		MISSION_AUDIO_LOG("PreloadMissionAudio slot=%u name='%s' resolvedTrack=%u label='%s'\n",
+		                  uint32(slot), name != nil ? name : "<null>",
+		                  missionAudioTrack == NO_SAMPLE ? 0xFFFFFFFFu : missionAudioTrack,
+		                  missionAudioTrack != NO_SAMPLE ? label : "<missing>");
+		if (missionAudioTrack != NO_SAMPLE) {
 // HACK: do not reload camera sound if it's already loaded
 #if !defined GTA_PS2 && defined FIX_BUGS
-			if ((m_nMissionAudioSampleIndex[slot] == SFX_MISSION_CAMERAL && missionAudioSfx == SFX_MISSION_CAMERAL) ||
-				(m_nMissionAudioSampleIndex[slot] == SFX_MISSION_CAMERAR && missionAudioSfx == SFX_MISSION_CAMERAR))
+			if ((m_nMissionAudioSampleIndex[slot] == SFX_MISSION_CAMERAL && missionAudioTrack == SFX_MISSION_CAMERAL) ||
+				(m_nMissionAudioSampleIndex[slot] == SFX_MISSION_CAMERAR && missionAudioTrack == SFX_MISSION_CAMERAR)) {
+				MISSION_AUDIO_LOG("PreloadMissionAudio slot=%u reuse camera track=%u label='%s'\n",
+				                  uint32(slot), missionAudioTrack, label);
 				return;
+			}
 #endif
-			m_nMissionAudioSampleIndex[slot] = missionAudioSfx;
+			m_nMissionAudioSampleIndex[slot] = missionAudioTrack;
 			m_nMissionAudioLoadingStatus[slot] = LOADING_STATUS_NOT_LOADED;
 			m_nMissionAudioPlayStatus[slot] = PLAY_STATUS_STOPPED;
 			m_bIsMissionAudioPlaying[slot] = FALSE;
 #ifdef GTA_PS2
-			m_nMissionAudioFramesToPlay[slot] = m_nTimeSpent * SampleManager.GetSampleLength(missionAudioSfx) / SampleManager.GetSampleBaseFrequency(missionAudioSfx);
+			m_nMissionAudioFramesToPlay[slot] = m_nTimeSpent * SampleManager.GetSampleLength(missionAudioTrack) / SampleManager.GetSampleBaseFrequency(missionAudioTrack);
 			m_nMissionAudioFramesToPlay[slot] = 11 * m_nMissionAudioFramesToPlay[slot] / 10;
 #else
-			m_nMissionAudioFramesToPlay[slot] = m_nTimeSpent * SampleManager.GetStreamedFileLength(missionAudioSfx) / 1000;
+			m_nMissionAudioFramesToPlay[slot] = m_nTimeSpent * SampleManager.GetStreamedFileLength(missionAudioTrack) / 1000;
 			m_nMissionAudioFramesToPlay[slot] *= 4;
 #endif
 			m_bIsMissionAudioAllowedToPlay[slot] = FALSE;
@@ -10163,7 +10194,17 @@ cAudioManager::ProcessMissionAudioSlot(uint8 slot)
 			SampleManager.LoadMissionAudio(slot, m_nMissionAudioSampleIndex[slot]);
 			m_nMissionAudioLoadingStatus[slot] = LOADING_STATUS_LOADING;
 #else
-			SampleManager.PreloadStreamedFile(m_nMissionAudioSampleIndex[slot], slot + 1);
+			if (!SampleManager.PreloadStreamedFile(m_nMissionAudioSampleIndex[slot], slot + 1)) {
+				g_bMissionAudioLoadFailed[slot] = TRUE;
+				nFramesForPretendPlaying[slot] = 0;
+				MISSION_AUDIO_LOG("ProcessMissionAudioSlot slot=%u preload FAILED stream=%u track=%u label='%s' -> fallback\n",
+				                  uint32(slot), uint32(slot + 1), m_nMissionAudioSampleIndex[slot],
+				                  GetMissionAudioLoadedLabel(slot));
+			} else {
+				MISSION_AUDIO_LOG("ProcessMissionAudioSlot slot=%u preload OK stream=%u track=%u label='%s'\n",
+				                  uint32(slot), uint32(slot + 1), m_nMissionAudioSampleIndex[slot],
+				                  GetMissionAudioLoadedLabel(slot));
+			}
 			m_nMissionAudioLoadingStatus[slot] = LOADING_STATUS_LOADED;
 #endif
 			nFramesUntilFailedLoad[slot] = 0;
@@ -10212,6 +10253,11 @@ cAudioManager::ProcessMissionAudioSlot(uint8 slot)
 					nCheckPlayingDelay[slot] = 0;
 					nFramesUntilFailedLoad[slot] = 0;
 				} else if (!m_bIsPaused) {
+					if (nFramesForPretendPlaying[slot] == 0) {
+						MISSION_AUDIO_LOG("ProcessMissionAudioSlot slot=%u enter fallback playback track=%u label='%s'\n",
+						                  uint32(slot), m_nMissionAudioSampleIndex[slot],
+						                  GetMissionAudioLoadedLabel(slot));
+					}
 					if (++nFramesForPretendPlaying[slot] >= 90) {
 						m_nMissionAudioPlayStatus[slot] = PLAY_STATUS_FINISHED;
 						m_nMissionAudioSampleIndex[slot] = NO_SAMPLE;
@@ -10293,6 +10339,9 @@ cAudioManager::ProcessMissionAudioSlot(uint8 slot)
 #ifdef GTA_PS2
 					SampleManager.StartChannel(nChannel + slot);
 #else
+					MISSION_AUDIO_LOG("ProcessMissionAudioSlot slot=%u start request stream=%u track=%u label='%s'\n",
+					                  uint32(slot), uint32(slot + 1), m_nMissionAudioSampleIndex[slot],
+					                  GetMissionAudioLoadedLabel(slot));
 					SampleManager.StartPreloadedStreamedFile(slot + 1);
 #endif
 				}

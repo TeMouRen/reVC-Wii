@@ -20,6 +20,8 @@ extern "C" {
  */
 bool GCM_VFS_Mount(void);
 
+bool GCM_VFS_FileExistsExact(const char *path);
+
 /**
  * Unregister the device and free FST memory.
  * Normally not needed during gameplay (FST lives forever).

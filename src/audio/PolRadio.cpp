@@ -204,7 +204,12 @@ cAudioManager::ServicePoliceRadioChannel(uint8 wantedLevel)
 					return;
 				}
 			} else if (!SampleManager.GetChannelUsedFlag(CHANNEL_POLICE_RADIO)) {
-				SampleManager.PreloadStreamedFile(g_nMissionAudioSfx, 1);
+				if (!SampleManager.PreloadStreamedFile(g_nMissionAudioSfx, 1)) {
+					g_nMissionAudioPlayingStatus = PLAY_STATUS_FINISHED;
+					bMissionAudioPhysicalPlayingStatus = PLAY_STATUS_FINISHED;
+					g_nMissionAudioSfx = NO_SAMPLE;
+					return;
+				}
 				SampleManager.SetStreamedVolumeAndPan(MAX_VOLUME, 63, TRUE, 1);
 				SampleManager.StartPreloadedStreamedFile(1);
 				g_nMissionAudioPlayingStatus = PLAY_STATUS_PLAYING;
