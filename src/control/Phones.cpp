@@ -75,6 +75,10 @@ CPhoneInfo::Update(void)
 		notInCar = true;
 		playerPos = player->GetPosition();
 	}
+	bool wantsToAnswer = true;
+#if GX_CONSOLE
+	wantsToAnswer = CPad::GetPad(0)->CollectPickupJustDown();
+#endif
 	bool phoneRings = false;
 	bool scratchTheCabinet;
 	for(int phoneId = 0; phoneId < m_nScriptPhonesMax; phoneId++) {
@@ -99,7 +103,8 @@ CPhoneInfo::Update(void)
 					}
 					m_aPhones[phoneId].m_pEntity->GetMatrix().UpdateRW();
 					m_aPhones[phoneId].m_pEntity->UpdateRwFrame();
-					if (notInCar && !bPickingUpPhone && player->IsPedInControl()) {
+					if (notInCar && !bPickingUpPhone && player->IsPedInControl() &&
+					    wantsToAnswer) {
 						CVector2D distToPhone = playerPos - m_aPhones[phoneId].m_vecPos;
 						if (Abs(distToPhone.x) < 1.0f && Abs(distToPhone.y) < 1.0f) {
 							if (DotProduct2D(distToPhone, m_aPhones[phoneId].m_pEntity->GetForward()) / distToPhone.Magnitude() < -0.85f) {

@@ -30,13 +30,19 @@ GcScaleStickAxis(s8 value, bool invert)
 	return (int16)scaled;
 }
 
-static inline bool
-GcTriggerPressed(u16 heldMask, u16 digitalMask, u8 analogueValue)
+static inline int16
+GcScaleTrigger(u8 value, bool digitalClick, int16 previousValue)
 {
-	// Dolphin/libogc can report non-zero analogue trigger values even when the
-	// shoulder is effectively at rest. Keep gameplay actions on the digital
-	// click, and only treat the analogue lane as pressed near the end of travel.
-	return (heldMask & digitalMask) != 0 || analogueValue >= 200;
+	if(digitalClick)
+		return 255;
+
+	const int32 pressDeadzone = 24;
+	const int32 releaseDeadzone = 16;
+	const int32 deadzone = previousValue != 0 ? releaseDeadzone : pressDeadzone;
+	if(value <= deadzone)
+		return 0;
+
+	return (int16)Min(((int32)value - releaseDeadzone) * 255 / (255 - releaseDeadzone), 255);
 }
 #endif
 
@@ -61,15 +67,18 @@ GcTriggerPressed(u16 heldMask, u16 digitalMask, u8 analogueValue)
 #if GX_CONSOLE
 enum GcPadAction
 {
-	GCA_SPRINT_ACCELERATE,
-	GCA_JUMP_BRAKE,
-	GCA_ATTACK_FIRE,
+	GCA_SPRINT,
+	GCA_JUMP,
+	GCA_INTERACT,
 	GCA_ENTER_EXIT,
 	GCA_TARGET,
+	GCA_ATTACK,
+	GCA_VEHICLE_FIRE,
 	GCA_HAND_BRAKE,
+	GCA_HORN,
 	GCA_CAMERA_CYCLE,
 	GCA_LOOK_BEHIND,
-	GCA_HORN_DUCK,
+	GCA_DPAD_DOWN,
 	GCA_WEAPON_LEFT,
 	GCA_WEAPON_RIGHT,
 };
@@ -78,23 +87,29 @@ static inline int16
 GcActionAmount(const CControllerState &state, GcPadAction action)
 {
 	switch(action) {
-	case GCA_SPRINT_ACCELERATE:
+	case GCA_SPRINT:
 		return state.Cross;           // GC A
-	case GCA_JUMP_BRAKE:
+	case GCA_JUMP:
 		return state.Square;          // GC B
-	case GCA_ATTACK_FIRE:
+	case GCA_INTERACT:
 		return state.Circle;          // GC X
 	case GCA_ENTER_EXIT:
 		return state.Triangle;        // GC Y
 	case GCA_TARGET:
-		return state.LeftShoulder1;   // GC L
+		return state.LeftShoulder1 ? 255 : 0; // GC L
+	case GCA_ATTACK:
+		return state.RightShoulder1 ? 255 : 0; // GC R
+	case GCA_VEHICLE_FIRE:
+		return state.Cross;           // GC A
 	case GCA_HAND_BRAKE:
-		return state.RightShoulder1;  // GC R
+		return state.Square;          // GC B
+	case GCA_HORN:
+		return state.Circle;          // GC X
 	case GCA_CAMERA_CYCLE:
-		return state.DPadUp;
+		return state.RightShoulder2 ? 0 : state.DPadUp;
 	case GCA_LOOK_BEHIND:
-		return state.RightShoulder2;  // GC Z
-	case GCA_HORN_DUCK:
+		return state.DPadUp ? 0 : state.RightShoulder2; // GC Z
+	case GCA_DPAD_DOWN:
 		return state.DPadDown;
 	case GCA_WEAPON_LEFT:
 		return state.DPadLeft;
@@ -113,6 +128,11 @@ GcActionDown(const CPad *pad, GcPadAction action)
 static inline bool
 GcActionJustDown(const CPad *pad, GcPadAction action)
 {
+	if(action == GCA_CAMERA_CYCLE)
+		return pad->NewState.DPadUp != 0 &&
+			pad->NewState.RightShoulder2 == 0 &&
+			pad->OldState.DPadUp == 0;
+
 	return GcActionAmount(pad->NewState, action) != 0 &&
 		GcActionAmount(pad->OldState, action) == 0;
 }
@@ -1975,15 +1995,19 @@ void CPad::UpdatePads(void)
 		if (held & PAD_BUTTON_START)  pad->NewState.Start  = 255;
 		pad->NewState.Select = 0;                          // GC has no Select
 
-		// Shoulder buttons stay physical: L = left shoulder, R = right shoulder.
-		if (GcTriggerPressed(held, PAD_TRIGGER_L, trigL)) pad->NewState.LeftShoulder1 = 255;
-		if (GcTriggerPressed(held, PAD_TRIGGER_R, trigR)) pad->NewState.RightShoulder1 = 255;
+		// Preserve analogue travel for vehicle throttle/brake; the final click is full-scale.
+		pad->NewState.LeftShoulder1 = GcScaleTrigger(trigL,
+			(held & PAD_TRIGGER_L) != 0, pad->OldState.LeftShoulder1);
+		pad->NewState.RightShoulder1 = GcScaleTrigger(
+			trigR, (held & PAD_TRIGGER_R) != 0, pad->OldState.RightShoulder1);
 		if (held & PAD_TRIGGER_Z)
 			pad->NewState.RightShoulder2 = 255;
 
 		// No clickable sticks on GC
 		pad->NewState.LeftShock  = 0;
-		pad->NewState.RightShock = 0;
+		pad->NewState.RightShock =
+			p == 0 && FindPlayerVehicle() != nil &&
+			(held & PAD_TRIGGER_Z) && (held & PAD_BUTTON_UP) ? 255 : 0;
 
 #ifdef DETECT_PAD_INPUT_SWITCH
 		if(p == 0 && pad->NewState.CheckForInput())
@@ -2766,7 +2790,7 @@ bool CPad::GetLookLeft(void)
 		return false;
 
 #if GX_CONSOLE
-	return false;
+	return GcActionDown(this, GCA_WEAPON_LEFT);
 #endif
 	return !!(NewState.LeftShoulder2 && !NewState.RightShoulder2);
 }
@@ -2777,7 +2801,7 @@ bool CPad::GetLookRight(void)
 		return false;
 
 #if GX_CONSOLE
-	return false;
+	return GcActionDown(this, GCA_WEAPON_RIGHT);
 #endif
 	return !!(NewState.RightShoulder2 && !NewState.LeftShoulder2);
 }
@@ -2811,7 +2835,7 @@ bool CPad::GetHorn(void)
 		return false;
 
 #if GX_CONSOLE
-	return GcActionDown(this, GCA_HORN_DUCK);
+	return GcActionDown(this, GCA_HORN);
 #endif
 	switch (CURMODE)
 	{
@@ -2853,7 +2877,7 @@ bool CPad::HornJustDown(void)
 		return false;
 
 #if GX_CONSOLE
-	return GcActionJustDown(this, GCA_HORN_DUCK);
+	return GcActionJustDown(this, GCA_HORN);
 #endif
 	switch (CURMODE)
 	{
@@ -2895,7 +2919,7 @@ bool CPad::GetCarGunFired(void)
 		return false;
 
 #if GX_CONSOLE
-	return GcActionDown(this, GCA_ATTACK_FIRE);
+	return GcActionDown(this, GCA_VEHICLE_FIRE);
 #endif
 	switch (CURMODE)
 	{
@@ -2925,7 +2949,7 @@ bool CPad::CarGunJustDown(void)
 		return false;
 
 #if GX_CONSOLE
-	return GcActionJustDown(this, GCA_ATTACK_FIRE);
+	return GcActionJustDown(this, GCA_VEHICLE_FIRE);
 #endif
 	switch (CURMODE)
 	{
@@ -2991,7 +3015,7 @@ int16 CPad::GetBrake(void)
 		return 0;
 
 #if GX_CONSOLE
-	return GcActionAmount(NewState, GCA_JUMP_BRAKE);
+	return NewState.LeftShoulder1;
 #endif
 	switch (CURMODE)
 	{
@@ -3099,7 +3123,7 @@ int32 CPad::GetWeapon(void)
 		return false;
 
 #if GX_CONSOLE
-	return GcActionAmount(NewState, GCA_ATTACK_FIRE);
+	return GcActionAmount(NewState, GCA_ATTACK);
 #endif
 	switch (CURMODE)
 	{
@@ -3135,7 +3159,7 @@ bool CPad::WeaponJustDown(void)
 		return false;
 
 #if GX_CONSOLE
-	return GcActionJustDown(this, GCA_ATTACK_FIRE);
+	return GcActionJustDown(this, GCA_ATTACK);
 #endif
 	switch (CURMODE)
 	{
@@ -3171,7 +3195,7 @@ int16 CPad::GetAccelerate(void)
 		return 0;
 
 #if GX_CONSOLE
-	return GcActionAmount(NewState, GCA_SPRINT_ACCELERATE);
+	return NewState.RightShoulder1;
 #endif
 	switch (CURMODE)
 	{
@@ -3316,7 +3340,7 @@ bool CPad::ChangeStationJustDown(void)
 		return false;
 
 #if GX_CONSOLE
-	return GcActionJustDown(this, GCA_CAMERA_CYCLE);
+	return GcActionJustDown(this, GCA_DPAD_DOWN);
 #endif
 	switch (CURMODE)
 	{
@@ -3440,7 +3464,7 @@ bool CPad::CollectPickupJustDown(void)
 		return false;
 
 #if GX_CONSOLE
-	return GcActionJustDown(this, GCA_ENTER_EXIT);
+	return GcActionJustDown(this, GCA_INTERACT);
 #endif
 	switch (CURMODE)
 	{
@@ -3475,7 +3499,7 @@ bool CPad::DuckJustDown(void)
 		return false;
 
 #if GX_CONSOLE
-	return GcActionJustDown(this, GCA_HORN_DUCK);
+	return GcActionJustDown(this, GCA_DPAD_DOWN);
 #endif
 	return !!(NewState.LeftShock && !OldState.LeftShock);
 }
@@ -3486,7 +3510,7 @@ bool CPad::JumpJustDown(void)
 		return false;
 
 #if GX_CONSOLE
-	return GcActionJustDown(this, GCA_JUMP_BRAKE);
+	return GcActionJustDown(this, GCA_JUMP);
 #endif
 	return !!(NewState.Square && !OldState.Square);
 }
@@ -3497,7 +3521,7 @@ bool CPad::GetSprint(void)
 		return false;
 
 #if GX_CONSOLE
-	return GcActionDown(this, GCA_SPRINT_ACCELERATE);
+	return GcActionDown(this, GCA_SPRINT);
 #endif
 	switch (CURMODE)
 	{
@@ -3697,7 +3721,7 @@ bool CPad::SniperZoomIn(void)
 		return false;
 
 #if GX_CONSOLE
-	return GcActionDown(this, GCA_JUMP_BRAKE);
+	return GcActionDown(this, GCA_SPRINT);
 #endif
 	switch (CURMODE)
 	{
@@ -3727,7 +3751,7 @@ bool CPad::SniperZoomOut(void)
 		return false;
 
 #if GX_CONSOLE
-	return GcActionDown(this, GCA_SPRINT_ACCELERATE);
+	return GcActionDown(this, GCA_JUMP); // GC B
 #endif
 	switch (CURMODE)
 	{
@@ -3793,8 +3817,26 @@ int16 CPad::SniperModeLookUpDown(void)
 		return dpad;
 }
 
+#if GX_CONSOLE
+static bool
+GcCStickControlsVehicleAction(void)
+{
+	CVehicle *vehicle = FindPlayerVehicle();
+	if(vehicle == nil)
+		return false;
+
+	const int32 modelIndex = vehicle->GetModelIndex();
+	return modelIndex == MI_RHINO ||
+		(modelIndex == MI_FIRETRUCK && CPad::GetPad(0)->GetCarGunFired());
+}
+#endif
+
 int16 CPad::LookAroundLeftRight(void)
 {
+#if GX_CONSOLE
+	if(GcCStickControlsVehicleAction())
+		return 0;
+#endif
 #ifdef WII
 	float axis = GetPad(0)->NewState.RightStickX;
 	if(GetLookBehindForPed())
@@ -3822,6 +3864,10 @@ int16 CPad::LookAroundLeftRight(void)
 int16 CPad::LookAroundUpDown(void)
 {
 	int16 axis = GetPad(0)->NewState.RightStickY;
+#if GX_CONSOLE
+	if(GcCStickControlsVehicleAction())
+		return 0;
+#endif
 #ifdef FIX_BUGS
 	axis = -axis;
 #endif
