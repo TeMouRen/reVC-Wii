@@ -12,10 +12,10 @@ GcScaleStickAxis(s8 value, bool invert)
 {
 	int32 scaled = invert ? -(int32)value : (int32)value;
 
-	// Dolphin/controller mappings can peak far below libogc's nominal +/-100.
-	// Re-expand early so a full physical throw clears VC's run threshold.
+	// libogc main-stick/C-stick readings usually reach physical full throw around +/-100.
+	// Normalize that range to reVC's expected +/-128 output span.
 	const int32 deadzone = 5;
-	const int32 fullScale = 32;
+	const int32 fullScale = 100;
 	if (Abs(scaled) <= deadzone)
 		scaled = 0;
 	else if (scaled > 0)

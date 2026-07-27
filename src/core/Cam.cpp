@@ -117,11 +117,12 @@ WiiStableCameraTimeStep(void)
 }
 
 static float
-WiiCameraAxisResponse(float axis, float divisor)
+WiiCameraAxisResponse(float axis)
 {
-	float normal = axis / divisor;
-	float magnitude = Clamp(Abs(normal), 0.0f, 1.0f);
-	return normal < 0.0f ? -magnitude * magnitude : magnitude * magnitude;
+	float normal = Clamp(axis / 128.0f, -1.0f, 1.0f);
+	float magnitude = Abs(normal);
+	float response = magnitude * magnitude * (0.2f + magnitude * (1.9f - 1.4f * magnitude));
+	return normal < 0.0f ? -response : response;
 }
 
 static float
@@ -2379,8 +2380,8 @@ CCam::Process_Rocket(const CVector &CameraTarget, float, float, float)
 		float cameraStep = CTimer::GetTimeStep();
 #ifdef WII
 		cameraStep = WiiStableCameraTimeStep();
-		Beta += WiiCameraAxisResponse(LookLeftRight, 100.0f)*0.8f/14.0f * FOV/80.0f * cameraStep;
-		Alpha += WiiCameraAxisResponse(LookUpDown, 150.0f)*1.0f/14.0f * FOV/80.0f * cameraStep;
+		Beta += WiiCameraAxisResponse(LookLeftRight)*0.8f/14.0f * FOV/80.0f * cameraStep;
+		Alpha += WiiCameraAxisResponse(LookUpDown)*1.0f/14.0f * FOV/80.0f * cameraStep;
 #else
 		Beta += SQR(LookLeftRight/100.0f)*xdir*0.8f/14.0f * FOV/80.0f * cameraStep;
 		Alpha += SQR(LookUpDown/150.0f)*ydir*1.0f/14.0f * FOV/80.0f * cameraStep;
@@ -2506,8 +2507,8 @@ CCam::Process_M16_1stPerson(const CVector &CameraTarget, float, float, float)
 		float cameraStep = CTimer::GetTimeStep();
 #ifdef WII
 		cameraStep = WiiStableCameraTimeStep();
-		Beta += WiiCameraAxisResponse(LookLeftRight, 100.0f)*0.8f/14.0f * FOV/80.0f * cameraStep;
-		Alpha += WiiCameraAxisResponse(LookUpDown, 150.0f)*1.0f/14.0f * FOV/80.0f * cameraStep;
+		Beta += WiiCameraAxisResponse(LookLeftRight)*0.8f/14.0f * FOV/80.0f * cameraStep;
+		Alpha += WiiCameraAxisResponse(LookUpDown)*1.0f/14.0f * FOV/80.0f * cameraStep;
 #else
 		Beta += SQR(LookLeftRight/100.0f)*xdir*0.8f/14.0f * FOV/80.0f * cameraStep;
 		Alpha += SQR(LookUpDown/150.0f)*ydir*1.0f/14.0f * FOV/80.0f * cameraStep;
@@ -2712,8 +2713,8 @@ CCam::Process_1stPerson(const CVector &CameraTarget, float TargetOrientation, fl
 		float cameraStep = CTimer::GetTimeStep();
 #ifdef WII
 		cameraStep = WiiStableCameraTimeStep();
-		Beta += WiiCameraAxisResponse(LookLeftRight, 100.0f)*0.8f/14.0f * FOV/80.0f * cameraStep;
-		Alpha += WiiCameraAxisResponse(LookUpDown, 150.0f)*1.0f/14.0f * FOV/80.0f * cameraStep;
+		Beta += WiiCameraAxisResponse(LookLeftRight)*0.8f/14.0f * FOV/80.0f * cameraStep;
+		Alpha += WiiCameraAxisResponse(LookUpDown)*1.0f/14.0f * FOV/80.0f * cameraStep;
 #else
 		Beta += SQR(LookLeftRight/100.0f)*xdir*0.8f/14.0f * FOV/80.0f * cameraStep;
 		Alpha += SQR(LookUpDown/150.0f)*ydir*1.0f/14.0f * FOV/80.0f * cameraStep;
@@ -2932,8 +2933,8 @@ CCam::Process_1rstPersonPedOnPC(const CVector&, float TargetOrientation, float, 
 			float cameraStep = CTimer::GetTimeStep();
 #ifdef WII
 			cameraStep = WiiStableCameraTimeStep();
-			Beta += WiiCameraAxisResponse(LookLeftRight, 100.0f)*0.8f/14.0f * FOV/80.0f * cameraStep;
-			Alpha += WiiCameraAxisResponse(LookUpDown, 150.0f)*1.0f/14.0f * FOV/80.0f * cameraStep;
+			Beta += WiiCameraAxisResponse(LookLeftRight)*0.8f/14.0f * FOV/80.0f * cameraStep;
+			Alpha += WiiCameraAxisResponse(LookUpDown)*1.0f/14.0f * FOV/80.0f * cameraStep;
 #else
 			Beta += SQR(LookLeftRight/100.0f)*xdir*0.8f/14.0f * FOV/80.0f * cameraStep;
 			Alpha += SQR(LookUpDown/150.0f)*ydir*1.0f/14.0f * FOV/80.0f * cameraStep;
@@ -3084,8 +3085,8 @@ CCam::Process_Sniper(const CVector &CameraTarget, float TargetOrientation, float
 		float cameraStep = CTimer::GetTimeStep();
 #ifdef WII
 		cameraStep = WiiStableCameraTimeStep();
-		Beta += WiiCameraAxisResponse(LookLeftRight, 100.0f)*0.8f/14.0f * FOV/80.0f * cameraStep;
-		Alpha += WiiCameraAxisResponse(LookUpDown, 150.0f)*1.0f/14.0f * FOV/80.0f * cameraStep;
+		Beta += WiiCameraAxisResponse(LookLeftRight)*0.8f/14.0f * FOV/80.0f * cameraStep;
+		Alpha += WiiCameraAxisResponse(LookUpDown)*1.0f/14.0f * FOV/80.0f * cameraStep;
 #else
 		Beta += SQR(LookLeftRight/100.0f)*xdir*0.8f/14.0f * FOV/80.0f * cameraStep;
 		Alpha += SQR(LookUpDown/150.0f)*ydir*1.0f/14.0f * FOV/80.0f * cameraStep;

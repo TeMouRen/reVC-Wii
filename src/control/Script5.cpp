@@ -1485,7 +1485,12 @@ int16 CRunningScript::GetPadState(uint16 pad, uint16 button)
 	case 1: return pPad->NewState.LeftStickY;
 	case 2: return pPad->NewState.RightStickX;
 	case 3: return pPad->NewState.RightStickY;
-	case 4: return pPad->NewState.LeftShoulder1;
+	case 4:
+#if GX_CONSOLE
+		if (!CGeneral::faststricmp(m_abScriptName, "mobring"))
+			return pPad->NewState.Circle;
+#endif
+		return pPad->NewState.LeftShoulder1;
 	case 5: return pPad->NewState.LeftShoulder2;
 	case 6: return pPad->NewState.RightShoulder1;
 	case 7: return pPad->NewState.RightShoulder2;

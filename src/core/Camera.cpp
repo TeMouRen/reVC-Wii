@@ -1037,6 +1037,8 @@ CCamera::CamControl(void)
 			// Check 1st person mode
 			if((m_bLookingAtPlayer || m_bEnable1rstPersonCamCntrlsScript) && pTargetEntity->IsPed() &&
 			   (!m_WideScreenOn || m_bEnable1rstPersonCamCntrlsScript) && !Cams[0].Using3rdPersonMouseCam()
+			   && (m_bEnable1rstPersonCamCntrlsScript ||
+			       (!CPad::GetPad(0)->GetTarget() && PlayerWeaponMode.Mode == CCam::MODE_NONE))
 #ifdef FREE_CAM
 			   && (!CCamera::bFreeCam || m_bEnable1rstPersonCamCntrlsScript)
 #endif
