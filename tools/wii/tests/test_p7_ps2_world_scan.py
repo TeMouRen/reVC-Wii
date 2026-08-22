@@ -46,6 +46,20 @@ class P7Ps2WorldScanTests(unittest.TestCase):
         self.assertIsNotNone(purge_block)
         self.assertNotIn("P7-noaudio-ps2-world-scan", purge_block.group(0))
 
+    def test_p7_disables_adaptive_archive_ceiling(self) -> None:
+        adaptive_one = CMAKE_SOURCE.index(
+            "set(WII_STREAM_ADAPTIVE_ARCHIVE_CEILING_VALUE 1)"
+        )
+        adaptive_start = CMAKE_SOURCE.rfind(
+            "if(WII_MEMORY_PROFILE_ID", 0, adaptive_one
+        )
+        adaptive_zero = CMAKE_SOURCE.index(
+            "set(WII_STREAM_ADAPTIVE_ARCHIVE_CEILING_VALUE 0)", adaptive_one
+        )
+        adaptive_block = CMAKE_SOURCE[adaptive_start:adaptive_zero]
+        self.assertIn("WII_STREAM_ADAPTIVE_ARCHIVE_CEILING_VALUE 1", adaptive_block)
+        self.assertNotIn("P7-noaudio-ps2-world-scan", adaptive_block)
+
     def test_p7_and_atomic_derivatives_enable_ps2_world_scan_radius(self) -> None:
         self.assertRegex(
             CMAKE_SOURCE,
@@ -73,12 +87,11 @@ class P7Ps2WorldScanTests(unittest.TestCase):
             STREAMING_SOURCE,
         )
 
-    def test_only_p7_rebases_spatial_retire_at_handoff(self) -> None:
+    def test_p7_leaves_blocking_handoff_for_audio_derivative(self) -> None:
         self.assertRegex(
             CMAKE_SOURCE,
             re.compile(
-                r'if\(WII_MEMORY_PROFILE_ID STREQUAL "P7-noaudio-ps2-world-scan" OR\s+'
-                r'WII_MEMORY_PROFILE_ID STREQUAL "A1-audio-ps2-world-scan"\)\s+'
+                r'if\(WII_MEMORY_PROFILE_ID STREQUAL "A1-audio-ps2-world-scan"\)\s+'
                 r'set\(WII_STREAM_P7_BLOCKING_HANDOFF_VALUE 1\)\s+'
                 r'else\(\)\s+'
                 r'set\(WII_STREAM_P7_BLOCKING_HANDOFF_VALUE 0\)'
@@ -140,18 +153,38 @@ class P7Ps2WorldScanTests(unittest.TestCase):
             STREAMING_SOURCE,
         )
 
-    def test_p7_readiness_includes_visible_target_big_buildings(self) -> None:
-        self.assertRegex(
-            STREAMING_SOURCE,
-            re.compile(
-                r'#if WII_STREAM_P7_BLOCKING_HANDOFF\s+'
-                r'// The P7 handoff must publish the target skyline.*?'
-                r'if\(gWiiIslandPhase == WII_ISLAND_READ\)\s+'
-                r'WiiIslandRequestVisibleBigBuildings\(gWiiIslandTargetLevel,\s+'
-                r'gWiiIslandWorkPosition\);',
-                re.DOTALL,
-            ),
+    def test_p7_disables_later_hud_and_visible_txd_guards(self) -> None:
+        hud_block = re.search(
+            r'if\(WII_MEMORY_PROFILE_ID STREQUAL "A1-audio-ps2-world-scan" OR\s+'
+            r'WII_MEMORY_PROFILE_ID STREQUAL "P15-noaudio-hud-weapon-pin" OR\s+'
+            r'WII_MEMORY_PROFILE_ID STREQUAL "P16-noaudio-gx-headroom-guard"\)\s+'
+            r'set\(WII_HUD_ACTIVE_WEAPON_RASTER_PIN_VALUE 1\).*?'
+            r'else\(\).*?set\(WII_HUD_ACTIVE_WEAPON_RASTER_PIN_VALUE 0\)',
+            CMAKE_SOURCE,
+            re.DOTALL,
         )
+        self.assertIsNotNone(hud_block)
+        assert hud_block is not None
+        self.assertNotIn("P7-noaudio-ps2-world-scan", hud_block.group(0))
+
+        visible_txd_block = re.search(
+            r'if\(WII_MEMORY_PROFILE_ID STREQUAL "A1-audio-ps2-world-scan"\)\s+'
+            r'set\(WII_STREAM_P7_VISIBLE_TXD_GUARD_VALUE 1\).*?'
+            r'else\(\).*?set\(WII_STREAM_P7_VISIBLE_TXD_GUARD_VALUE 0\)',
+            CMAKE_SOURCE,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(visible_txd_block)
+        assert visible_txd_block is not None
+        self.assertNotIn("P7-noaudio-ps2-world-scan", visible_txd_block.group(0))
+
+    def test_p7_splash_visual_gate_requires_visible_target_big_buildings(self) -> None:
+        self.assertIn(
+            "WII_STREAM_SPLASH_VISUAL_GATE=${WII_STREAM_SPLASH_VISUAL_GATE_VALUE}",
+            CMAKE_SOURCE,
+        )
+        self.assertIn("WII_STREAM_SPLASH_VISUAL_GATE", STREAMING_SOURCE)
+        self.assertIn("WII_ISLAND_SPLASH_MIN_DISPLAY_MS", STREAMING_SOURCE)
         working_set_block = re.search(
             r'static void\s+WiiIslandRequestWorkingSet\(void\).*?'
             r'static void\s+WiiIslandCaptureRetireProtection',
@@ -159,10 +192,9 @@ class P7Ps2WorldScanTests(unittest.TestCase):
             re.DOTALL,
         )
         self.assertIsNotNone(working_set_block)
-        self.assertIn(
-            "WiiIslandRequestVisibleBigBuildings",
-            working_set_block.group(0),
-        )
+        assert working_set_block is not None
+        self.assertIn("WiiIslandRequestVisibleBigBuildings", working_set_block.group(0))
+        self.assertIn("splashWindowReady", STREAMING_SOURCE)
 
 
 if __name__ == "__main__":

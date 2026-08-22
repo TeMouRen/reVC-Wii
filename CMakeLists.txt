@@ -130,7 +130,6 @@ if(WII)
        WII_MEMORY_PROFILE_ID STREQUAL "P4-noaudio-balanced" OR
        WII_MEMORY_PROFILE_ID STREQUAL "P5-noaudio-global-lru" OR
        WII_MEMORY_PROFILE_ID STREQUAL "P6-noaudio-ps2-policy" OR
-       WII_MEMORY_PROFILE_ID STREQUAL "P7-noaudio-ps2-world-scan" OR
        WII_MEMORY_PROFILE_ID STREQUAL "P14-noaudio-atomic-handoff" OR
        WII_MEMORY_PROFILE_ID STREQUAL "P15-noaudio-hud-weapon-pin" OR
        WII_MEMORY_PROFILE_ID STREQUAL "P16-noaudio-gx-headroom-guard" OR
@@ -168,8 +167,7 @@ if(WII)
     else()
         set(WII_STREAM_ATOMIC_BIG_HANDOFF_VALUE 0)
     endif()
-    if(WII_MEMORY_PROFILE_ID STREQUAL "P7-noaudio-ps2-world-scan" OR
-       WII_MEMORY_PROFILE_ID STREQUAL "A1-audio-ps2-world-scan" OR
+    if(WII_MEMORY_PROFILE_ID STREQUAL "A1-audio-ps2-world-scan" OR
        WII_MEMORY_PROFILE_ID STREQUAL "P15-noaudio-hud-weapon-pin" OR
        WII_MEMORY_PROFILE_ID STREQUAL "P16-noaudio-gx-headroom-guard")
         set(WII_HUD_ACTIVE_WEAPON_RASTER_PIN_VALUE 1)
@@ -193,14 +191,17 @@ if(WII)
     else()
         set(WII_STREAM_GX_HEADROOM_GUARD_VALUE 0)
     endif()
-    if(WII_MEMORY_PROFILE_ID STREQUAL "P7-noaudio-ps2-world-scan" OR
-       WII_MEMORY_PROFILE_ID STREQUAL "A1-audio-ps2-world-scan")
+    if(WII_MEMORY_PROFILE_ID STREQUAL "A1-audio-ps2-world-scan")
         set(WII_STREAM_P7_BLOCKING_HANDOFF_VALUE 1)
     else()
         set(WII_STREAM_P7_BLOCKING_HANDOFF_VALUE 0)
     endif()
-    if(WII_MEMORY_PROFILE_ID STREQUAL "P7-noaudio-ps2-world-scan" OR
-       WII_MEMORY_PROFILE_ID STREQUAL "A1-audio-ps2-world-scan")
+    if(WII_MEMORY_PROFILE_ID STREQUAL "P7-noaudio-ps2-world-scan")
+        set(WII_STREAM_SPLASH_VISUAL_GATE_VALUE 1)
+    else()
+        set(WII_STREAM_SPLASH_VISUAL_GATE_VALUE 0)
+    endif()
+    if(WII_MEMORY_PROFILE_ID STREQUAL "A1-audio-ps2-world-scan")
         set(WII_STREAM_P7_VISIBLE_TXD_GUARD_VALUE 1)
     else()
         set(WII_STREAM_P7_VISIBLE_TXD_GUARD_VALUE 0)
@@ -234,6 +235,7 @@ if(WII)
         WII_STREAM_PS2_WORLD_SCAN_RADIUS=${WII_STREAM_PS2_WORLD_SCAN_RADIUS_VALUE}
         WII_STREAM_GX_HEADROOM_GUARD=${WII_STREAM_GX_HEADROOM_GUARD_VALUE}
         WII_STREAM_P7_BLOCKING_HANDOFF=${WII_STREAM_P7_BLOCKING_HANDOFF_VALUE}
+        WII_STREAM_SPLASH_VISUAL_GATE=${WII_STREAM_SPLASH_VISUAL_GATE_VALUE}
         WII_STREAM_P7_VISIBLE_TXD_GUARD=${WII_STREAM_P7_VISIBLE_TXD_GUARD_VALUE}
         WII_STREAM_ATOMIC_BIG_HANDOFF=${WII_STREAM_ATOMIC_BIG_HANDOFF_VALUE}
         WII_HUD_ACTIVE_WEAPON_RASTER_PIN=${WII_HUD_ACTIVE_WEAPON_RASTER_PIN_VALUE}
@@ -266,6 +268,7 @@ if(WII)
     message(STATUS "  PS2 world-scan radius: ${WII_STREAM_PS2_WORLD_SCAN_RADIUS_VALUE}")
     message(STATUS "  GX headroom guard: ${WII_STREAM_GX_HEADROOM_GUARD_VALUE}")
     message(STATUS "  P7 recent TXD guard: ${WII_STREAM_P7_VISIBLE_TXD_GUARD_VALUE}")
+    message(STATUS "  Splash visual gate: ${WII_STREAM_SPLASH_VISUAL_GATE_VALUE}")
     message(STATUS "  Atomic big handoff: ${WII_STREAM_ATOMIC_BIG_HANDOFF_VALUE}")
     message(STATUS "  Active HUD weapon raster pin: ${WII_HUD_ACTIVE_WEAPON_RASTER_PIN_VALUE}")
     message(STATUS "  Used HUD weapon raster persistence: ${WII_HUD_USED_WEAPON_RASTER_PERSIST_VALUE}")

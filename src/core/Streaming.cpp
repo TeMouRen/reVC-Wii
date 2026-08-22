@@ -61,6 +61,9 @@
 #ifndef WII_STREAM_P7_BLOCKING_HANDOFF
 #define WII_STREAM_P7_BLOCKING_HANDOFF 0
 #endif
+#ifndef WII_STREAM_SPLASH_VISUAL_GATE
+#define WII_STREAM_SPLASH_VISUAL_GATE 0
+#endif
 #ifndef WII_STREAM_P7_VISIBLE_TXD_GUARD
 #define WII_STREAM_P7_VISIBLE_TXD_GUARD 0
 #endif
@@ -146,6 +149,7 @@ static const size_t WII_ISLAND_TRANSITION_RESERVE = 2u * 1024u * 1024u;
 static const int32 WII_ISLAND_RETIRE_SCAN_PER_FRAME = 64;
 static const int32 WII_ISLAND_RETIRE_REMOVE_PER_FRAME = 8;
 static const uint32 WII_ISLAND_SPLASH_READ_DELAY_MS = 34u;
+static const uint32 WII_ISLAND_SPLASH_MIN_DISPLAY_MS = 250u;
 
 static const uint32 WII_STREAM_KEEP_FAIR_WAIT_MS = 2000u;
 static const uint32 WII_STREAM_HARD_FAIR_WAIT_MS = 3000u;
@@ -312,9 +316,9 @@ static void WiiStreamPromoteRequestClass(int32 streamId, uint8 requestClass);
 static void WiiIslandBuildTargetBuildingModelSet(void);
 static int32 WiiIslandRequestNearbyBigBuildings(eLevelName level,
 	const CVector &position);
-#if WII_STREAM_ATOMIC_BIG_HANDOFF
-static int32 WiiIslandCountAtomicBigBuildings(eLevelName level,
-	const CVector &position, int32 *missingOut);
+#if WII_STREAM_ATOMIC_BIG_HANDOFF || WII_STREAM_SPLASH_VISUAL_GATE
+static int32 WiiIslandCountVisualBigBuildings(eLevelName level,
+	const CVector &position, bool visibleOnly, int32 *missingOut);
 #endif
 static int32 WiiIslandRequestLandingCore(eLevelName level,
 	const CVector &position, int32 *treadableRequestedOut);
@@ -817,10 +821,10 @@ WiiIslandRequestVisibleBigBuildings(eLevelName level, const CVector &position)
 	return requested;
 }
 
-#if WII_STREAM_ATOMIC_BIG_HANDOFF
+#if WII_STREAM_ATOMIC_BIG_HANDOFF || WII_STREAM_SPLASH_VISUAL_GATE
 static int32
-WiiIslandCountAtomicBigBuildings(eLevelName level, const CVector &position,
-	int32 *missingOut)
+WiiIslandCountVisualBigBuildings(eLevelName level, const CVector &position,
+	bool visibleOnly, int32 *missingOut)
 {
 	int32 total = 0;
 	int32 missing = 0;
@@ -828,6 +832,7 @@ WiiIslandCountAtomicBigBuildings(eLevelName level, const CVector &position,
 		CBuilding *building = CPools::GetBuildingPool()->GetSlot(i);
 		if(building == nil || !building->bIsBIGBuilding ||
 		   building->m_level != level || !building->bStreamBIGBuilding ||
+		   (visibleOnly && !building->bIsVisible) ||
 		   !CRenderer::ShouldModelBeStreamed(building, position))
 			continue;
 
@@ -962,13 +967,19 @@ WiiIslandRequestWorkingSet(void)
 	gWiiIslandCapturePriority = gWiiIslandPhase == WII_ISLAND_READ;
 	int32 nearbyBig = WiiIslandRequestNearbyBigBuildings(
 		gWiiIslandTargetLevel, gWiiIslandWorkPosition);
+	int32 visualBig = 0;
 #if WII_STREAM_P7_BLOCKING_HANDOFF
 	// The P7 handoff must publish the target skyline with its visible BIG
 	// buildings already resident. Capture them during READ so commit readiness
 	// cannot succeed while the post-commit visual set is still queued.
 	if(gWiiIslandPhase == WII_ISLAND_READ)
 		WiiIslandRequestVisibleBigBuildings(gWiiIslandTargetLevel,
-		                                   gWiiIslandWorkPosition);
+			                                   gWiiIslandWorkPosition);
+#endif
+#if WII_STREAM_SPLASH_VISUAL_GATE
+	if(gWiiIslandPhase == WII_ISLAND_READ)
+		visualBig = WiiIslandRequestVisibleBigBuildings(
+			gWiiIslandTargetLevel, gWiiIslandWorkPosition);
 #endif
 #if WII_STREAM_ATOMIC_BIG_HANDOFF
 	if(gWiiIslandPhase == WII_ISLAND_READ)
@@ -989,8 +1000,8 @@ WiiIslandRequestWorkingSet(void)
 	gWiiIslandCaptureRequests = false;
 	int32 required = WiiIslandCountRequired();
 	if(gWiiIslandLastRequestAtMs == now)
-		SYS_Report("[WII-ISLAND] working-set target=%d nearbyBig=%d landing=%d treadable=%d corridor=%d/%d required=%d queued=%d priority=%d\n",
-		           (int)gWiiIslandTargetLevel, nearbyBig, landingCore,
+		SYS_Report("[WII-ISLAND] working-set target=%d nearbyBig=%d visualBig=%d landing=%d treadable=%d corridor=%d/%d required=%d queued=%d priority=%d\n",
+		           (int)gWiiIslandTargetLevel, nearbyBig, visualBig, landingCore,
 		           landingTreadable, corridorTreadable,
 		           0,
 		           required,
@@ -1018,8 +1029,9 @@ WiiIslandCaptureRetireProtection(void)
 	CStreaming::RequestBigBuildings(gWiiIslandTargetLevel,
 	                                gWiiIslandAtomicHandoffPosition);
 	int32 atomicMissing = 0;
-	int32 visualBig = WiiIslandCountAtomicBigBuildings(
-		gWiiIslandTargetLevel, gWiiIslandAtomicHandoffPosition, &atomicMissing);
+	int32 visualBig = WiiIslandCountVisualBigBuildings(
+		gWiiIslandTargetLevel, gWiiIslandAtomicHandoffPosition, false,
+		&atomicMissing);
 #else
 	int32 visualBig = WiiIslandRequestVisibleBigBuildings(
 		gWiiIslandTargetLevel, gWiiIslandWorkPosition);
@@ -1103,13 +1115,24 @@ WiiIslandWorkingSetReady(int32 *missingRequiredOut, int32 *missingOptionalOut)
 	}
 	if(!CColStore::HasCollisionLoaded(gWiiIslandWorkPosition))
 		missingRequired++;
+#if WII_STREAM_SPLASH_VISUAL_GATE
+	if(gWiiIslandPhase == WII_ISLAND_READ){
+		CStreaming::InstanceBigBuildings(gWiiIslandTargetLevel,
+		                                 gWiiIslandWorkPosition);
+		int32 visualMissing = 0;
+		WiiIslandCountVisualBigBuildings(gWiiIslandTargetLevel,
+		                                 gWiiIslandWorkPosition, true,
+		                                 &visualMissing);
+		missingRequired += visualMissing;
+	}
+#endif
 #if WII_STREAM_ATOMIC_BIG_HANDOFF
 	if(gWiiIslandPhase == WII_ISLAND_READ){
 		CStreaming::InstanceBigBuildings(gWiiIslandTargetLevel,
 		                                 gWiiIslandAtomicHandoffPosition);
 		int32 atomicMissing = 0;
-		WiiIslandCountAtomicBigBuildings(gWiiIslandTargetLevel,
-		                                 gWiiIslandAtomicHandoffPosition,
+		WiiIslandCountVisualBigBuildings(gWiiIslandTargetLevel,
+		                                 gWiiIslandAtomicHandoffPosition, false,
 		                                 &atomicMissing);
 		missingRequired += atomicMissing;
 	}
@@ -1200,8 +1223,9 @@ WiiIslandCommitTransition(void)
 	CStreaming::InstanceBigBuildings(gWiiIslandTargetLevel,
 	                                 gWiiIslandAtomicHandoffPosition);
 	int32 atomicMissing = 0;
-	int32 atomicTotal = WiiIslandCountAtomicBigBuildings(
-		gWiiIslandTargetLevel, gWiiIslandAtomicHandoffPosition, &atomicMissing);
+	int32 atomicTotal = WiiIslandCountVisualBigBuildings(
+		gWiiIslandTargetLevel, gWiiIslandAtomicHandoffPosition, false,
+		&atomicMissing);
 	if(atomicMissing != 0){
 		SYS_Report("[WII-ISLAND] atomic handoff waiting target=%d total=%d missing=%d pending=%d priority=%d\n",
 		           (int)gWiiIslandTargetLevel, atomicTotal, atomicMissing,
@@ -6225,7 +6249,13 @@ CStreaming::LoadBigBuildingsWhenNeeded(void)
 		           gWiiIslandSplashPrepared ? 1 : 0,
 		           (unsigned)(now - gWiiIslandStartedAtMs));
 	}
-	if(gWiiIslandPhase == WII_ISLAND_READ && workingSetReady){
+	bool splashWindowReady = true;
+#if WII_STREAM_SPLASH_VISUAL_GATE
+	splashWindowReady = now - gWiiIslandReadStartedAtMs >=
+	                     WII_ISLAND_SPLASH_MIN_DISPLAY_MS;
+#endif
+	if(gWiiIslandPhase == WII_ISLAND_READ && workingSetReady &&
+	   splashWindowReady){
 		if(WiiIslandCommitTransition())
 			return;
 	}

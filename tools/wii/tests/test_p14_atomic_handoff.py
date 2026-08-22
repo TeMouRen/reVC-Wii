@@ -79,7 +79,7 @@ class P14AtomicHandoffTests(unittest.TestCase):
         self.assertLess(splash, retire)
 
     def test_atomic_readiness_requires_model_txd_and_instance(self) -> None:
-        self.assertIn("WiiIslandCountAtomicBigBuildings", STREAMING_SOURCE)
+        self.assertIn("WiiIslandCountVisualBigBuildings", STREAMING_SOURCE)
         self.assertIn("!building->bStreamBIGBuilding", STREAMING_SOURCE)
         self.assertIn(
             "!CRenderer::ShouldModelBeStreamed(building, position)",
@@ -91,7 +91,7 @@ class P14AtomicHandoffTests(unittest.TestCase):
             STREAMING_SOURCE,
             re.compile(
                 r'if\(gWiiIslandPhase == WII_ISLAND_READ\)\{[\s\S]{0,420}'
-                r'WiiIslandCountAtomicBigBuildings[\s\S]{0,180}'
+                r'WiiIslandCountVisualBigBuildings[\s\S]{0,220}'
                 r'missingRequired \+= atomicMissing;'
             ),
         )
