@@ -284,6 +284,9 @@ public:
 	static void Shutdown();
 	static void StreamRadarSections(const CVector &posn);
 	static void StreamRadarSections(int32 x, int32 y);
+#ifdef WII
+	static void RequestRadarSections(const CVector &posn);
+#endif
 	static void TransformRealWorldToTexCoordSpace(CVector2D &out, const CVector2D &in, int32 x, int32 y);
 	static void TransformRadarPointToRealWorldSpace(CVector2D &out, const CVector2D &in);
 	static void TransformRadarPointToScreenSpace(CVector2D &out, const CVector2D &in);

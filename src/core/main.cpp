@@ -21,6 +21,7 @@
 #include "MBlur.h"
 #include "Sprite2d.h"
 #include "Renderer.h"
+#include "Streaming.h"
 #include "Coronas.h"
 #include "WaterLevel.h"
 #include "Weather.h"
@@ -73,6 +74,7 @@ extern "C" void VIDEO_WaitVSync(void);
 #include "GenericGameStorage.h"
 #include "MemoryCard.h"
 #include "MemoryHeap.h"
+#include "MemoryMgr.h"
 #include "SceneEdit.h"
 #include "debugmenu.h"
 #include "Clock.h"
@@ -84,6 +86,11 @@ extern "C" void VIDEO_WaitVSync(void);
 #include "VarConsole.h"
 #ifdef RW_GX
 #include "../../vendor/librw/src/gx/gxmemory.h"
+namespace rw { namespace gx {
+void gxMemGetPoolStats(uint32 *capacityBytes, uint32 *usedBytes,
+                       uint32 *peakBytes, uint32 *largestFreeBytes,
+                       uint32 *allocFailCount, uint32 *fallbackCount);
+} }
 #endif
 #ifdef USE_OUR_VERSIONING
 #include "GitSHA1.h"
@@ -105,7 +112,24 @@ static char gCurrentSplashName[32];
 static bool CurrentSplashIsLoadingScreen(void);
 #ifdef WII
 static bool CurrentSplashIsIntroSequence(void);
+static bool WiiSplashNeedsSyncLoad(const char *name);
+static void WiiPresentIslandFallback(const char *levelName, const char *splashName);
 struct WiiFrameDiagnostics {
+	uint32 sequence;
+	double timeStepMs;
+	double updateMs;
+	double processMs;
+	double audioMs;
+	double renderListMs;
+	double preRenderMs;
+	double renderSceneMs;
+	double effectsMs;
+	double motionBlurMs;
+	double render2dMs;
+	double menusMs;
+	double fadeMs;
+	double render2dFadeMs;
+	double endFrameMs;
 	double sceneCloudsMs;
 	double sceneHorizonMs;
 	double sceneRoadsMs;
@@ -130,15 +154,237 @@ struct WiiFrameDiagnostics {
 	double frameLoopMs;
 	double processToPresentMs;
 	double diagLogMs;
+	WiiStreamingFrameWork streaming;
 };
 static WiiFrameDiagnostics gWiiFrameDiag;
 static WiiFrameDiagnostics gWiiPrevFrameDiag;
-static double gWiiPrevDiagLogMs;
+static uint32 gWiiFrameDiagSequence;
 static void
 WiiResetFrameDiagnostics(void)
 {
 	memset(&gWiiFrameDiag, 0, sizeof(gWiiFrameDiag));
 }
+
+#if WII_SLOW_FRAME_DIAGNOSTICS
+static void
+WiiReportFrameDiagnostics(const char *state, const WiiFrameDiagnostics &diag,
+	uint32 riskyFrames)
+{
+	uint32 gxCapacity = 0;
+	uint32 gxUsed = 0;
+	uint32 gxLargest = 0;
+	uint32 gxFails = 0;
+	uint32 gxFallbacks = 0;
+	uint32 texBytes = 0;
+	int texCount = 0;
+#ifdef RW_GX
+	rw::gx::gxMemGetPoolStats(&gxCapacity, &gxUsed, nil, &gxLargest,
+	                          &gxFails, &gxFallbacks);
+	texBytes = rw::gx::texPoolTotalBytes();
+	texCount = rw::gx::texPoolCount();
+#endif
+	const uint32 pressure = WiiMemoryGetStreamingPressure();
+	const double workMs = Max(0.0,
+		diag.cpuBeforePresentMs + diag.presentSubmitMs - diag.diagLogMs);
+	const uint32 gxFree = gxCapacity > gxUsed ? gxCapacity - gxUsed : 0;
+
+	SYS_Report("[WII-FRAME] %s seq=%u risky=%u/12 loop=%.2fms ts=%.2fms work=%.2fms cpu=%.2fms submit=%.2fms wait=%.2fms diag=%.2fms update=%.2fms game=%.2fms audio=%.2fms list=%.2fms pre=%.2fms scene=%.2fms fx=%.2fms blur=%.2fms ui=%.2fms menu=%.2fms fade=%.2fms end=%.2fms pressure=0x%X gx=%u/%uKB free=%uKB largest=%uKB fail=%u fallback=%u tex=%uKB/%d\n",
+	           state, (unsigned)diag.sequence, (unsigned)riskyFrames,
+	           diag.frameLoopMs, diag.timeStepMs, workMs,
+	           diag.cpuBeforePresentMs, diag.presentSubmitMs,
+	           diag.outerVSyncWaitMs, diag.diagLogMs,
+	           diag.updateMs, diag.processMs, diag.audioMs,
+	           diag.renderListMs, diag.preRenderMs, diag.renderSceneMs,
+	           diag.effectsMs, diag.motionBlurMs, diag.render2dMs,
+	           diag.menusMs, diag.fadeMs + diag.render2dFadeMs,
+	           diag.endFrameMs, (unsigned)pressure,
+	           (unsigned)(gxUsed / 1024u), (unsigned)(gxCapacity / 1024u),
+	           (unsigned)(gxFree / 1024u), (unsigned)(gxLargest / 1024u),
+	           (unsigned)gxFails, (unsigned)gxFallbacks,
+	           (unsigned)(texBytes / 1024u), texCount);
+
+	if(strcmp(state, "sample") != 0 && strcmp(state, "recover") != 0){
+		SYS_Report("[WII-FRAME-SCENE] seq=%u clouds=%.2fms horizon=%.2fms roads=%.2fms reflections=%.2fms world=%.2fms water=%.2fms boats=%.2fms underwater=%.2fms transparent=%.2fms fading=%.2fms rain=%.2fms sun=%.2fms endDebug=%.2fms endFlush=%.2fms endUpdate=%.2fms show=%.2fms\n",
+		           (unsigned)diag.sequence,
+		           diag.sceneCloudsMs, diag.sceneHorizonMs,
+		           diag.sceneRoadsMs, diag.sceneReflectionsMs,
+		           diag.sceneWorldMs, diag.sceneWaterMs,
+		           diag.sceneBoatsMs, diag.sceneUnderwaterMs,
+		           diag.sceneTransparentWaterMs, diag.sceneFadingMs,
+		           diag.sceneRainMs, diag.sceneSunMs,
+		           diag.endDebugMs, diag.endFlushMs,
+		           diag.endUpdateMs, diag.endShowRasterMs);
+	}
+}
+
+static void
+WiiCheckCompletedFrameDiagnostics(const WiiFrameDiagnostics &diag)
+{
+	static uint32 sLastSequence = 0;
+	static uint32 sWindowFrames = 0;
+	static uint32 sRiskyFrames = 0;
+	static uint32 sCompletedWindows = 0;
+	static uint32 sSlowWindowsSinceReport = 0;
+	static uint32 sHealthyWindows = 0;
+	static bool sSustainedSlow = false;
+	static double sWorstScoreMs = 0.0;
+	static WiiFrameDiagnostics sWorstFrame;
+	static double sSummaryStartMs = 0.0;
+	static uint32 sSummaryFrames = 0;
+	static uint32 sSummaryRisky = 0;
+	static uint32 sSummaryOver40 = 0;
+	static uint32 sSummaryOver50 = 0;
+	static uint32 sSummaryWorkHistogram[6];
+	static double sSummaryWorkTotalMs = 0.0;
+	static double sSummaryWorkMaxMs = 0.0;
+	static uint32 sSummaryStreamFrames = 0;
+	static uint32 sSummaryStreamOver40 = 0;
+	static uint32 sSummaryNoStreamOver40 = 0;
+	static uint32 sSummaryStreamCalls = 0;
+	static uint32 sSummaryStreamRemovals = 0;
+	static uint32 sSummaryStreamArchiveRemovals = 0;
+	static uint32 sSummaryStreamPressureRemovals = 0;
+	static uint64 sSummaryStreamMakeUs = 0;
+	static uint64 sSummaryStreamRemovalUs = 0;
+	static uint32 sSummaryStreamMakeMaxUs = 0;
+
+	if(diag.sequence == 0 || diag.sequence == sLastSequence)
+		return;
+	sLastSequence = diag.sequence;
+
+	const double workMs = Max(0.0,
+		diag.cpuBeforePresentMs + diag.presentSubmitMs - diag.diagLogMs);
+	const double loopMs = Max(0.0, diag.frameLoopMs - diag.diagLogMs);
+	const double timeStepMs = Max(0.0, diag.timeStepMs - diag.diagLogMs);
+	const bool risky = workMs >= 32.0 || loopMs >= 40.0 || timeStepMs >= 40.0;
+	const double scoreMs = Max(workMs, Max(loopMs, timeStepMs));
+	double summaryNowMs = RsTimer();
+	if(sSummaryStartMs == 0.0)
+		sSummaryStartMs = summaryNowMs;
+	sSummaryFrames++;
+	if(risky)
+		sSummaryRisky++;
+	if(scoreMs >= 40.0)
+		sSummaryOver40++;
+	if(scoreMs >= 50.0)
+		sSummaryOver50++;
+	static const double workBounds[6] = { 16.67, 25.0, 33.33, 40.0, 50.0, 1.0e9 };
+	static const uint32 workBoundUs[6] = { 16670u, 25000u, 33330u, 40000u, 50000u, UINT32_MAX };
+	for(int32 i = 0; i < ARRAY_SIZE(workBounds); i++){
+		if(workMs <= workBounds[i]){
+			sSummaryWorkHistogram[i]++;
+			break;
+		}
+	}
+	sSummaryWorkTotalMs += workMs;
+	if(workMs > sSummaryWorkMaxMs)
+		sSummaryWorkMaxMs = workMs;
+	bool streamWorked = diag.streaming.makeSpaceCalls != 0;
+	if(streamWorked){
+		sSummaryStreamFrames++;
+		if(scoreMs >= 40.0)
+			sSummaryStreamOver40++;
+	}else if(scoreMs >= 40.0){
+		sSummaryNoStreamOver40++;
+	}
+	sSummaryStreamCalls += diag.streaming.makeSpaceCalls;
+	sSummaryStreamRemovals += diag.streaming.removals;
+	sSummaryStreamArchiveRemovals += diag.streaming.archiveRemovals;
+	sSummaryStreamPressureRemovals += diag.streaming.pressureRemovals;
+	sSummaryStreamMakeUs += diag.streaming.makeSpaceUs;
+	sSummaryStreamRemovalUs += diag.streaming.removalUs;
+	if(diag.streaming.makeSpaceUs > sSummaryStreamMakeMaxUs)
+		sSummaryStreamMakeMaxUs = diag.streaming.makeSpaceUs;
+	if(summaryNowMs - sSummaryStartMs >= 5000.0){
+		uint32 wanted = (sSummaryFrames * 95u + 99u) / 100u;
+		uint32 seen = 0;
+		uint32 p95BucketUs = 0;
+		for(int32 i = 0; i < ARRAY_SIZE(workBounds); i++){
+			seen += sSummaryWorkHistogram[i];
+			if(seen >= wanted){
+				p95BucketUs = workBoundUs[i];
+				break;
+			}
+		}
+		SYS_Report("[WII-FRAME-HIST] win=%ums frames=%u risky=%u over40=%u over50=%u work=avg%u/p95b%u/max%u hist=%u/%u/%u/%u/%u/%u stream=frames%u/calls%u/remove%u/a%u/p%u make=total%llu/max%u removeUs=%llu corr=stream40%u/nostream40%u\n",
+		           (unsigned)(summaryNowMs - sSummaryStartMs),
+		           (unsigned)sSummaryFrames, (unsigned)sSummaryRisky,
+		           (unsigned)sSummaryOver40, (unsigned)sSummaryOver50,
+		           (unsigned)(sSummaryWorkTotalMs * 1000.0 / sSummaryFrames),
+		           (unsigned)p95BucketUs,
+		           (unsigned)(sSummaryWorkMaxMs * 1000.0),
+		           (unsigned)sSummaryWorkHistogram[0],
+		           (unsigned)sSummaryWorkHistogram[1],
+		           (unsigned)sSummaryWorkHistogram[2],
+		           (unsigned)sSummaryWorkHistogram[3],
+		           (unsigned)sSummaryWorkHistogram[4],
+		           (unsigned)sSummaryWorkHistogram[5],
+		           (unsigned)sSummaryStreamFrames,
+		           (unsigned)sSummaryStreamCalls,
+		           (unsigned)sSummaryStreamRemovals,
+		           (unsigned)sSummaryStreamArchiveRemovals,
+		           (unsigned)sSummaryStreamPressureRemovals,
+		           (unsigned long long)sSummaryStreamMakeUs,
+		           (unsigned)sSummaryStreamMakeMaxUs,
+		           (unsigned long long)sSummaryStreamRemovalUs,
+		           (unsigned)sSummaryStreamOver40,
+		           (unsigned)sSummaryNoStreamOver40);
+		sSummaryStartMs = summaryNowMs;
+		sSummaryFrames = 0;
+		sSummaryRisky = 0;
+		sSummaryOver40 = 0;
+		sSummaryOver50 = 0;
+		memset(sSummaryWorkHistogram, 0, sizeof(sSummaryWorkHistogram));
+		sSummaryWorkTotalMs = 0.0;
+		sSummaryWorkMaxMs = 0.0;
+		sSummaryStreamFrames = 0;
+		sSummaryStreamOver40 = 0;
+		sSummaryNoStreamOver40 = 0;
+		sSummaryStreamCalls = 0;
+		sSummaryStreamRemovals = 0;
+		sSummaryStreamArchiveRemovals = 0;
+		sSummaryStreamPressureRemovals = 0;
+		sSummaryStreamMakeUs = 0;
+		sSummaryStreamRemovalUs = 0;
+		sSummaryStreamMakeMaxUs = 0;
+	}
+	if(sWindowFrames == 0 || scoreMs > sWorstScoreMs){
+		sWorstScoreMs = scoreMs;
+		sWorstFrame = diag;
+	}
+	sWindowFrames++;
+	if(risky)
+		sRiskyFrames++;
+	if(sWindowFrames < 12)
+		return;
+
+	sCompletedWindows++;
+	if(sRiskyFrames >= 8){
+		sHealthyWindows = 0;
+		if(!sSustainedSlow){
+			sSustainedSlow = true;
+			sSlowWindowsSinceReport = 0;
+			WiiReportFrameDiagnostics("enter", sWorstFrame, sRiskyFrames);
+		}else if(++sSlowWindowsSinceReport >= 10){
+			sSlowWindowsSinceReport = 0;
+			WiiReportFrameDiagnostics("sustain", sWorstFrame, sRiskyFrames);
+		}
+	}else if(sSustainedSlow){
+		if(++sHealthyWindows >= 2){
+			sSustainedSlow = false;
+			sHealthyWindows = 0;
+			sSlowWindowsSinceReport = 0;
+			WiiReportFrameDiagnostics("recover", diag, sRiskyFrames);
+		}
+	}else if(sCompletedWindows == 10 || (sCompletedWindows % 75) == 0){
+		WiiReportFrameDiagnostics("sample", sWorstFrame, sRiskyFrames);
+	}
+
+	sWindowFrames = 0;
+	sRiskyFrames = 0;
+	sWorstScoreMs = 0.0;
+}
+#endif
 
 extern "C" void WiiRecordOuterVSyncWait(double waitMs, double frameLoopMs);
 
@@ -666,6 +912,11 @@ Terminate3D(void)
 CSprite2d splash;
 int splashTxdId = -1;
 
+#ifdef WII
+static int32 gWiiIslandTransitionSplashLevel = LEVEL_GENERIC;
+static bool gWiiIslandTransitionSplashActive;
+#endif
+
 static bool
 CurrentSplashIsLoadingScreen(void)
 {
@@ -754,6 +1005,103 @@ ForceScriptSplashNow(const char *name)
 }
 #endif
 
+#ifdef WII
+static bool
+WiiSplashNeedsSyncLoad(const char *name)
+{
+	if(name == nil)
+		return false;
+	if(ShouldProtectActiveIntroSplash(name))
+		return false;
+
+	if(splashTxdId == -1)
+		return true;
+
+	RwTexDictionary *txd = CTxdStore::GetSlot(splashTxdId)->texDict;
+	if(txd == nil)
+		return true;
+
+	return RwTexDictionaryFindNamedTexture(txd, name) == nil;
+}
+
+static void
+WiiPresentIslandFallback(const char *levelName, const char *splashName)
+{
+	double presentStartMs = RsTimer();
+	FrontEndMenuManager.MessageScreen("FELD_WR", true);
+	printf("[WII-ISLAND-SPLASH] fallback-present level='%s' splash='%s' dt=%.2fms\n",
+	       levelName ? levelName : "<none>",
+	       splashName ? splashName : "<none>",
+	       RsTimer() - presentStartMs);
+}
+
+bool
+WiiPrepareIslandTransitionSplash(int level)
+{
+	if(level < LEVEL_BEACH || level > LEVEL_MAINLAND)
+		return false;
+	const char *textureName = GetLevelSplashScreen(level);
+	CSprite2d *prepared = LoadSplash(textureName);
+	bool ready = prepared == &splash && splash.m_pTexture != nil &&
+	             strcmp(gCurrentSplashName, textureName) == 0;
+	printf("[WII-ISLAND-SPLASH] prepare level=%d name='%s' slot=%d ready=%d\n",
+	       level, textureName, splashTxdId, ready ? 1 : 0);
+	return ready;
+}
+
+void
+WiiBeginIslandTransitionSplash(int level)
+{
+	if(level < LEVEL_BEACH || level > LEVEL_MAINLAND)
+		return;
+	gWiiIslandTransitionSplashLevel = level;
+	gWiiIslandTransitionSplashActive = true;
+	const char *textureName = GetLevelSplashScreen(level);
+	bool ready = splash.m_pTexture != nil &&
+	             strcmp(gCurrentSplashName, textureName) == 0;
+	printf("[WII-ISLAND-SPLASH] transition begin level=%d ready=%d\n",
+	       level, ready ? 1 : 0);
+}
+
+void
+WiiEndIslandTransitionSplash(void)
+{
+	if(gWiiIslandTransitionSplashActive)
+		printf("[WII-ISLAND-SPLASH] transition end level=%d\n",
+		       gWiiIslandTransitionSplashLevel);
+	gWiiIslandTransitionSplashActive = false;
+	gWiiIslandTransitionSplashLevel = LEVEL_GENERIC;
+}
+
+bool
+WiiIsIslandTransitionSplashActive(void)
+{
+	return gWiiIslandTransitionSplashActive;
+}
+
+void
+WiiDrawIslandTransitionSplash(void)
+{
+	int level = gWiiIslandTransitionSplashLevel;
+	const char *textureName = level >= LEVEL_BEACH && level <= LEVEL_MAINLAND ?
+	                          GetLevelSplashScreen(level) : nil;
+	bool ready = textureName != nil && splash.m_pTexture != nil &&
+	             strcmp(gCurrentSplashName, textureName) == 0;
+	CSprite2d::SetRecipNearClip();
+	DefinedState();
+	CRGBA black(0, 0, 0, 255);
+	CSprite2d::DrawRect(CRect(0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT), black);
+	if(ready)
+		splash.Draw(CRect(0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT),
+		            CRGBA(255, 255, 255, 255));
+	else{
+		FrontEndMenuManager.m_nMenuFadeAlpha = 255;
+		FrontEndMenuManager.SmallMessageScreen("FELD_WR");
+		CFont::DrawFonts();
+	}
+}
+#endif
+
 CSprite2d*
 LoadSplash(const char *name)
 {
@@ -762,6 +1110,10 @@ LoadSplash(const char *name)
 	RwTexture *tex = nil;
 #ifdef WII
 	char previousSplashName[32];
+	double missReleaseMs = 0.0;
+	double missLoadMs = 0.0;
+	double missBindMs = 0.0;
+	double missTotalStartMs = 0.0;
 	strncpy(previousSplashName, gCurrentSplashName, sizeof(previousSplashName) - 1);
 	previousSplashName[sizeof(previousSplashName) - 1] = '\0';
 #endif
@@ -796,6 +1148,10 @@ LoadSplash(const char *name)
 	if(tex == nil){
 		CFileMgr::SetDir("TXD\\");
 		sprintf(filename, "%s.txd", name);
+#ifdef WII
+		missTotalStartMs = RsTimer();
+		double missStageStartMs = missTotalStartMs;
+#endif
 		if(splash.m_pTexture) {
 #ifdef WII
 			RwRenderStateSet(rwRENDERSTATETEXTURERASTER, nil);
@@ -804,18 +1160,32 @@ LoadSplash(const char *name)
 		}
 		if(txd)
 			CTxdStore::RemoveTxd(splashTxdId);
+#ifdef WII
+		missReleaseMs = RsTimer() - missStageStartMs;
+		missStageStartMs = RsTimer();
+#endif
 #ifdef RW_GX
 		// [GC-LOADSC] Give full-screen splash/intro uploads a short-lived
 		// aggressive window so image-raster/raster-unlock does not fail first.
 		rw::gx::pushCriticalUiUploadContext(name);
 #endif
+#ifdef WII
+		bool loadOk = CTxdStore::LoadTxd(splashTxdId, filename);
+		missLoadMs = RsTimer() - missStageStartMs;
+		missStageStartMs = RsTimer();
+		if(loadOk){
+#else
 		if(CTxdStore::LoadTxd(splashTxdId, filename)){
+#endif
 			if(CTxdStore::GetNumRefs(splashTxdId) == 0)
 				CTxdStore::AddRef(splashTxdId);
 			CTxdStore::PushCurrentTxd();
 			CTxdStore::SetCurrentTxd(splashTxdId);
 			splash.SetTexture(name);
 			CTxdStore::PopCurrentTxd();
+#ifdef WII
+			missBindMs = RsTimer() - missStageStartMs;
+#endif
 			strncpy(gCurrentSplashName, name, sizeof(gCurrentSplashName) - 1);
 			gCurrentSplashName[sizeof(gCurrentSplashName) - 1] = '\0';
 			printf("[LOADSC] loaded '%s' texture='%s' slot=%d refs=%d sprite=%p raster=%p\n",
@@ -832,6 +1202,14 @@ LoadSplash(const char *name)
 			printf("[LOADSC-GX] splash texture missing after critical upload: %s\n", name);
 #endif
 		CFileMgr::SetDir("");
+#ifdef WII
+		printf("[WII-LOADSC-MISS] name='%s' prev='%s' release=%.2fms loadTxd=%.2fms bind=%.2fms total=%.2fms ok=%d\n",
+		       name,
+		       previousSplashName[0] != '\0' ? previousSplashName : "<none>",
+		       missReleaseMs, missLoadMs, missBindMs,
+		       RsTimer() - missTotalStartMs,
+		       splash.m_pTexture != nil);
+#endif
 	}else{
 		strncpy(gCurrentSplashName, name, sizeof(gCurrentSplashName) - 1);
 		gCurrentSplashName[sizeof(gCurrentSplashName) - 1] = '\0';
@@ -1019,14 +1397,29 @@ LoadingIslandScreen(const char *levelName)
 {
 	CSprite2d *splash;
 	Const char *islandSplash = GetLevelSplashScreen(CGame::currLevel);
+#ifdef WII
+	bool needsSyncLoad = WiiSplashNeedsSyncLoad(islandSplash);
+	double loadStartMs = 0.0;
+	double loadMs = 0.0;
+	double targetPresentStartMs = 0.0;
+#endif
 
+#ifdef WII
+	if(needsSyncLoad)
+		WiiPresentIslandFallback(levelName, islandSplash);
+	loadStartMs = RsTimer();
+#endif
 	splash = LoadSplash(islandSplash ? islandSplash : nil);
+#ifdef WII
+	loadMs = RsTimer() - loadStartMs;
+#endif
 #ifdef WII
 	printf("[LOADSC-ISLAND] level='%s' currLevel=%d splash='%s' current='%s'\n",
 	       levelName ? levelName : "<none>",
 	       (int)CGame::currLevel,
 	       islandSplash ? islandSplash : "<keep-current>",
 	       gCurrentSplashName[0] ? gCurrentSplashName : "<none>");
+	targetPresentStartMs = RsTimer();
 #endif
 	if(!DoRWStuffStartOfFrame(0, 0, 0, 0, 0, 0, 255))
 		return;
@@ -1041,6 +1434,15 @@ LoadingIslandScreen(const char *levelName)
 	splash->Draw(CRect(0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT), col, col, col, col);
 	CFont::DrawFonts();
 	DoRWStuffEndOfFrame();
+#ifdef WII
+	printf("[WII-ISLAND-SPLASH] target-present level='%s' splash='%s' sync=%d load=%.2fms present=%.2fms current='%s'\n",
+	       levelName ? levelName : "<none>",
+	       islandSplash ? islandSplash : "<keep-current>",
+	       needsSyncLoad,
+	       loadMs,
+	       RsTimer() - targetPresentStartMs,
+	       gCurrentSplashName[0] ? gCurrentSplashName : "<none>");
+#endif
 }
 
 void
@@ -1897,22 +2299,19 @@ Idle(void *arg)
 	double wiiStageAfterDoFadeMs = wiiStageFrameStartMs;
 	double wiiStageAfterRender2dFadeMs = wiiStageFrameStartMs;
 	double wiiStageAfterEndFrameMs = wiiStageFrameStartMs;
-	double wiiDiagLogStartMs = wiiStageFrameStartMs;
-	WiiResetFrameDiagnostics();
-	gWiiFrameDiag.diagLogMs = gWiiPrevDiagLogMs;
 #endif
 	CTimer::Update();
 #ifdef WII
 	wiiStageAfterUpdateMs = RsTimer();
+	gWiiPrevFrameDiag.timeStepMs = CTimer::GetTimeStep() / 50.0 * 1000.0;
+	double wiiDiagLogStartMs = RsTimer();
+#if WII_SLOW_FRAME_DIAGNOSTICS
+	WiiCheckCompletedFrameDiagnostics(gWiiPrevFrameDiag);
+#endif
+	WiiResetFrameDiagnostics();
+	gWiiFrameDiag.diagLogMs = RsTimer() - wiiDiagLogStartMs;
 #endif
 	GC_IDLE_CUT_LOG("begin");
-
-#ifdef WII
-	static uint32 s_wiiTimingLogFrame = 0;
-	double wiiTsMs = CTimer::GetTimeStep() / 50.0 * 1000.0;
-	bool wiiLongFrame = wiiTsMs >= 24.0;
-	bool logTimingSample = s_wiiTimingLogFrame < 12 || (s_wiiTimingLogFrame % 240) == 0;
-#endif
 
 #if REAL_GAMECUBE
 	((void)0); // [GC-DEBUG-DISABLED]
@@ -1945,6 +2344,12 @@ Idle(void *arg)
 	tbEndTimer("DMAudio.Service");
 #ifdef WII
 	wiiStageAfterAudioMs = RsTimer();
+	wiiStageAfterRenderListMs = wiiStageAfterAudioMs;
+	wiiStageAfterPreRenderMs = wiiStageAfterAudioMs;
+	wiiStageAfterRenderSceneMs = wiiStageAfterAudioMs;
+	wiiStageAfterEffectsMs = wiiStageAfterAudioMs;
+	wiiStageAfterMotionBlurMs = wiiStageAfterAudioMs;
+	wiiStageAfterRender2dMs = wiiStageAfterAudioMs;
 #endif
 	GC_IDLE_CUT_LOG("after-audio");
 
@@ -1971,8 +2376,15 @@ Idle(void *arg)
 		return;
 
 	PUSH_MEMID(MEMID_RENDER);
+	#ifdef WII
+	const bool wiiIslandTransitionSplash = WiiIsIslandTransitionSplashActive();
+	#endif
 
-	if(!FrontEndMenuManager.m_bMenuActive && TheCamera.GetScreenFadeStatus() != FADE_2)
+	if(!FrontEndMenuManager.m_bMenuActive && TheCamera.GetScreenFadeStatus() != FADE_2
+	#ifdef WII
+	   && !wiiIslandTransitionSplash
+	#endif
+	  )
 	{
 		// This is from SA, but it's nice for windowed mode
 #if defined(GTA_PC) && !defined(RW_GL3)
@@ -2093,6 +2505,13 @@ Idle(void *arg)
 #endif
 	}
 
+	#ifdef WII
+	if(wiiIslandTransitionSplash){
+		WiiDrawIslandTransitionSplash();
+		wiiStageAfterRender2dMs = RsTimer();
+	}
+	#endif
+
 	tbStartTimer(0, "RenderMenus");
 	RenderMenus();
 	tbEndTimer("RenderMenus");
@@ -2132,6 +2551,21 @@ Idle(void *arg)
 	DoRWStuffEndOfFrame();
 #ifdef WII
 	wiiStageAfterEndFrameMs = RsTimer();
+	gWiiFrameDiag.sequence = ++gWiiFrameDiagSequence;
+	gWiiFrameDiag.updateMs = wiiStageAfterUpdateMs - wiiStageFrameStartMs;
+	gWiiFrameDiag.processMs = wiiStageAfterProcessMs - wiiStageAfterUpdateMs;
+	gWiiFrameDiag.audioMs = wiiStageAfterAudioMs - wiiStageAfterProcessMs;
+	gWiiFrameDiag.renderListMs = wiiStageAfterRenderListMs - wiiStageAfterAudioMs;
+	gWiiFrameDiag.preRenderMs = wiiStageAfterPreRenderMs - wiiStageAfterRenderListMs;
+	gWiiFrameDiag.renderSceneMs = wiiStageAfterRenderSceneMs - wiiStageAfterPreRenderMs;
+	gWiiFrameDiag.effectsMs = wiiStageAfterEffectsMs - wiiStageAfterRenderSceneMs;
+	gWiiFrameDiag.motionBlurMs = wiiStageAfterMotionBlurMs - wiiStageAfterEffectsMs;
+	gWiiFrameDiag.render2dMs = wiiStageAfterRender2dMs - wiiStageAfterMotionBlurMs;
+	gWiiFrameDiag.menusMs = wiiStageAfterMenusMs - wiiStageAfterRender2dMs;
+	gWiiFrameDiag.fadeMs = wiiStageAfterDoFadeMs - wiiStageAfterMenusMs;
+	gWiiFrameDiag.render2dFadeMs = wiiStageAfterRender2dFadeMs - wiiStageAfterDoFadeMs;
+	gWiiFrameDiag.endFrameMs = wiiStageAfterEndFrameMs - wiiStageAfterRender2dFadeMs;
+	CStreaming::GetFrameWork(&gWiiFrameDiag.streaming);
 	gWiiFrameDiag.cpuBeforePresentMs =
 		(wiiStageAfterEndFrameMs - wiiStageFrameStartMs) - gWiiFrameDiag.presentSubmitMs;
 	if(gWiiFrameDiag.cpuBeforePresentMs < 0.0)
@@ -2143,11 +2577,7 @@ Idle(void *arg)
 	gWiiFrameDiag.frameLoopMs = gWiiPrevFrameDiag.frameLoopMs;
 	gWiiFrameDiag.processToPresentMs =
 		Max(0.0, wiiStageAfterEndFrameMs - wiiStageAfterProcessMs);
-	wiiDiagLogStartMs = RsTimer();
-	(void)logTimingSample;
-	gWiiPrevDiagLogMs = RsTimer() - wiiDiagLogStartMs;
 	gWiiPrevFrameDiag = gWiiFrameDiag;
-	s_wiiTimingLogFrame++;
 #endif
 	GC_IDLE_CUT_LOG("end");
 

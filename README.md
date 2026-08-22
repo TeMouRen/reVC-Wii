@@ -4,7 +4,7 @@
 
 这是一个为 `reVC` 整理的、以 Nintendo Wii 为主目标的精简上传版本。
 
-它继承了此前 GameCube GX 分支已经验证过的 PowerPC、大端序和 GX 渲染路径，并把当前重点转向 Wii 原生启动、MEM2 内存利用、ISO 封装，以及实机 / Dolphin 验证。
+它继承了此前 GameCube GX 分支已经验证过的 PowerPC、大端序和 GX 渲染路径。Wii 原生目标、MEM2 分区和 GX 驻留账本已经落地；当前工作集中在流送验证、静态纹理内存优化、渲染兼容和资产构建。
 
 ## 仓库定位
 
@@ -17,11 +17,11 @@
 
 - `README.md` - 中文总览
 - `README.en.md` - 英文总览
-- `docs/README-WII-MIGRATION.md` - Wii 迁移文档入口
-- `docs/wii-current-status.md` - 当前迁移状态与为什么从 GC 转向 Wii
-- `docs/wii-migration-plan.md` - Wii 迁移计划
-- `docs/wii-code-map.md` - 关键代码入口索引
-- `docs/wii-migration-handoff.md` - 迁移交接说明
+- `docs/README-WII-MIGRATION.md` - 当前 Wii 文档入口
+- `docs/wii-memory-streaming-performance-analysis.md` - Wii 内存、流送与性能参考
+- `docs/PS2_WII_STREAMING_HANDOFF.md` - PS2 对照证据与已实现的驻留账本记录
+- `docs/WII_STATIC_TEXTURE_OPTIMIZATION_PLAN.md` - 当前静态纹理优化方向
+- `docs/wii-gx-rendering-lessons.md` - 当前 GX 渲染与 alpha 经验
 - `docs/WII_ISO打包与提取.md` - Wii 提取 / 回封装说明
 - `tools/README.md` - 当前仓库内工具说明
 - `vendor/librw/README.md` - vendored librw 上游说明
@@ -62,32 +62,18 @@
 7. `C:\devkitPro\msys2\usr\bin\cmake.exe`
 8. `C:\devkitPro\msys2\usr\bin\ninja.exe`
 
-附带的 `build.ps1` 会在开始构建前检查这些路径。
+`build.sh` 直接使用这些路径。`build.ps1` 只是无参数兼容包装，最终仍执行 `bash ./build.sh`。
+默认构建启用流送内存诊断，五秒驻留摘要由 `WII_STREAM_MEMORY_DIAGNOSTICS` 控制；事件级调试日志保持关闭。
 
 ## 快速构建
 
-在 PowerShell 中执行：
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\build.ps1
-```
-
-常用参数：
-
-```powershell
-.\build.ps1 -BuildDir build
-.\build.ps1 -Configuration Debug
-.\build.ps1 -Clean
-.\build.ps1 -SkipDol
-.\build.ps1 -DeployDir "F:\path\to\reVC\sys"
-```
-
-如果你更习惯 shell，也可以使用：
+标准 Wii 构建只使用：
 
 ```bash
-./build.sh
+bash ./build.sh
 ```
+
+在 PowerShell 中可以无参数运行 `.\build.ps1`，它只会转发到同一命令；自定义参数会被拒绝。
 
 ## 输出文件
 
@@ -95,8 +81,9 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 - `build\src\reVC`
 - `build\src\main.dol`
+- `F:\Wii Work\提取测试\reVC\sys\main.dol`
 
-如果使用了 `-DeployDir`，脚本还会把 `main.dol` 复制到你指定的 `sys/` 目录中。
+`build.sh` 会把 `main.dol` 部署到上面的固定 extracted-disc `sys` 目录。
 
 ## 运行与资源说明
 
@@ -141,10 +128,17 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 这份上传版的重点不是“已经做完的最终 Wii 发布版”，而是“当前可继续推进的 Wii 基线”。
 
-目前已经明确的方向是：
+当前已落地：
 
 - 保留 GX 渲染主线
-- 保留先前 GC 分支已经验证过的可运行部分
-- 把 Wii 分支的主要工作重心放在原生启动、平台拆分和 MEM2 压力转移上
+- Wii 原生构建入口和 `src/skel/wii/`
+- MEM2 generic/newlib/GX 分区与驻留归因日志
+- `bash ./build.sh` 的固定构建、DOL 转换和部署流程
+
+当前推进方向：
+
+- 用 run-specific 日志验证高速移动下的流送和驻留压力
+- 通过离线逐纹理格式选择降低 GX 驻留，而不改 admission/淘汰策略
+- 保持 MatFX、材质查找和资产 fallback 行为可验证
 
 如果你接手继续做，建议先从 `docs/README-WII-MIGRATION.md` 开始读。

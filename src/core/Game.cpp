@@ -78,6 +78,10 @@
 #include "VisibilityPlugins.h"
 #include "WaterCannon.h"
 #include "WaterLevel.h"
+
+#ifdef WII
+#include <ogc/lwp_watchdog.h>
+#endif
 #include "Weapon.h"
 #include "WeaponEffects.h"
 #include "Weather.h"
@@ -95,6 +99,15 @@
 #include "VarConsole.h"
 #ifdef USE_TEXTURE_POOL
 #include "TexturePools.h"
+#endif
+
+#ifdef WII
+namespace rw { namespace gx {
+void texPoolEnforceBudgetImmediate(const char *reason, int maxSteps);
+void texPoolResetSoftBudget(void);
+bool gxMemCompact(const char *reason, bool force);
+} }
+extern "C" void WiiMemoryDumpStats(const char *reason);
 #endif
 
 #if REAL_GAMECUBE
@@ -753,6 +766,11 @@ bool CGame::Initialise(const char* datFile)
 	DMAudio.SetStartingTrackPositions(TRUE);
 	DMAudio.ChangeMusicMode(MUSICMODE_GAME);
 #endif
+#ifdef WII
+	rw::gx::texPoolResetSoftBudget();
+	rw::gx::texPoolEnforceBudgetImmediate("game-init-complete", 64);
+	WiiMemoryDumpStats("game-init-complete");
+#endif
 	return true;
 }
 
@@ -1020,13 +1038,29 @@ void CGame::InitialiseWhenRestarting(void)
 #ifdef USE_TEXTURE_POOL
 	_TexturePoolsUnknown(true);
 #endif
+#ifdef WII
+	rw::gx::texPoolResetSoftBudget();
+	rw::gx::texPoolEnforceBudgetImmediate("game-restart-complete", 64);
+	WiiMemoryDumpStats("game-restart-complete");
+#endif
 }
 
-void CGame::Process(void) 
+void CGame::Process(void)
 {
+#ifdef WII
+	uint64 wiiProcessStartTicks = gettime();
+	uint64 wiiAfterTidyTicks = wiiProcessStartTicks;
+	uint64 wiiAfterFrontendTicks = wiiProcessStartTicks;
+	uint64 wiiAfterStreamingTicks = wiiProcessStartTicks;
+	uint64 wiiAfterScriptsTicks = wiiProcessStartTicks;
+	uint64 wiiAfterWorldTicks = wiiProcessStartTicks;
+#endif
 	CPad::UpdatePads();
 #ifdef USE_CUSTOM_ALLOCATOR
 	ProcessTidyUpMemory();
+#endif
+#ifdef WII
+	wiiAfterTidyTicks = gettime();
 #endif
 #ifdef DEBUGMENU
 	DebugMenuProcess();
@@ -1037,6 +1071,9 @@ void CGame::Process(void)
 		FrontEndMenuManager.Process();
 
 	CTheZones::Update();
+#ifdef WII
+	wiiAfterFrontendTicks = gettime();
+#endif
 #ifdef SECUROM
 	if (CTimer::GetTimeInMilliseconds() >= (35 * 60 * 1000) && gameProcessPirateCheck == 0){
 		// if game not pirated
@@ -1049,6 +1086,9 @@ void CGame::Process(void)
 	CStreaming::Update();
 	uint32 processTime = CTimer::GetCurrentTimeInCycles() / CTimer::GetCyclesPerMillisecond() - startTime;
 #ifdef WII
+	wiiAfterStreamingTicks = gettime();
+	wiiAfterScriptsTicks = wiiAfterStreamingTicks;
+	wiiAfterWorldTicks = wiiAfterStreamingTicks;
 	const bool wiiStreamingOverBudget = processTime >= 2;
 	const bool wiiThrottlePopulation = WiiShouldThrottlePopulationWork();
 	const bool wiiThrottleTraffic = WiiShouldThrottleTrafficGeneration();
@@ -1075,6 +1115,9 @@ void CGame::Process(void)
 		PUSH_MEMID(MEMID_SCRIPT);
 		CTheScripts::Process();
 		POP_MEMID();
+#ifdef WII
+		wiiAfterScriptsTicks = gettime();
+#endif
 		GC_CUT_FRAME_LOG("after-scripts");
 
 		CCollision::Update();
@@ -1138,6 +1181,9 @@ void CGame::Process(void)
 		CWorld::Process();
 		GC_CUT_FRAME_LOG("after-world");
 		POP_MEMID();
+#ifdef WII
+		wiiAfterWorldTicks = gettime();
+#endif
 
 		gAccidentManager.Update();
 		CPacManPickups::Update();
@@ -1190,6 +1236,21 @@ void CGame::Process(void)
 	}
 #ifdef GTA_PS2
 	CMemCheck::DoTest();
+#endif
+#ifdef WII
+	uint64 wiiProcessEndTicks = gettime();
+	uint32 wiiProcessMs = (uint32)ticks_to_millisecs(
+		wiiProcessEndTicks - wiiProcessStartTicks);
+	if(wiiProcessMs >= 50u)
+		SYS_Report("[WII-GAME-STAGE] total=%ums tidy=%ums frontend=%ums streaming=%ums scripts=%ums world=%ums tail=%ums pending=%d\n",
+		           (unsigned)wiiProcessMs,
+		           (unsigned)ticks_to_millisecs(wiiAfterTidyTicks - wiiProcessStartTicks),
+		           (unsigned)ticks_to_millisecs(wiiAfterFrontendTicks - wiiAfterTidyTicks),
+		           (unsigned)ticks_to_millisecs(wiiAfterStreamingTicks - wiiAfterFrontendTicks),
+		           (unsigned)ticks_to_millisecs(wiiAfterScriptsTicks - wiiAfterStreamingTicks),
+		           (unsigned)ticks_to_millisecs(wiiAfterWorldTicks - wiiAfterScriptsTicks),
+		           (unsigned)ticks_to_millisecs(wiiProcessEndTicks - wiiAfterWorldTicks),
+		           CStreaming::ms_numModelsRequested);
 #endif
 }
 
@@ -1452,6 +1513,9 @@ void CGame::DrasticTidyUpMemory(bool flushDraw)
 
 void CGame::TidyUpMemory(bool moveTextures, bool flushDraw)
 {
+#ifdef WII
+	uint64 wiiTidyStartTicks = gettime();
+#endif
 #ifdef USE_CUSTOM_ALLOCATOR
 	printf("Largest free block before tidy %d\n", gMainHeap.GetLargestFreeBlock());
 
@@ -1496,6 +1560,21 @@ void CGame::TidyUpMemory(bool moveTextures, bool flushDraw)
 	}
 
 	printf("Largest free block after tidy %d\n", gMainHeap.GetLargestFreeBlock());
+#endif
+#ifdef WII
+	if (moveTextures)
+		rw::gx::gxMemCompact(flushDraw ? "game-tidy-flush" : "game-tidy", true);
+	uint32 wiiTidyMs = (uint32)ticks_to_millisecs(gettime() - wiiTidyStartTicks);
+	if(wiiTidyMs >= 20u){
+		uint32 largestFree = 0;
+#ifdef USE_CUSTOM_ALLOCATOR
+		largestFree = gMainHeap.GetLargestFreeBlock();
+#endif
+		SYS_Report("[WII-TIDY-STAGE] total=%ums moveTextures=%d flushDraw=%d largest=%uKB\n",
+		           (unsigned)wiiTidyMs, moveTextures ? 1 : 0,
+		           flushDraw ? 1 : 0,
+		           (unsigned)(largestFree / 1024u));
+	}
 #endif
 	}
 

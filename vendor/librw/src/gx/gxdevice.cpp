@@ -19,6 +19,12 @@
 #include "../rwengine.h"
 #include "../rwrender.h"
 #include "rwgx.h"
+#include "gxmemory.h"
+
+// Define GX_PIPELINE_DIAGNOSTICS when targeted device tracing is required.
+#ifndef GX_PIPELINE_DIAGNOSTICS
+#define printf(...) ((void)sizeof((::printf)(__VA_ARGS__)))
+#endif
 
 // 鈽?Exposed for diagnostic heartbeat in gamecube.cpp (global C linkage)
 extern "C" {
@@ -635,6 +641,9 @@ endUpdate(Camera * /*cam*/)
         VIDEO_SetNextFramebuffer(fb);
         VIDEO_Flush();
         s_xfbIdx ^= 1;
+#ifdef WII
+        gxMemRunPendingCompactionAtGpuIdle("post-present");
+#endif
     } else {
         // Both XFBs are NULL 鈥?can't output anything!
         static int nullWarn = 0;

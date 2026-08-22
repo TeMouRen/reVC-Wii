@@ -43,6 +43,10 @@
 #include "wii_save.h"
 #include "gxmemory.h"
 
+namespace rw { namespace gx {
+void texPoolEnforceBudgetImmediate(const char *reason, int maxSteps);
+} }
+
 static GXRModeObj *rmode   = NULL;
 static void       *xfb     = NULL;
 #define DEFAULT_FIFO_SIZE (256u * 1024u)
@@ -277,7 +281,7 @@ static void
 GcWarmBootSettleFirstGameplay(void)
 {
     SYS_Report("[reVC-WII] Warm boot settle START\n");
-    rw::gx::texPoolEnforceBudget("warm-boot-settle");
+    rw::gx::texPoolEnforceBudgetImmediate("warm-boot-settle", 32);
 
     // The restart path rebuilds the world, but it does not eagerly restore
     // the same initial streaming set as the first full game init.
@@ -287,6 +291,7 @@ GcWarmBootSettleFirstGameplay(void)
     CStreaming::RequestBigBuildings(LEVEL_GENERIC);
     CStreaming::LoadAllRequestedModels(false);
     CStreaming::LoadAllRequestedModels(false);
+    rw::gx::texPoolEnforceBudgetImmediate("warm-boot-loaded", 32);
     CTimer::Update();
 
     // Present a couple of black frames so GX state/front-end leftovers settle
@@ -784,6 +789,7 @@ static void gc_power_cb(void) {
 // GameCube å¥å£ç?
 // ============================================================
 int main(int argc, char *argv[]) {
+	InitMemoryMgr();
 
     SYS_SetResetCallback(gc_reset_cb);
     SYS_SetPowerCallback(gc_power_cb);
@@ -835,8 +841,6 @@ int main(int argc, char *argv[]) {
     }
 
     // ââ GC Custom Allocator: grab a big block from MEM1 now (before heap fragments) ââ
-    InitMemoryMgr();
-
     memset(&RsGlobal, 0, sizeof(RsGlobal));
     RsGlobal.appName       = "reVC";
     RsGlobal.maximumWidth  = 640;

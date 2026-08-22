@@ -63,11 +63,7 @@ LoadPlayerDff(void)
 	}
 
 	FindPlayerDff(offset, size);
-#ifdef WII
-	buffer = (uint8*)MemoryMgrMallocAlignMem2(size << 11, 2048);
-#else
 	buffer = (uint8*)RwMallocAlign(size << 11, 2048);
-#endif
 	CdStreamRead(0, buffer, offset, size);
 	CdStreamSync(0);
 
@@ -84,11 +80,7 @@ LoadPlayerDff(void)
 	}
 
 	RwStreamClose(stream, &mem);
-#ifdef WII
-	MemoryMgrFreeAlignMem2(buffer);
-#else
 	RwFreeAlign(buffer);
-#endif
 
 	if (streamWasAdded)
 		CdStreamRemoveImages();

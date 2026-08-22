@@ -121,7 +121,7 @@ CFileLoader::LoadLevel(const char *filename)
 		if(strncmp(line, "EXIT", 4) == 0)
 			break;
 
-			printf("[LOAD-LINE] %s\n", line);
+		// [LOAD-LINE] startup dump disabled: it obscures runtime GX diagnostics.
 		if(strncmp(line, "IMAGEPATH", 9) == 0){
 			RwImageSetPath(line + 10);
 		}else if(strncmp(line, "TEXDICTION", 10) == 0){

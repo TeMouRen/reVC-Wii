@@ -539,7 +539,12 @@ int8 CRunningScript::ProcessCommands1200To1299(int32 command)
 		char key[KEY_LENGTH_IN_SCRIPT];
 		CTheScripts::ReadTextLabelFromScript(&m_nIp, key);
 		m_nIp += KEY_LENGTH_IN_SCRIPT;
-		CStreaming::RequestAnim(CAnimManager::GetAnimationBlockIndex(key), STREAMFLAGS_SCRIPTOWNED);
+		int32 flags = STREAMFLAGS_SCRIPTOWNED;
+#ifdef WII
+		if(m_bIsMissionScript)
+			flags |= STREAMFLAGS_PRIORITY;
+#endif
+		CStreaming::RequestAnim(CAnimManager::GetAnimationBlockIndex(key), flags);
 		return 0;
 	}
 	case COMMAND_HAS_ANIMATION_LOADED:
@@ -1165,8 +1170,9 @@ int8 CRunningScript::ProcessCommands1300To1399(int32 command)
 	}
 	case COMMAND_LOAD_MISSION_TEXT:
 	{
-		char key[8];
+		char key[KEY_LENGTH_IN_SCRIPT + 1] = { 0 };
 		CTheScripts::ReadTextLabelFromScript(&m_nIp, key);
+		key[KEY_LENGTH_IN_SCRIPT] = '\0';
 		m_nIp += KEY_LENGTH_IN_SCRIPT;
 		TheText.LoadMissionText(key);
 		return 0;

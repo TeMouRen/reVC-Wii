@@ -17,8 +17,54 @@
 #ifndef _WIN32
 #include "crossplatform.h"
 #endif
+#ifdef WII
+#include "MemoryMgr.h"
+#endif
 
 using namespace rw;
+
+#ifdef WII
+static bool
+IsCriticalUiRwAlloc(size_t size)
+{
+#ifdef RW_GX
+	return size >= 64u * 1024u && gx::isCriticalUiUploadContextActive();
+#else
+	(void)size;
+	return false;
+#endif
+}
+
+static bool
+ShouldRouteRwAllocToMem2(size_t size, uint32 hint)
+{
+	const uint32 rwId = hint & 0xFFFFu;
+	const uint32 dur = hint & 0xF0000u;
+
+	if(IsCriticalUiRwAlloc(size))
+		return true;
+	if(dur < MEMDUR_EVENT)
+		return false;
+	if(size < 12 * 1024)
+		return false;
+
+	switch(rwId){
+	case ID_GEOMETRY & 0xFFFFu:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static void
+RecordRwResidentPool(void *mem, uint32 hint)
+{
+	if(mem == nil || (hint & 0xF0000u) < MEMDUR_EVENT)
+		return;
+	if(WiiMemoryOwnsGenericMem2(mem))
+		WiiMemoryRecordResidentPool(WII_STREAM_PRESSURE_GENERIC);
+}
+#endif
 
 RwUInt8 RwObjectGetType(const RwObject *obj) { return obj->type; }
 RwFrame* rwObjectGetParent(const RwObject *obj) { return (RwFrame*)obj->parent; }
@@ -405,6 +451,7 @@ RwBool rwNativeTextureHackRead(RwStream *stream, RwTexture **tex, RwInt32 size)
 	if((*tex)->raster && (*tex)->raster->platform == PLATFORM_GX) {
 		rw::gx::syncNativeSamplerFromTexture(*tex, (*tex)->raster);
 		rw::gx::texPoolRename((*tex)->raster, (*tex)->name);
+		#if 0 // [FAKE-TXD-CONVERT] focused conversion tracing disabled for normal runs.
 		if(fakeShouldLogFocusedConversionResult((*tex)->name)) {
 			printf("[FAKE-TXD-CONVERT] tex=%s raster=%p plat=%d fmt=0x%X %dx%d depth=%d addr=%u/%u filter=%d\n",
 			       (*tex)->name,
@@ -418,6 +465,7 @@ RwBool rwNativeTextureHackRead(RwStream *stream, RwTexture **tex, RwInt32 size)
 			       (unsigned)(*tex)->getAddressV(),
 			       (int)(*tex)->getFilter());
 		}
+		#endif
 	}
 #endif
 #endif
@@ -661,8 +709,72 @@ RwBool RwRenderStateSet(RwRenderState state, void *value)
 static rw::MemoryFunctions gMemfuncs;
 static void *(*real_malloc)(size_t size);
 static void *(*real_realloc)(void *mem, size_t newSize);
-static void *mallocWrap(size_t sz, uint32 hint) { if(sz == 0) return nil; return real_malloc(sz); }
-static void *reallocWrap(void *p, size_t sz, uint32 hint) { return real_realloc(p, sz); }
+#ifdef WII
+static uint32 sRwMem2OverflowCount;
+static uint32 sRwMem2UiDirectCount;
+#endif
+static void *mallocWrap(size_t sz, uint32 hint)
+{
+	if(sz == 0)
+		return nil;
+#ifdef WII
+	bool triedMem2 = ShouldRouteRwAllocToMem2(sz, hint);
+	if(triedMem2){
+		void *mem = MemoryMgrMallocMem2Strict(sz, 32);
+		if(mem){
+			if(IsCriticalUiRwAlloc(sz)){
+				sRwMem2UiDirectCount++;
+				if(sRwMem2UiDirectCount <= 8 ||
+				   (sRwMem2UiDirectCount & (sRwMem2UiDirectCount - 1)) == 0)
+					printf("[WII-MEM] rwMalloc UI direct generic MEM2 size=%u hint=0x%08X count=%u\n",
+					       (unsigned)sz, (unsigned)hint,
+					       (unsigned)sRwMem2UiDirectCount);
+			}
+			RecordRwResidentPool(mem, hint);
+			return mem;
+		}
+	}
+#endif
+	void *mem = real_malloc(sz);
+#ifdef WII
+	if(mem == nil && !triedMem2){
+		mem = MemoryMgrMallocMem2Strict(sz, 32);
+		if(mem){
+			sRwMem2OverflowCount++;
+			if(sRwMem2OverflowCount <= 8 ||
+			   (sRwMem2OverflowCount & (sRwMem2OverflowCount - 1)) == 0)
+				printf("[WII-MEM] rwMalloc overflow used generic MEM2 size=%u hint=0x%08X count=%u\n",
+				       (unsigned)sz, (unsigned)hint,
+				       (unsigned)sRwMem2OverflowCount);
+		}
+	}
+	RecordRwResidentPool(mem, hint);
+#endif
+	return mem;
+}
+static void *reallocWrap(void *p, size_t sz, uint32 hint)
+{
+#ifdef WII
+	if(p == nil)
+		return mallocWrap(sz, hint);
+
+	bool ownsMem2 = WiiMemoryOwnsGenericMem2(p);
+	bool routeToMem2 = ShouldRouteRwAllocToMem2(sz, hint);
+	void *mem = nil;
+	if(routeToMem2){
+		mem = MemoryMgrReallocMem2Strict(p, sz, 32);
+		if(mem == nil && !ownsMem2)
+			mem = real_realloc(p, sz);
+	}else if(ownsMem2)
+		mem = MemoryMgrRealloc(p, sz);
+	else
+		mem = real_realloc(p, sz);
+	RecordRwResidentPool(mem, hint);
+	return mem;
+#else
+	return real_realloc(p, sz);
+#endif
+}
 
 
 // WARNING: unused parameters
@@ -1109,6 +1221,7 @@ fakeFindFocusedAtomicTexture(rw::Atomic *atomic)
 RpAtomic *AtomicDefaultRenderCallBack(RpAtomic * atomic)
 {
 #ifdef WII
+#if 0 // [ATOMIC-FOCUS]/[ATOMIC-ALPHA] render diagnostics disabled for normal runs.
 	static int s_focusAtomicRenderLogCount = 0;
 	const char *focusTex = fakeFindFocusedAtomicTexture(atomic);
 	if(focusTex && s_focusAtomicRenderLogCount < 160){
@@ -1274,6 +1387,7 @@ RpAtomic *AtomicDefaultRenderCallBack(RpAtomic * atomic)
 		}
 		s_focusAtomicRenderLogCount++;
 	}
+#endif
 #endif
 	Atomic::defaultRenderCB(atomic);
 	return atomic;

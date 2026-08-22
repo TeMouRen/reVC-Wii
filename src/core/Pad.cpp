@@ -63,6 +63,7 @@ GcScaleTrigger(u8 value, bool digitalClick, int16 previousValue)
 #include "Frontend.h"
 #include "Camera.h"
 #include "Game.h"
+#include "MusicManager.h"
 
 #if GX_CONSOLE
 enum GcPadAction
@@ -1427,9 +1428,13 @@ void CPad::AddToCheatString(char c)
 	else if ( !_CHEATCMP("TCT123CCCCCC") )
 		VehicleCheat(MI_RHINO);
 
-	// "UDUUD" - UP DOWN UP UP DOWN
+	// "UDUUD" - UP DOWN UP UP DOWN: spawn Washington
 	else if ( !_CHEATCMP("DUUDU") )
-		VehicleCheat(MI_SEASPAR);
+		VehicleCheat(MI_WASHING);
+
+	// "ULLRL" - UP LEFT LEFT RIGHT LEFT
+	else if ( !_CHEATCMP("LRLLU") )
+		MusicManager.StartModernTalkingRadio();
 
 	// "CCCSSSSS1TCT"	-	CIRCLE CIRCLE CIRCLE SQUARE SQUARE SQUARE SQUARE SQUARE L1 TRIANGLE CIRCLE TRIANGLE
 	else if ( !_CHEATCMP("TCT1SSSSSCCC") )

@@ -11,7 +11,7 @@
 #include "CivilianPed.h"
 #include "Clock.h"
 #include "CopPed.h"
-#include "Debug.h"
+#include "../core/Debug.h"
 #include "DMAudio.h"
 #include "EmergencyPed.h"
 #include "FileMgr.h"

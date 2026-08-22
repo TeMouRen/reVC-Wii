@@ -841,42 +841,66 @@ static ssize_t gcm_read_r(struct _reent *r,
     }
 
     /* Bounce buffer — static to avoid memalign/free heap fragmentation.
-     * Single-sector reads hit the static buffer; larger reads fall back. */
-    u32 alloc_sz = (skip + (u32)to_read + (GCM_SECTOR_SIZE - 1u))
-                   & ~(GCM_SECTOR_SIZE - 1u);
-
+     * Read aligned middle sectors directly. Only unaligned edges use the
+     * fixed bounce sector, so file reads never need a large temporary heap
+     * allocation. The disc mutex makes the shared scratch buffer safe. */
     static u8 s_bounce[GCM_SECTOR_SIZE] ATTRIBUTE_ALIGN(32);
-    u8 *bounce;
-    bool must_free;
+    u8 *dst = (u8 *)ptr;
+    size_t remaining = to_read;
+    u32 read_off = aligned_off;
+    u32 read_skip = skip;
 
-    if (alloc_sz <= GCM_SECTOR_SIZE) {
-        bounce    = s_bounce;
-        must_free = false;
-    } else {
-        bounce    = (u8 *)memalign(32u, alloc_sz);
-        must_free = true;
-    }
+    while (remaining > 0u) {
+        if (read_skip == 0u &&
+            (((uintptr_t)dst & 31u) == 0u) &&
+            remaining >= GCM_SECTOR_SIZE) {
+            u32 direct = (u32)remaining & ~(GCM_SECTOR_SIZE - 1u);
+            if (!dvd_read_aligned(dst, direct, (s64)read_off)) {
+                size_t copied = to_read - remaining;
+                SYS_Report("[GCM_VFS] read fail direct-middle disc=0x%08X pos=%u req=%lu clamp=%lu file=%u aligned=0x%08X direct=%u copied=%u\n",
+                           h->disc_offset, h->current_pos, (unsigned long)len,
+                           (unsigned long)to_read, h->file_size, read_off,
+                           direct, (u32)copied);
+                if (copied > 0u) {
+                    h->current_pos += (u32)copied;
+					LWP_MutexUnlock(g_disc_io_mutex);
+                    return (ssize_t)copied;
+                }
+                r->_errno = EIO;
+				LWP_MutexUnlock(g_disc_io_mutex);
+                return -1;
+            }
+            dst += direct;
+            read_off += direct;
+            remaining -= direct;
+            continue;
+        }
 
-    if (!bounce) {
-        SYS_Report("[GCM_VFS] read bounce malloc fail alloc=%u disc=0x%08X pos=%u req=%lu clamp=%lu file=%u\n",
-                   alloc_sz, h->disc_offset, h->current_pos, (unsigned long)len,
-                   (unsigned long)to_read, h->file_size);
-        r->_errno = ENOMEM;
-		LWP_MutexUnlock(g_disc_io_mutex);
-        return -1;
-    }
+        if (!dvd_read_aligned(s_bounce, GCM_SECTOR_SIZE, (s64)read_off)) {
+            size_t copied = to_read - remaining;
+            SYS_Report("[GCM_VFS] read fail bounce-sector disc=0x%08X pos=%u req=%lu clamp=%lu file=%u aligned=0x%08X skip=%u copied=%u\n",
+                       h->disc_offset, h->current_pos, (unsigned long)len,
+                       (unsigned long)to_read, h->file_size, read_off,
+                       read_skip, (u32)copied);
+            if (copied > 0u) {
+                h->current_pos += (u32)copied;
+				LWP_MutexUnlock(g_disc_io_mutex);
+                return (ssize_t)copied;
+            }
+            r->_errno = EIO;
+			LWP_MutexUnlock(g_disc_io_mutex);
+            return -1;
+        }
 
-    if (!dvd_read_aligned(bounce, alloc_sz, (s64)aligned_off)) {
-        if (must_free) free(bounce);
-        SYS_Report("[GCM_VFS] read fail bounce disc=0x%08X pos=%u req=%lu clamp=%lu file=%u aligned=0x%08X alloc=%u skip=%u\n",
-                   h->disc_offset, h->current_pos, (unsigned long)len,
-                   (unsigned long)to_read, h->file_size, aligned_off, alloc_sz, skip);
-        r->_errno = EIO;
-		LWP_MutexUnlock(g_disc_io_mutex);
-        return -1;
+        u32 chunk = GCM_SECTOR_SIZE - read_skip;
+        if ((size_t)chunk > remaining)
+            chunk = (u32)remaining;
+        memcpy(dst, s_bounce + read_skip, chunk);
+        dst += chunk;
+        remaining -= chunk;
+        read_off += GCM_SECTOR_SIZE;
+        read_skip = 0u;
     }
-    memcpy(ptr, bounce + skip, to_read);
-    if (must_free) free(bounce);
 
     if (!h->first_read_logged && h->current_pos == 0u && gcm_path_is_focus(h->debug_path)) {
         const u8 *b = (const u8 *)ptr;

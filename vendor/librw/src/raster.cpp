@@ -98,6 +98,7 @@ shouldLogFocusedRasterConvert(const char *name)
 static void
 logFocusedRasterImageSummary(const char *name, const Image *img)
 {
+#if 0 // [RASTER-CONVERT-PIX] focused conversion tracing disabled for normal runs.
 	if(!shouldLogFocusedRasterConvert(name) || img == nil || img->pixels == nil)
 		return;
 
@@ -141,6 +142,10 @@ logFocusedRasterImageSummary(const char *name, const Image *img)
 	       (unsigned)img->pixels[1],
 	       (unsigned)img->pixels[2],
 	       (unsigned)img->pixels[3]);
+#else
+	(void)name;
+	(void)img;
+#endif
 }
 
 struct RasterGlobals
@@ -627,6 +632,7 @@ Raster::convertTexToCurrentPlatform(rw::Raster *ras)
 		printf("[RASTER-CONVERT] null source raster\n");
 		return nil;
 	}
+#if 0 // [RASTER-CONVERT-IN] focused conversion tracing disabled for normal runs.
 	if(shouldLogFocusedRasterConvert(debugName)){
 		printf("[RASTER-CONVERT-IN] tex=%s srcPlat=%d fmt=0x%X %dx%d depth=%d raster=%p\n",
 		       debugName,
@@ -637,6 +643,7 @@ Raster::convertTexToCurrentPlatform(rw::Raster *ras)
 		       ras->depth,
 		       ras);
 	}
+#endif
 	if(ras->platform == rw::platform)
 		return ras;
 	// compatible platforms
@@ -677,6 +684,7 @@ Raster::convertTexToCurrentPlatform(rw::Raster *ras)
 	img->unpalettize();
 	Raster::imageFindRasterFormat(img, Raster::TEXTURE, &width, &height, &depth, &format);
 	format |= ras->format & (Raster::MIPMAP | Raster::AUTOMIPMAP);
+#if 0 // [RASTER-CONVERT-IMG] focused conversion tracing disabled for normal runs.
 	if(shouldLogFocusedRasterConvert(debugName)){
 		printf("[RASTER-CONVERT-IMG] tex=%s img=%dx%d depth=%d -> new=%dx%d depth=%d fmt=0x%X\n",
 		       debugName,
@@ -688,6 +696,7 @@ Raster::convertTexToCurrentPlatform(rw::Raster *ras)
 		       depth,
 		       format);
 	}
+#endif
 	logFocusedRasterImageSummary(debugName, img);
 	Raster *newras = Raster::create(width, height, depth, format);
 	if(newras == nil){
@@ -703,6 +712,7 @@ Raster::convertTexToCurrentPlatform(rw::Raster *ras)
 		newras->destroy();
 		return nil;
 	}
+#if 0 // [RASTER-CONVERT-OUT] focused conversion tracing disabled for normal runs.
 	if(shouldLogFocusedRasterConvert(debugName)){
 		printf("[RASTER-CONVERT-OUT] tex=%s dstPlat=%d fmt=0x%X %dx%d depth=%d raster=%p\n",
 		       debugName,
@@ -713,6 +723,7 @@ Raster::convertTexToCurrentPlatform(rw::Raster *ras)
 		       newras->depth,
 		       newras);
 	}
+#endif
 	img->destroy();
 	int srcNumLevels = ras->getNumLevels();
 	int dstNumLevels = newras->getNumLevels();

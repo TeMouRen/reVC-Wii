@@ -11,18 +11,90 @@ RwTexDictionary *CTxdStore::ms_pStoredTxd;
 static int g_loadingTxdSlot = -1;
 static char g_loadingTxdName[20];
 
+// Define GX_MISSING_TEXTURE_DIAGNOSTICS for targeted alias/TXD lifetime probes.
+
+static void
+WiiReportAliasLifetime(const char *action, int slot, const TxdDef *def)
+{
+#if defined(WII) && defined(GX_MISSING_TEXTURE_DIAGNOSTICS)
+	static int s_aliasLifetimeLogCount = 0;
+	if(def && s_aliasLifetimeLogCount < 64){
+		SYS_Report("[TXD-ALIAS-PIN] action=%s slot=%d name='%s' refs=%d pins=%d dict=%p\n",
+		           action ? action : "unknown", slot, def->name, def->refCount,
+		           def->aliasPinCount, (void*)def->texDict);
+		s_aliasLifetimeLogCount++;
+	}
+#else
+	(void)action;
+	(void)slot;
+	(void)def;
+#endif
+}
+
+#if defined(WII) && defined(GX_MISSING_TEXTURE_DIAGNOSTICS)
+struct WiiTxdLiveTextureDiag
+{
+	int totalTextures;
+	int externallyReferencedTextures;
+	int loggedTextures;
+	RwTexture *sampleTextures[4];
+};
+
+static RwTexture *
+WiiCountTxdLiveTexture(RwTexture *texture, void *data)
+{
+	WiiTxdLiveTextureDiag *diag = (WiiTxdLiveTextureDiag*)data;
+	diag->totalTextures++;
+	if(texture->refCount <= 1)
+		return texture;
+
+	diag->externallyReferencedTextures++;
+	if(diag->loggedTextures < 4)
+		diag->sampleTextures[diag->loggedTextures++] = texture;
+	return texture;
+}
+
+static void
+WiiReportTxdLiveTexturesBeforeDestroy(int slot, TxdDef *def, const char *reason)
+{
+	static int s_liveTxdReportCount = 0;
+	if(def == nil || def->texDict == nil)
+		return;
+
+	WiiTxdLiveTextureDiag diag = { 0, 0, 0, { nil, nil, nil, nil } };
+	RwTexDictionaryForAllTextures(def->texDict, WiiCountTxdLiveTexture, &diag);
+	if(diag.externallyReferencedTextures > 0 && s_liveTxdReportCount < 48){
+		SYS_Report("[TXD-EVICT-LIVE-TEX] reason=%s slot=%d name='%s' refs=%d dict=%p textures=%d external=%d\n",
+		           reason ? reason : "unknown", slot, def->name, def->refCount,
+		           (void*)def->texDict, diag.totalTextures,
+		           diag.externallyReferencedTextures);
+		for(int i = 0; i < diag.loggedTextures; i++){
+			RwTexture *texture = diag.sampleTextures[i];
+			SYS_Report("[TXD-EVICT-LIVE-TEX-ITEM] tex=%p name='%s' mask='%s' refs=%d raster=%p\n",
+			           (void*)texture, texture->name, texture->mask,
+			           texture->refCount, (void*)texture->raster);
+		}
+		s_liveTxdReportCount++;
+	}
+}
+#endif
+
 void
 CTxdStore::Initialise(void)
 {
 	if(ms_pTxdPool == nil)
 		ms_pTxdPool = new CPool<TxdDef,TxdDef>(TXDSTORESIZE, "TexDictionary");
+	rw::Texture::setAliasLifetimeCallbacks(CTxdStore::PinAliasTexture,
+	                                       CTxdStore::ReleaseAliasTexture);
 }
 
 void
 CTxdStore::Shutdown(void)
 {
+	rw::Texture::setAliasLifetimeCallbacks(nil, nil);
 	if(ms_pTxdPool)
 		delete ms_pTxdPool;
+	ms_pTxdPool = nil;
 }
 
 void
@@ -40,21 +112,35 @@ CTxdStore::GameShutdown(void)
 int
 CTxdStore::AddTxdSlot(const char *name)
 {
+	int existing = FindTxdSlot(name);
+	if(existing >= 0){
+		TxdDef *existingDef = GetSlot(existing);
+		if(existingDef && existingDef->aliasPinCount > 0){
+			WiiReportAliasLifetime("add-slot-reuse", existing, existingDef);
+			return existing;
+		}
+	}
 	TxdDef *def = ms_pTxdPool->New();
 	assert(def);
 	def->texDict = nil;
 	def->refCount = 0;
+	def->aliasPinCount = 0;
 	strcpy(def->name, name);
 	return ms_pTxdPool->GetJustIndex(def);
 }
 
-void
+bool
 CTxdStore::RemoveTxdSlot(int slot)
 {
 	TxdDef *def = GetSlot(slot);
+	if(def->aliasPinCount > 0){
+		WiiReportAliasLifetime("remove-slot-blocked", slot, def);
+		return false;
+	}
 	if(def->texDict)
 		RwTexDictionaryDestroy(def->texDict);
 	ms_pTxdPool->Delete(def);
+	return true;
 }
 
 int
@@ -94,10 +180,16 @@ CTxdStore::SetCurrentTxd(int slot)
 	RwTexDictionarySetCurrent(GetSlot(slot)->texDict);
 }
 
-void
+bool
 CTxdStore::Create(int slot)
 {
-	GetSlot(slot)->texDict = RwTexDictionaryCreate();
+	TxdDef *def = GetSlot(slot);
+	if(def->aliasPinCount > 0){
+		WiiReportAliasLifetime("create-blocked", slot, def);
+		return false;
+	}
+	def->texDict = RwTexDictionaryCreate();
+	return def->texDict != nil;
 }
 
 int
@@ -125,6 +217,62 @@ CTxdStore::RemoveRefWithoutDelete(int slot)
 	GetSlot(slot)->refCount--;
 }
 
+int
+CTxdStore::FindTxdSlotByDictionary(RwTexDictionary *dict)
+{
+	if(dict == nil || ms_pTxdPool == nil)
+		return -1;
+	int size = ms_pTxdPool->GetSize();
+	for(int i = 0; i < size; i++){
+		TxdDef *def = GetSlot(i);
+		if(def && def->texDict == dict)
+			return i;
+	}
+	return -1;
+}
+
+rw::bool32
+CTxdStore::PinAliasTexture(RwTexDictionary *dict)
+{
+	int slot = FindTxdSlotByDictionary(dict);
+	if(slot < 0)
+		return true;	// The global/initial dictionary is not stream-managed.
+	TxdDef *def = GetSlot(slot);
+	if(def == nil || def->texDict != dict)
+		return false;
+	def->aliasPinCount++;
+	def->refCount++;
+	WiiReportAliasLifetime("acquire", slot, def);
+	return true;
+}
+
+void
+CTxdStore::ReleaseAliasTexture(RwTexDictionary *dict)
+{
+	int slot = FindTxdSlotByDictionary(dict);
+	if(slot < 0)
+		return;
+	TxdDef *def = GetSlot(slot);
+	if(def == nil || def->aliasPinCount <= 0)
+		return;
+	def->aliasPinCount--;
+	if(def->refCount > 0)
+		def->refCount--;
+	// Do not remove the dictionary from this Texture::destroy callback. The
+	// pin is part of refCount, so streaming will retry it on the next trim once
+	// the donor becomes unreferenced without re-entering dictionary destruction.
+	WiiReportAliasLifetime("release", slot, def);
+}
+
+bool
+CTxdStore::IsTxdAliasPinned(int slot)
+{
+	if(ms_pTxdPool == nil || slot < 0 || slot >= ms_pTxdPool->GetSize())
+		return false;
+	TxdDef *def = GetSlot(slot);
+	return def != nil && def->aliasPinCount > 0;
+}
+
 bool
 CTxdStore::LoadTxd(int slot, RwStream *stream)
 {
@@ -132,8 +280,15 @@ CTxdStore::LoadTxd(int slot, RwStream *stream)
 
 	if(RwStreamFindChunk(stream, rwID_TEXDICTIONARY, nil, nil)){
 		if(def->texDict){
+			if(def->aliasPinCount > 0){
+				WiiReportAliasLifetime("load-replace-blocked", slot, def);
+				return false;
+			}
 			printf("[TXD-RELOAD] replacing loaded txd '%s' slot=%d refs=%d\n",
 			       def->name, slot, def->refCount);
+		#if defined(WII) && defined(GX_MISSING_TEXTURE_DIAGNOSTICS)
+			WiiReportTxdLiveTexturesBeforeDestroy(slot, def, "load-replace");
+		#endif
 			RwTexDictionaryDestroy(def->texDict);
 			def->texDict = nil;
 		}
@@ -171,8 +326,15 @@ CTxdStore::StartLoadTxd(int slot, RwStream *stream)
 	TxdDef *def = GetSlot(slot);
 	if(RwStreamFindChunk(stream, rwID_TEXDICTIONARY, nil, nil)){
 		if(def->texDict){
+			if(def->aliasPinCount > 0){
+				WiiReportAliasLifetime("start-load-replace-blocked", slot, def);
+				return false;
+			}
 			printf("[TXD-RELOAD] replacing started txd '%s' slot=%d refs=%d\n",
 			       def->name, slot, def->refCount);
+		#if defined(WII) && defined(GX_MISSING_TEXTURE_DIAGNOSTICS)
+			WiiReportTxdLiveTexturesBeforeDestroy(slot, def, "start-load-replace");
+		#endif
 			RwTexDictionaryDestroy(def->texDict);
 			def->texDict = nil;
 		}
@@ -196,13 +358,21 @@ CTxdStore::FinishLoadTxd(int slot, RwStream *stream)
 	return def->texDict != nil;
 }
 
-void
+bool
 CTxdStore::RemoveTxd(int slot)
 {
 	TxdDef *def = GetSlot(slot);
+	if(def->aliasPinCount > 0){
+		WiiReportAliasLifetime("stream-remove-blocked", slot, def);
+		return false;
+	}
+	#if defined(WII) && defined(GX_MISSING_TEXTURE_DIAGNOSTICS)
+	WiiReportTxdLiveTexturesBeforeDestroy(slot, def, "stream-remove");
+	#endif
 	if(def->texDict)
 		RwTexDictionaryDestroy(def->texDict);
 	def->texDict = nil;
+	return true;
 }
 
 void

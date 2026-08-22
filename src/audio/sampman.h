@@ -233,6 +233,7 @@ public:
 	bool8  UpdateReverb(void);
 	
 	void  SetChannelReverbFlag    (uint32 nChannel, bool8 nReverbFlag);
+	void  PreloadSample           (uint32 nSfx);
 	bool8 InitialiseChannel       (uint32 nChannel, uint32 nSfx, uint8 nBank);
 #ifdef EXTERNAL_3D_SOUND
 	void  SetChannelEmittingVolume(uint32 nChannel, uint32 nVolume);

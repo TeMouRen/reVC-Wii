@@ -20,13 +20,47 @@
 #include "rwgx.h"
 #include "gxmemory.h"
 
+#ifdef WII
+void *MemoryMgrMallocMem2Strict(size_t size, size_t align);
+void MemoryMgrFreeMem2(void *ptr);
+extern "C" int WiiMemoryOwnsGenericMem2(const void *ptr);
+#endif
+
+// Define GX_PIPELINE_DIAGNOSTICS when targeted raster tracing is required.
+#ifndef GX_PIPELINE_DIAGNOSTICS
+#define printf(...) ((void)sizeof((::printf)(__VA_ARGS__)))
+#endif
+
 namespace rw {
 const char* debugGetCurrentConvertingTextureName(void);
+static uint32 ia8TiledSize(int w, int h);
+static bool isExactlyGrayscale(const uint8 *src, int w, int h, int srcStride);
+static void convertRGBA8_to_IA8(void *dst, const uint8 *src,
+                                int w, int h, int srcStride);
 namespace gx {
-
 // 鈹€鈹€ 鍏ㄥ眬鍙橀噺 (rwgx.h 涓?extern 澹版槑) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 int32   nativeRasterOffset;
 GxState gxState;
+
+uint32
+rasterStorageMask(const Raster *raster)
+{
+    if(raster == nil || raster->platform != PLATFORM_GX)
+        return GX_RASTER_STORAGE_NONE;
+
+    const GxRaster *natras = PLUGINOFFSET(GxRaster,
+                                           const_cast<Raster*>(raster),
+                                           nativeRasterOffset);
+    if(natras->gxData == nil)
+        return GX_RASTER_STORAGE_NONE;
+    if(gxMemOwns(natras->gxData))
+        return GX_RASTER_STORAGE_DEDICATED;
+#ifdef WII
+    if(WiiMemoryOwnsGenericMem2(natras->gxData))
+        return GX_RASTER_STORAGE_GENERIC_MEM2;
+#endif
+    return GX_RASTER_STORAGE_NONE;
+}
 
 static uint8_t
 gxWrapFromRwState(int32 addr)
@@ -138,6 +172,21 @@ nameContainsNoCase(const char *name, const char *needle)
 }
 
 static bool
+nameEqualsNoCase(const char *a, const char *b)
+{
+    if(a == nil || b == nil)
+        return false;
+
+    while(*a && *b) {
+        if(lowerAscii(*a) != lowerAscii(*b))
+            return false;
+        a++;
+        b++;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
+static bool
 isFocusedFoliageTexture(const char *name)
 {
     if(!name || !name[0])
@@ -159,26 +208,6 @@ isFocusedFoliageTexture(const char *name)
 static bool
 shouldLogD3DTextureDecision(const char *name);
 
-static bool
-shouldPreferOwnSamplerState(const char *name)
-{
-    if(!name || !name[0])
-        return false;
-
-    return isFocusedFoliageTexture(name) ||
-           strcmp(name, "kbtree4_test") == 0 ||
-           strcmp(name, "kbtree3_test") == 0 ||
-           strcmp(name, "newtreeleaves128") == 0 ||
-           strcmp(name, "newtreeleavesb128") == 0 ||
-           strcmp(name, "foliage256") == 0 ||
-           strcmp(name, "planta256") == 0 ||
-           strcmp(name, "plantb256") == 0 ||
-           strcmp(name, "plantc256") == 0 ||
-           strcmp(name, "fuzzyplant256") == 0 ||
-           strcmp(name, "kbplanter_plants1") == 0 ||
-           strcmp(name, "palmbark128") == 0;
-}
-
 static void
 initNativeSamplerFromTexture(Texture *tex, GxRaster *natras)
 {
@@ -189,20 +218,16 @@ initNativeSamplerFromTexture(Texture *tex, GxRaster *natras)
     uint8_t wrapT = GX_CLAMP;
     uint8_t minFilter = GX_LINEAR;
     uint8_t magFilter = GX_LINEAR;
-    uint8_t preferOwnSampler = 0;
-
     if(tex) {
         wrapS = gxWrapFromRwState(tex->getAddressU());
         wrapT = gxWrapFromRwState(tex->getAddressV());
         gxFilterFromRwState(tex->getFilter(), &minFilter, &magFilter);
-        preferOwnSampler = shouldPreferOwnSamplerState(tex->name) ? 1 : 0;
     }
 
     natras->wrapS = wrapS;
     natras->wrapT = wrapT;
     natras->minFilter = minFilter;
     natras->magFilter = magFilter;
-    natras->preferOwnSampler = preferOwnSampler;
 
     static int s_samplerInitLogCount = 0;
     if(tex &&
@@ -214,7 +239,7 @@ initNativeSamplerFromTexture(Texture *tex, GxRaster *natras)
                (unsigned)minFilter, (unsigned)magFilter,
                (unsigned)tex->filterAddressing,
                (int)tex->getFilter(),
-               preferOwnSampler ? 1 : 0);
+               natras->preferOwnSampler ? 1 : 0);
         s_samplerInitLogCount++;
     }
 }
@@ -273,12 +298,32 @@ isKeyVegetationDebugTexture(const char *name)
 }
 
 static bool
+isFocusedFrontendTexture(const char *name)
+{
+    if(!name || !name[0])
+        return false;
+
+    static const char *const focusedUiNames[] = {
+        "background",
+        "vc_logo",
+        "mouse",
+    };
+
+    for(size_t i = 0; i < sizeof(focusedUiNames)/sizeof(focusedUiNames[0]); i++) {
+        if(nameEqualsNoCase(name, focusedUiNames[i]))
+            return true;
+    }
+    return false;
+}
+
+static bool
 isFocusedUiTexture(const char *name)
 {
     if(!name || !name[0])
         return false;
 
-    return nameContainsNoCase(name, "hud") ||
+    return isFocusedFrontendTexture(name) ||
+           nameContainsNoCase(name, "hud") ||
            nameContainsNoCase(name, "font") ||
            nameContainsNoCase(name, "radar") ||
            nameContainsNoCase(name, "map") ||
@@ -407,6 +452,14 @@ ia4TiledSize(int w, int h)
     return (uint32)(tw * th);
 }
 
+uint32
+i8TiledSize(int w, int h)
+{
+    int tw = (w + 7) & ~7;
+    int th = (h + 3) & ~3;
+    return (uint32)(tw * th);
+}
+
 static uint32
 cmprTiledSize(int w, int h)
 {
@@ -519,6 +572,7 @@ rasterCreate(Raster *raster)
     natras->texObjValid = false;
     natras->dirty       = false;
     natras->dataSize    = 0;
+    natras->cpuDataSize = 0;
     natras->w           = 0;
     natras->h           = 0;
     natras->hasAlpha    = 0;
@@ -528,6 +582,8 @@ rasterCreate(Raster *raster)
     natras->minFilter   = GX_LINEAR;
     natras->magFilter   = GX_LINEAR;
     natras->preferOwnSampler = 0;
+    natras->usageClass = GX_TEXTURE_USAGE_DEFAULT;
+    natras->cpuDataStorage = GX_RASTER_CPU_NONE;
 
     if(raster->width <= 0 || raster->height <= 0) return raster;
 
@@ -551,10 +607,33 @@ void
 rasterDestroy(Raster *raster)
 {
     invalidateTextureBinding(raster);
+    clearActiveHudWeaponRaster(raster);
     GxRaster *natras = PLUGINOFFSET(GxRaster, raster, nativeRasterOffset);
     texPoolUnregister(natras->gxData);
     gx::gxMemFree(natras->gxData);  natras->gxData  = nullptr;
+#ifdef WII
+    if(natras->cpuData) {
+        const size_t expectedCpuDataSize =
+            (size_t)raster->width * raster->height * 4;
+        if(natras->cpuDataStorage == GX_RASTER_CPU_GENERIC_MEM2 &&
+           natras->cpuDataSize == expectedCpuDataSize &&
+           WiiMemoryOwnsGenericMem2(natras->cpuData)) {
+            MemoryMgrFreeMem2(natras->cpuData);
+        } else {
+            SYS_Report("[WII-RASTER-FREE] rejected cpuData raster=%p ptr=%p storage=%u size=%u expected=%u generic=%d\n",
+                       (void*)raster, natras->cpuData,
+                       (unsigned)natras->cpuDataStorage,
+                       (unsigned)natras->cpuDataSize,
+                       (unsigned)expectedCpuDataSize,
+                       WiiMemoryOwnsGenericMem2(natras->cpuData));
+        }
+    }
+#else
     gx::gxMemFree(natras->cpuData); natras->cpuData = nullptr;
+#endif
+    natras->cpuData = nullptr;
+    natras->cpuDataSize = 0;
+    natras->cpuDataStorage = GX_RASTER_CPU_NONE;
     natras->texObjValid = false;
     natras->dataSize    = 0;
 }
@@ -569,9 +648,23 @@ rasterLock(Raster *raster, int32 /*level*/, int32 lockMode)
 
     // 鎳掑垎閰?cpuData锛堜粎鍦?Lock 鏃舵墠闇€瑕?CPU 绾挎€х紦鍐诧級
     if(!natras->cpuData && raster->width > 0 && raster->height > 0) {
-        natras->cpuData = gx::safeGxAlloc((size_t)raster->width * raster->height * 4, 32, "raster-cpu");
+        const size_t expectedCpuDataSize =
+            (size_t)raster->width * raster->height * 4;
+#ifdef WII
+        natras->cpuData = MemoryMgrMallocMem2Strict(expectedCpuDataSize, 32);
+        if(natras->cpuData) {
+            natras->cpuDataSize = (uint32)expectedCpuDataSize;
+            natras->cpuDataStorage = GX_RASTER_CPU_GENERIC_MEM2;
+        }
+#else
+        natras->cpuData = gx::safeGxAlloc(expectedCpuDataSize, 32, "raster-cpu");
+        if(natras->cpuData) {
+            natras->cpuDataSize = (uint32)expectedCpuDataSize;
+            natras->cpuDataStorage = GX_RASTER_CPU_GX;
+        }
+#endif
         if(natras->cpuData)
-            memset(natras->cpuData, 0, (size_t)raster->width * raster->height * 4);
+            memset(natras->cpuData, 0, expectedCpuDataSize);
     }
 
     if(!natras->cpuData) return nullptr;
@@ -589,7 +682,18 @@ rasterUnlock(Raster *raster, int32 /*level*/)
     GxRaster *natras = PLUGINOFFSET(GxRaster, raster, nativeRasterOffset);
     if(!natras->dirty || !natras->cpuData) return;
 
-    if(!natras->gxData) {
+    natras->alphaKind = classifyRGBAAlpha((const uint8*)natras->cpuData,
+                                          raster->width, raster->height,
+                                          raster->width * 4);
+    natras->hasAlpha = natras->alphaKind != GX_RASTER_ALPHA_NONE ? 1 : 0;
+
+    if(!natras->gxData ||
+       natras->dataSize != rgba8TiledSize(raster->width, raster->height) ||
+       natras->gxFmt != GX_TF_RGBA8) {
+        texPoolUnregister(natras->gxData);
+        gx::gxMemFree(natras->gxData);
+        natras->gxData = nullptr;
+        natras->gxFmt = GX_TF_RGBA8;
         natras->dataSize = rgba8TiledSize(raster->width, raster->height);
         traceUnnamed512RGBA8("rasterUnlock", raster, natras->dataSize);
         natras->gxData = gx::safeGxAlloc(natras->dataSize, 32, "raster-unlock");
@@ -599,15 +703,18 @@ rasterUnlock(Raster *raster, int32 /*level*/)
             natras->dataSize = 0;
             return;
         }
-        gx::texPoolRegister(raster, natras->gxData, natras->dataSize,
-                        (uint16)raster->width, (uint16)raster->height,
-                        natras->gxFmt);
+        if(!gx::texPoolRegister(raster, natras->gxData, natras->dataSize,
+                                (uint16)raster->width, (uint16)raster->height,
+                                natras->gxFmt)) {
+            fprintf(stdout,
+                    "[GX-POOL-FAULT] rasterUnlock registration failed raster=%p size=%u\n",
+                    (void*)raster, (unsigned)natras->dataSize);
+            gx::gxMemFree(natras->gxData);
+            natras->gxData = nullptr;
+            natras->dataSize = 0;
+            return;
+        }
     }
-
-    natras->alphaKind = classifyRGBAAlpha((const uint8*)natras->cpuData,
-                                          raster->width, raster->height,
-                                          raster->width * 4);
-    natras->hasAlpha = natras->alphaKind != GX_RASTER_ALPHA_NONE ? 1 : 0;
 
     convertRGBA8_to_GX(natras->gxData, natras->cpuData,
                        raster->width, raster->height, 0);
@@ -617,7 +724,7 @@ rasterUnlock(Raster *raster, int32 /*level*/)
     GX_InitTexObj(&natras->texObj,
                   natras->gxData,
                   (u16)raster->width, (u16)raster->height,
-                  GX_TF_RGBA8,
+                  natras->gxFmt,
                   natras->wrapS, natras->wrapT,
                   GX_FALSE);
     GX_InitTexObjFilterMode(&natras->texObj, natras->minFilter, natras->magFilter);
@@ -691,6 +798,7 @@ rasterFromImage(Raster *raster, Image *image)
 
     GxRaster *natras = PLUGINOFFSET(GxRaster, raster, nativeRasterOffset);
     const char *debugName = rw::debugGetCurrentConvertingTextureName();
+    natras->usageClass = currentTextureUsageClass();
     uint8 imageAlphaKind = classifyRGBAAlpha(image->pixels, w, h, image->stride);
     if(imageAlphaKind == GX_RASTER_ALPHA_CUTOUT) {
         int bled = bleedTransparentRGBAEdges(image->pixels, w, h,
@@ -705,6 +813,9 @@ rasterFromImage(Raster *raster, Image *image)
         }
     }
     bool imageHasAlpha = imageAlphaKind != GX_RASTER_ALPHA_NONE;
+    bool useIA8 = natras->usageClass == GX_TEXTURE_USAGE_PERSISTENT_UI &&
+                  imageHasAlpha &&
+                  isExactlyGrayscale(image->pixels, w, h, image->stride);
 
     // 鈹€鈹€ 閲婃斁鏃?GPU 缂撳啿锛沜puData 涓嶅湪姝よ矾寰勫垎閰?鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     texPoolUnregister(natras->gxData);
@@ -714,12 +825,13 @@ rasterFromImage(Raster *raster, Image *image)
 
     natras->w        = (uint16)w;
     natras->h        = (uint16)h;
-    natras->gxFmt    = GX_TF_RGBA8;
+    natras->gxFmt    = useIA8 ? GX_TF_IA8 : GX_TF_RGBA8;
     natras->hasAlpha = imageHasAlpha ? 1 : 0;
     natras->alphaKind = imageAlphaKind;
-    natras->dataSize = rgba8TiledSize(w, h);
+    natras->dataSize = useIA8 ? ia8TiledSize(w, h) : rgba8TiledSize(w, h);
 
-    traceUnnamed512RGBA8("rasterFromImage", raster, natras->dataSize);
+    if(!useIA8)
+        traceUnnamed512RGBA8("rasterFromImage", raster, natras->dataSize);
 
     natras->gxData  = gx::safeGxAlloc(natras->dataSize, 32, "image-raster");
 
@@ -730,8 +842,16 @@ rasterFromImage(Raster *raster, Image *image)
         return 0;
     }
 
-    gx::texPoolRegister(raster, natras->gxData, natras->dataSize,
-                    (uint16)w, (uint16)h, natras->gxFmt);
+    if(!gx::texPoolRegister(raster, natras->gxData, natras->dataSize,
+                            (uint16)w, (uint16)h, natras->gxFmt)) {
+        gx::gxMemFree(natras->gxData);
+        natras->gxData = nullptr;
+        natras->dataSize = 0;
+        fprintf(stdout,
+                "[GX-POOL-FAULT] rasterFromImage registration failed raster=%p wh=%dx%d\n",
+                (void*)raster, w, h);
+        return 0;
+    }
 
     // 鈹€鈹€ 鈽?librw Image::pixels 鏍囧噯鏍煎紡鏄?RGBA8888
     //     (pixels[0]=R, [1]=G, [2]=B, [3]=A, 鐢?convertTo32 / toImage 淇濊瘉),
@@ -765,7 +885,10 @@ rasterFromImage(Raster *raster, Image *image)
 #endif
 
     // 鈹€鈹€ 鐩存帴浠?image->pixels 杞崲鍒?GX tiled (浣跨敤 stride) 鈹€
-    convertRGBA8_to_GX(natras->gxData, image->pixels, w, h, image->stride);
+    if(useIA8)
+        convertRGBA8_to_IA8(natras->gxData, image->pixels, w, h, image->stride);
+    else
+        convertRGBA8_to_GX(natras->gxData, image->pixels, w, h, image->stride);
     DCFlushRange(natras->gxData, natras->dataSize);
     GX_InvalidateTexAll();
 
@@ -773,7 +896,7 @@ rasterFromImage(Raster *raster, Image *image)
     GX_InitTexObj(&natras->texObj,
                   natras->gxData,
                   (u16)w, (u16)h,
-                  GX_TF_RGBA8,
+                  natras->gxFmt,
                   natras->wrapS, natras->wrapT,
                   GX_FALSE);
     GX_InitTexObjFilterMode(&natras->texObj, natras->minFilter, natras->magFilter);
@@ -984,17 +1107,53 @@ registerNativeRaster(void)
 } // namespace gx
 
 // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
-// 鈹€鈹€ IA4 tiling helper 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-// Converts linear RGBA8 to GX IA4 tiled (8脳4 macroblocks, 32 bytes each).
-// GX_TF_IA4 uses 8脳4 blocks, NOT 4脳4 like RGBA8.
-// Each output byte = [A3..A0][I3..I0].
+// Bounded diagnostic hash: large frontend textures must not add a loading
+// spike merely to produce telemetry.
+static uint32
+fnv1a32(const void *data, size_t size)
+{
+    const uint8 *bytes = (const uint8*)data;
+    uint32 hash = 2166136261u;
+    size_t step = size > 65536u ? (size + 65535u) / 65536u : 1u;
+    for(size_t i = 0; i < size; i += step) {
+        hash ^= bytes[i];
+        hash *= 16777619u;
+    }
+    hash ^= (uint32)size;
+    hash *= 16777619u;
+    return hash;
+}
+
+static uint32
+fnv1a32ImageRGBA(const uint8 *src, int w, int h, int srcStride)
+{
+    if(src == nil || w <= 0 || h <= 0)
+        return 0;
+
+    uint32 hash = 2166136261u;
+    int rowBytes = (srcStride > 0) ? srcStride : w * 4;
+    size_t logicalSize = (size_t)w * (size_t)h * 4u;
+    size_t step = logicalSize > 65536u ?
+        (logicalSize + 65535u) / 65536u : 1u;
+    for(size_t i = 0; i < logicalSize; i += step) {
+        size_t pixelRowBytes = (size_t)w * 4u;
+        size_t y = i / pixelRowBytes;
+        size_t x = i - y * pixelRowBytes;
+        hash ^= src[y * (size_t)rowBytes + x];
+        hash *= 16777619u;
+    }
+    hash ^= (uint32)logicalSize;
+    hash *= 16777619u;
+    return hash;
+}
+
 static void
-convertRGBA8_to_IA4(void *dst, const uint8 *src, int w, int h, int srcStride)
+convertRGBA8_to_I8(void *dst, const uint8 *src, int w, int h, int srcStride)
 {
     uint8 *d = (uint8*)dst;
     int rowBytes = (srcStride > 0) ? srcStride : w * 4;
-    int pw = (w + 7) & ~7;  // pad width to multiple of 8 for IA4
-    int ph = (h + 3) & ~3;  // pad height to multiple of 4
+    int pw = (w + 7) & ~7;
+    int ph = (h + 3) & ~3;
 
     for(int by = 0; by < ph; by += 4) {
         for(int bx = 0; bx < pw; bx += 8) {
@@ -1003,10 +1162,59 @@ convertRGBA8_to_IA4(void *dst, const uint8 *src, int w, int h, int srcStride)
                 for(int ix = 0; ix < 8; ix++) {
                     int px = (bx + ix < w) ? bx + ix : w - 1;
                     const uint8 *p = src + py * rowBytes + px * 4;
-                    uint8 r = p[0], g = p[1], b = p[2], a = p[3];
-                    uint8 intensity = (uint8)((r + g + b) / 3) >> 4;
-                    uint8 alpha4   = a >> 4;
-                    *d++ = (uint8)((alpha4 << 4) | intensity);
+                    *d++ = (uint8)(((uint32)p[0] + (uint32)p[1] + (uint32)p[2]) / 3u);
+                }
+            }
+        }
+    }
+}
+
+static uint32
+ia8TiledSize(int w, int h)
+{
+    const int paddedW = (w + 3) & ~3;
+    const int paddedH = (h + 3) & ~3;
+    return (uint32)(paddedW * paddedH * 2);
+}
+
+static bool
+isExactlyGrayscale(const uint8 *src, int w, int h, int srcStride)
+{
+    if(src == nil || w <= 0 || h <= 0)
+        return false;
+
+    const int rowBytes = srcStride > 0 ? srcStride : w * 4;
+    for(int y = 0; y < h; y++) {
+        const uint8 *pixel = src + y * rowBytes;
+        for(int x = 0; x < w; x++, pixel += 4) {
+            if(pixel[3] == 0)
+                continue;
+            if(pixel[0] != pixel[1] || pixel[1] != pixel[2])
+                return false;
+        }
+    }
+    return true;
+}
+
+static void
+convertRGBA8_to_IA8(void *dst, const uint8 *src, int w, int h, int srcStride)
+{
+    uint8 *out = (uint8*)dst;
+    const int rowBytes = srcStride > 0 ? srcStride : w * 4;
+    const int paddedW = (w + 3) & ~3;
+    const int paddedH = (h + 3) & ~3;
+
+    // GX IA8 is tiled in 4x4 texel blocks. Each texel stores alpha first and
+    // intensity second, preserving the full-resolution monochrome HUD image.
+    for(int by = 0; by < paddedH; by += 4) {
+        for(int bx = 0; bx < paddedW; bx += 4) {
+            for(int iy = 0; iy < 4; iy++) {
+                const int py = by + iy < h ? by + iy : h - 1;
+                for(int ix = 0; ix < 4; ix++) {
+                    const int px = bx + ix < w ? bx + ix : w - 1;
+                    const uint8 *pixel = src + py * rowBytes + px * 4;
+                    *out++ = pixel[3];
+                    *out++ = pixel[0];
                 }
             }
         }
@@ -1044,6 +1252,7 @@ void gxConvertRasterToNative(Texture *tex)
                 if(gxRas) {
                     gx::GxRaster *natras = PLUGINOFFSET(gx::GxRaster, gxRas, gx::nativeRasterOffset);
                     gx::initNativeSamplerFromTexture(tex, natras);
+                    natras->usageClass = gx::currentTextureUsageClass();
                     natras->w = (uint16)w;
                     natras->h = (uint16)h;
                     natras->gxFmt = GX_TF_CMPR;
@@ -1062,23 +1271,30 @@ void gxConvertRasterToNative(Texture *tex)
                             }
                         }
                         gx::tileDXT1ToCMPR((uint8*)natras->gxData, blocks, w, h);
-                        gx::texPoolRegister(gxRas, natras->gxData, natras->dataSize,
-                                            (uint16)w, (uint16)h, natras->gxFmt,
-                                            tex->name);
-                        DCFlushRange(natras->gxData, natras->dataSize);
-                        GX_InvalidateTexAll();
-                        GX_InitTexObj(&natras->texObj, natras->gxData, (u16)w, (u16)h,
-                                      natras->gxFmt, natras->wrapS, natras->wrapT, GX_FALSE);
-                        GX_InitTexObjFilterMode(&natras->texObj, natras->minFilter, natras->magFilter);
-                        natras->texObjValid = true;
-                        natras->dirty = false;
-                        src->unlock(0);
-                        src->destroy();
-                        tex->raster = gxRas;
-                        gx::texPoolEnforceBudget(tex->name);
-                        printf("[GX] gxConvertRasterToNative: using CMPR %dx%d size=%u '%s'\n",
-                               w, h, natras->dataSize, tex->name);
-                        return;
+                        if(gx::texPoolRegister(gxRas, natras->gxData, natras->dataSize,
+                                               (uint16)w, (uint16)h, natras->gxFmt,
+                                               tex->name)) {
+                            DCFlushRange(natras->gxData, natras->dataSize);
+                            GX_InvalidateTexAll();
+                            GX_InitTexObj(&natras->texObj, natras->gxData, (u16)w, (u16)h,
+                                          natras->gxFmt, natras->wrapS, natras->wrapT, GX_FALSE);
+                            GX_InitTexObjFilterMode(&natras->texObj, natras->minFilter, natras->magFilter);
+                            natras->texObjValid = true;
+                            natras->dirty = false;
+                            src->unlock(0);
+                            src->destroy();
+                            tex->raster = gxRas;
+                            gx::texPoolEnforceBudget(tex->name);
+                            printf("[GX] gxConvertRasterToNative: using CMPR %dx%d size=%u '%s'\n",
+                                   w, h, natras->dataSize, tex->name);
+                            return;
+                        }
+                        gx::gxMemFree(natras->gxData);
+                        natras->gxData = nullptr;
+                        natras->dataSize = 0;
+                        fprintf(stdout,
+                                "[GX-POOL-FAULT] native CMPR registration failed tex='%s' wh=%dx%d\n",
+                                tex->name, w, h);
                     }
                     gxRas->destroy();
                 }
@@ -1156,6 +1372,9 @@ void gxConvertRasterToNative(Texture *tex)
 
     bool imageHasAlpha = imageAlphaKind != gx::GX_RASTER_ALPHA_NONE;
     bool preserveAlphaDetail = srcDeclaredAlpha || imageHasAlpha;
+    bool focusedFrontendTexture = gx::isFocusedFrontendTexture(tex->name);
+    uint32 focusedUiSourceHash = focusedFrontendTexture ?
+        fnv1a32ImageRGBA(pixels, w, h, stride) : 0u;
 
     // Detect grayscale: sample center + 4 corners (skip if all-transparent)
     bool isGrayscale = true;
@@ -1177,20 +1396,28 @@ void gxConvertRasterToNative(Texture *tex)
     if(samples < 4)
         isGrayscale = false;
 
-    bool allowIA4 = isGrayscale && !preserveAlphaDetail;
+    bool persistentUiTexture = gx::currentTextureUsageClass() ==
+        gx::GX_TEXTURE_USAGE_PERSISTENT_UI;
+    bool useIA8 = persistentUiTexture && imageHasAlpha &&
+                  isExactlyGrayscale(pixels, w, h, stride);
+    bool useI8 = isGrayscale && !preserveAlphaDetail;
     bool forceDecisionLog = gx::isKeyVegetationDebugTexture(tex->name);
     if(gx::shouldLogD3DTextureDecision(tex->name)) {
         static int s_d3dDecisionLogCount = 0;
         if(forceDecisionLog || s_d3dDecisionLogCount < 192) {
-            printf("[GX-D3D-TEX] %s: srcFmt=0x%08X custom=%d declA=%d imgA=%d gray=%d ia4=%d %dx%d\n",
+            printf("[GX-D3D-TEX] %s: srcFmt=0x%08X custom=%d declA=%d imgA=%d gray=%d preserveA=%d chosen=%s %dx%d",
                    tex->name,
                    (unsigned)srcD3DFormat,
                    srcD3DCustomFormat ? 1 : 0,
                    srcDeclaredAlpha ? 1 : 0,
                    imageHasAlpha ? 1 : 0,
                    isGrayscale ? 1 : 0,
-                   allowIA4 ? 1 : 0,
+                   preserveAlphaDetail ? 1 : 0,
+                   useIA8 ? "IA8" : (useI8 ? "I8" : "RGBA8"),
                    w, h);
+            if(focusedFrontendTexture)
+                printf(" srcSampleFNV=%08X", (unsigned)focusedUiSourceHash);
+            printf("\n");
             if(!forceDecisionLog)
                 s_d3dDecisionLogCount++;
         }
@@ -1206,25 +1433,57 @@ void gxConvertRasterToNative(Texture *tex)
 
     gx::GxRaster *natras = PLUGINOFFSET(gx::GxRaster, gxRas, gx::nativeRasterOffset);
     gx::initNativeSamplerFromTexture(tex, natras);
+    natras->usageClass = gx::currentTextureUsageClass();
     natras->w = (uint16)w;
     natras->h = (uint16)h;
 
-    if(allowIA4) {
-        // IA4 is only safe for truly opaque grayscale helpers. Alpha-bearing
-        // D3D textures such as foliage/HUD masks visibly break when we crush
-        // them into 4-bit intensity + 4-bit alpha, so keep those on RGBA8.
-        natras->gxFmt    = GX_TF_IA4;
-        natras->hasAlpha = imageHasAlpha ? 1 : 0;
+    if(useIA8) {
+        natras->gxFmt    = GX_TF_IA8;
+        natras->hasAlpha = 1;
         natras->alphaKind = imageAlphaKind;
-        natras->dataSize = gx::ia4TiledSize(w, h);
+        natras->dataSize = ia8TiledSize(w, h);
         natras->gxData   = gx::safeGxAlloc(natras->dataSize, 32, tex->name);
         if(natras->gxData) {
-            convertRGBA8_to_IA4(natras->gxData, pixels, w, h, stride);
-            gx::texPoolRegister(gxRas, natras->gxData, natras->dataSize,
-                            (uint16)w, (uint16)h, natras->gxFmt,
-                            tex->name);
-            printf("[GX] gxConvertRasterToNative: using IA4 %dx%d size=%u\n",
-                   w, h, natras->dataSize);
+            convertRGBA8_to_IA8(natras->gxData, pixels, w, h, stride);
+            if(!gx::texPoolRegister(gxRas, natras->gxData, natras->dataSize,
+                                    (uint16)w, (uint16)h, natras->gxFmt,
+                                    tex->name)) {
+                gx::gxMemFree(natras->gxData);
+                natras->gxData = nullptr;
+                natras->dataSize = 0;
+                fprintf(stdout,
+                        "[GX-POOL-FAULT] native IA8 registration failed tex='%s' wh=%dx%d\n",
+                        tex->name, w, h);
+            }
+        }
+    }
+
+    if(!natras->gxData && useI8) {
+        natras->gxFmt    = GX_TF_I8;
+        natras->hasAlpha = imageHasAlpha ? 1 : 0;
+        natras->alphaKind = imageAlphaKind;
+        natras->dataSize = gx::i8TiledSize(w, h);
+        natras->gxData   = gx::safeGxAlloc(natras->dataSize, 32, tex->name);
+        if(natras->gxData) {
+            convertRGBA8_to_I8(natras->gxData, pixels, w, h, stride);
+            if(gx::texPoolRegister(gxRas, natras->gxData, natras->dataSize,
+                                   (uint16)w, (uint16)h, natras->gxFmt,
+                                   tex->name)) {
+                printf("[GX] gxConvertRasterToNative: using I8 %dx%d size=%u",
+                       w, h, natras->dataSize);
+                if(focusedFrontendTexture)
+                    printf(" srcSampleFNV=%08X gxSampleFNV=%08X",
+                           (unsigned)focusedUiSourceHash,
+                           (unsigned)fnv1a32(natras->gxData, natras->dataSize));
+                printf("\n");
+            } else {
+                gx::gxMemFree(natras->gxData);
+                natras->gxData = nullptr;
+                natras->dataSize = 0;
+                fprintf(stdout,
+                        "[GX-POOL-FAULT] native I8 registration failed tex='%s' wh=%dx%d\n",
+                        tex->name, w, h);
+            }
         }
     }
 
@@ -1242,10 +1501,26 @@ void gxConvertRasterToNative(Texture *tex)
             gxRas->destroy();
             return;
         }
-        gx::texPoolRegister(gxRas, natras->gxData, natras->dataSize,
-                        (uint16)w, (uint16)h, natras->gxFmt,
-                        tex->name);
+        if(!gx::texPoolRegister(gxRas, natras->gxData, natras->dataSize,
+                                (uint16)w, (uint16)h, natras->gxFmt,
+                                tex->name)) {
+            gx::gxMemFree(natras->gxData);
+            natras->gxData = nullptr;
+            natras->dataSize = 0;
+            fprintf(stdout,
+                    "[GX-POOL-FAULT] native RGBA8 registration failed tex='%s' wh=%dx%d\n",
+                    tex->name, w, h);
+            img->destroy();
+            gxRas->destroy();
+            return;
+        }
         gx::convertRGBA8_to_GX(natras->gxData, pixels, w, h, stride);
+        if(focusedFrontendTexture) {
+            printf("[GX] gxConvertRasterToNative: using RGBA8 %dx%d size=%u srcSampleFNV=%08X gxSampleFNV=%08X\n",
+                   w, h, natras->dataSize,
+                   (unsigned)focusedUiSourceHash,
+                   (unsigned)fnv1a32(natras->gxData, natras->dataSize));
+        }
     }
 
     DCFlushRange(natras->gxData, natras->dataSize);

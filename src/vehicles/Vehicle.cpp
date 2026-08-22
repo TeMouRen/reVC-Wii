@@ -1114,8 +1114,12 @@ CVehicle::ProcessWheel(CVector &wheelFwd, CVector &wheelRight, CVector &wheelCon
 	if(contactSpeedRight != 0.0f){
 		// exert opposing force
 		right = -contactSpeedRight/wheelsOnGround;
-		// Keep contact resistance in the same timescale as thrust and brake.
-		right *= CTimer::GetTimeStepFix();
+		// BUG?
+		// contactSpeedRight is independent of framerate but right has timestep as a factor
+		// so we probably have to fix this
+		// fixing this causes jittery cars at 15fps, and causes the car to move backwards slowly at 18fps
+		// at 19fps, the effects are gone ...
+		//right *= CTimer::GetTimeStepFix();
 
 		if(wheelStatus == WHEEL_STATUS_BURST){
 			float fwdspeed = Min(contactSpeedFwd, fBurstSpeedMax);
@@ -1137,8 +1141,10 @@ CVehicle::ProcessWheel(CVector &wheelFwd, CVector &wheelRight, CVector &wheelCon
 	}else if(contactSpeedFwd != 0.0f){
 		fwd = -contactSpeedFwd/wheelsOnGround;
 #ifdef FIX_BUGS
-		// Keep contact resistance in the same timescale as thrust and brake.
-		fwd *= CTimer::GetTimeStepFix();
+		// contactSpeedFwd is independent of framerate but fwd has timestep as a factor
+		// so we probably have to fix this
+		// better get rid of it here too
+		//fwd *= CTimer::GetTimeStepFix();
 #endif
 
 		if(!bBraking){
@@ -1281,8 +1287,10 @@ CVehicle::ProcessBikeWheel(CVector &wheelFwd, CVector &wheelRight, CVector &whee
 		// exert opposing force
 		right = -contactSpeedRight/wheelsOnGround;
 #ifdef FIX_BUGS
-		// Keep contact resistance in the same timescale as thrust and brake.
-		right *= CTimer::GetTimeStepFix();
+		// contactSpeedRight is independent of framerate but right has timestep as a factor
+		// so we probably have to fix this
+		// see above
+		//right *= CTimer::GetTimeStepFix();
 #endif
 
 		if(wheelStatus == WHEEL_STATUS_BURST){
@@ -1305,8 +1313,10 @@ CVehicle::ProcessBikeWheel(CVector &wheelFwd, CVector &wheelRight, CVector &whee
 	}else if(contactSpeedFwd != 0.0f){
 		fwd = -contactSpeedFwd/wheelsOnGround;
 #ifdef FIX_BUGS
-		// Keep contact resistance in the same timescale as thrust and brake.
-		fwd *= CTimer::GetTimeStepFix();
+		// contactSpeedFwd is independent of framerate but fwd has timestep as a factor
+		// so we probably have to fix this
+		// better get rid of it here too
+		//fwd *= CTimer::GetTimeStepFix();
 #endif
 
 		if(!bBraking){

@@ -1269,9 +1269,22 @@ CAnimManager::CreateAnimAssocGroups(void)
 		group->groupId = i;
 		group->firstAnimId = def->animDescs[0].animId;
 		group->CreateAssociations(def->blockName, clump, def->animNames, def->numAnims);
-		for(j = 0; j < group->numAssociations; j++)
-			// GetAnimation(i) in III (but it's in LoadAnimFiles), GetAnimation(group->animDesc[j].animId) in VC
-			group->GetAnimation(def->animDescs[j].animId)->flags |= def->animDescs[j].flags;
+		if(group->assocList == nil || group->numAssociations != def->numAnims){
+			printf("[ANIM-GROUP] Deferring incomplete group=%d block=%s\n", i, def->blockName);
+			if(IsClumpSkinned(clump))
+				RpClumpForAllAtomics(clump, AtomicRemoveAnimFromSkinCB, nil);
+			RpClumpDestroy(clump);
+			continue;
+		}
+		for(j = 0; j < def->numAnims; j++){
+			// Published gameplay groups are dense, so configured IDs retain direct indexing.
+			CAnimBlendAssociation *assoc = group->GetAnimation(def->animDescs[j].animId);
+			if(assoc)
+				assoc->flags |= def->animDescs[j].flags;
+			else
+				printf("[ANIM-GROUP] Missing configured animation id=%d group=%d\n",
+				       (int)def->animDescs[j].animId, i);
+		}
 		if(IsClumpSkinned(clump))
 			RpClumpForAllAtomics(clump, AtomicRemoveAnimFromSkinCB, nil);
 		RpClumpDestroy(clump);

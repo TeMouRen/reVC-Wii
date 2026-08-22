@@ -219,6 +219,21 @@ enum Config {
 #define FINAL
 #endif
 
+// Targeted Wii diagnostics. Special-character streaming tracing is normally
+// too noisy for gameplay; slow-frame tracing is deliberately rate-limited.
+#ifndef WII_SPECIAL_STREAM_DIAGNOSTICS
+#define WII_SPECIAL_STREAM_DIAGNOSTICS 0
+#endif
+#ifndef WII_STREAM_MEMORY_DIAGNOSTICS
+#define WII_STREAM_MEMORY_DIAGNOSTICS 0
+#endif
+#ifndef WII_STREAM_MEMORY_DIAGNOSTIC_EVENTS
+#define WII_STREAM_MEMORY_DIAGNOSTIC_EVENTS 0
+#endif
+#ifndef WII_SLOW_FRAME_DIAGNOSTICS
+#define WII_SLOW_FRAME_DIAGNOSTICS 1
+#endif
+
 // these are placed here to work with VANILLA_DEFINES for compatibility
 #define NO_CDCHECK // skip audio CD check
 #define DEFAULT_NATIVE_RESOLUTION // Set default video mode to your native resolution (fixes Windows 10 launch)

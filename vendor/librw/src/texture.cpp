@@ -26,6 +26,100 @@
 namespace rw {
 
 #ifdef RW_GX
+// Define GX_MISSING_TEXTURE_DIAGNOSTICS for targeted missing-resource probes.
+static char gLastResolveName[128];
+static char gLastResolveMask[128];
+static char gLastResolveReason[24];
+static GxTextureResolveDiag gLastResolveDiag = {
+	gLastResolveName, gLastResolveMask, 0, gLastResolveReason
+};
+
+const GxTextureResolveDiag*
+gxGetLastTextureResolveDiag(void)
+{
+	return gLastResolveReason[0] ? &gLastResolveDiag : nil;
+}
+
+static void
+gxClearLastTextureResolveDiag(void)
+{
+	gLastResolveName[0] = '\0';
+	gLastResolveMask[0] = '\0';
+	gLastResolveReason[0] = '\0';
+	gLastResolveDiag.aliasCandidates = 0;
+}
+
+static void
+gxSetLastTextureResolveDiag(const char *name, const char *mask,
+	uint32 aliasCandidates, const char *reason)
+{
+	strncpy(gLastResolveName, name ? name : "", sizeof(gLastResolveName) - 1);
+	gLastResolveName[sizeof(gLastResolveName) - 1] = '\0';
+	strncpy(gLastResolveMask, mask ? mask : "", sizeof(gLastResolveMask) - 1);
+	gLastResolveMask[sizeof(gLastResolveMask) - 1] = '\0';
+	strncpy(gLastResolveReason, reason ? reason : "unknown",
+	        sizeof(gLastResolveReason) - 1);
+	gLastResolveReason[sizeof(gLastResolveReason) - 1] = '\0';
+	gLastResolveDiag.aliasCandidates = aliasCandidates;
+}
+
+#ifdef GX_MISSING_TEXTURE_DIAGNOSTICS
+struct GxResolveFailSummary
+{
+	char name[32];
+	char mask[32];
+	const TexDictionary *current;
+	char reason[24];
+	uint32 count;
+	uint32 lastAliasCandidates;
+};
+
+static void
+gxLogResolveFailure(const char *name, const char *mask,
+	const TexDictionary *current, uint32 aliasCandidates, const char *reason)
+{
+	enum { SUMMARY_CAPACITY = 128 };
+	static GxResolveFailSummary summaries[SUMMARY_CAPACITY];
+	static uint32 summaryCount = 0;
+	static uint32 overflowCount = 0;
+	GxResolveFailSummary *summary = nil;
+	for(uint32 i = 0; i < summaryCount; i++){
+		if(summaries[i].current == current &&
+		   strncmp_ci(summaries[i].name, name ? name : "", 32) == 0 &&
+		   strncmp_ci(summaries[i].mask, mask ? mask : "", 32) == 0 &&
+		   strcmp(summaries[i].reason, reason ? reason : "unknown") == 0){
+			summary = &summaries[i];
+			break;
+		}
+	}
+	if(summary == nil && summaryCount < SUMMARY_CAPACITY){
+		summary = &summaries[summaryCount++];
+		memset(summary, 0, sizeof(*summary));
+		strncpy(summary->name, name ? name : "", sizeof(summary->name) - 1);
+		strncpy(summary->mask, mask ? mask : "", sizeof(summary->mask) - 1);
+		strncpy(summary->reason, reason ? reason : "unknown", sizeof(summary->reason) - 1);
+		summary->current = current;
+	}
+	if(summary == nil){
+		overflowCount++;
+		if(overflowCount == 1 || (overflowCount % 64u) == 0)
+			printf("[TEX-RESOLVE-FAIL-OVERFLOW] droppedEvents=%u capacity=%u\n",
+			       (unsigned)overflowCount, (unsigned)SUMMARY_CAPACITY);
+		return;
+	}
+	summary->count++;
+	const bool aliasesChanged = summary->count > 1 &&
+		summary->lastAliasCandidates != aliasCandidates;
+	summary->lastAliasCandidates = aliasCandidates;
+	if(summary->count == 1 || aliasesChanged ||
+	   (summary->count & (summary->count - 1u)) == 0){
+		printf("[TEX-RESOLVE-FAIL] count=%u name='%s' mask='%s' current=%p aliases=%u reason=%s\n",
+		       (unsigned)summary->count, summary->name, summary->mask,
+		       (void*)summary->current, (unsigned)aliasCandidates, summary->reason);
+	}
+}
+#endif
+
 // 前向声明 — 实现在 gxraster.cpp
 void gxConvertRasterToNative(Texture *tex);
 #endif
@@ -103,6 +197,7 @@ shouldLogGxTextureResult(const char *name)
 	       texNameContainsNoCase(name, "plant");
 }
 
+#ifdef GX_MISSING_TEXTURE_DIAGNOSTICS
 static bool
 shouldTraceTextureLookup(const char *name)
 {
@@ -110,6 +205,7 @@ shouldTraceTextureLookup(const char *name)
 	       (name && (strcmp(name, "black") == 0 ||
 	                 strcmp(name, "black64") == 0));
 }
+#endif
 #endif
 
 static void*
@@ -361,6 +457,8 @@ static Texture *defaultReadCB(const char *name, const char *mask);
 
 Texture *(*Texture::findCB)(const char *name) = defaultFindCB;
 Texture *(*Texture::readCB)(const char *name, const char *mask) = defaultReadCB;
+Texture::AliasDonorPinCallback Texture::aliasPinCB = nil;
+Texture::AliasDonorReleaseCallback Texture::aliasReleaseCB = nil;
 
 Texture*
 Texture::create(Raster *raster)
@@ -378,6 +476,7 @@ Texture::create(Raster *raster)
 	tex->filterAddressing = (WRAP << 12) | (WRAP << 8) | NEAREST;
 	tex->raster = raster;
 	tex->refCount = 1;
+	tex->aliasDonorDict = nil;
 	TEXTUREGLOBAL(textures).add(&tex->inGlobalList);
 	s_plglist.construct(tex);
 	return tex;
@@ -387,6 +486,8 @@ void
 Texture::destroy(void)
 {
 	this->refCount--;
+	if(this->aliasDonorDict && this->refCount <= 1)
+		this->releaseAliasDonor();
 	if(this->refCount <= 0){
 		s_plglist.destruct(this);
 		if(this->dict)
@@ -399,6 +500,36 @@ Texture::destroy(void)
 	}
 }
 
+void
+Texture::setAliasLifetimeCallbacks(AliasDonorPinCallback pin,
+	AliasDonorReleaseCallback release)
+{
+	Texture::aliasPinCB = pin;
+	Texture::aliasReleaseCB = release;
+}
+
+bool32
+Texture::pinAliasDonor(TexDictionary *dict)
+{
+	if(dict == nil || this->aliasDonorDict != nil)
+		return true;
+	// Keep the legacy behavior for builds that do not install a game-side
+	// dictionary lifetime owner. The callback is only needed by managed TXDs.
+	if(Texture::aliasPinCB && !Texture::aliasPinCB(dict))
+		return false;
+	this->aliasDonorDict = dict;
+	return true;
+}
+
+void
+Texture::releaseAliasDonor(void)
+{
+	TexDictionary *dict = this->aliasDonorDict;
+	this->aliasDonorDict = nil;
+	if(dict && Texture::aliasReleaseCB)
+		Texture::aliasReleaseCB(dict);
+}
+
 static Texture*
 defaultFindCB(const char *name)
 {
@@ -407,7 +538,7 @@ defaultFindCB(const char *name)
 
 	TexDictionary *current = TEXTUREGLOBAL(currentTexDict);
 	Texture *tex = current ? current->find(name) : nil;
-#ifdef RW_GX
+#if defined(RW_GX) && defined(GX_MISSING_TEXTURE_DIAGNOSTICS)
 	if(shouldTraceTextureLookup(name))
 		printf("[TEX-FIND] current-%s name='%s' current=%p tex=%p raster=%p\n",
 		       tex ? "hit" : "miss", name, (void*)current, (void*)tex,
@@ -424,12 +555,21 @@ defaultFindCB(const char *name)
 #ifdef RW_GX
 static void
 considerGxTextureAlias(Texture *tex, TexDictionary *dict, const char *mask,
+                       bool32 nameOnly,
                        Texture **match, TexDictionary **matchDict,
                        uint32 *numMatches)
 {
-	if(tex == nil || tex->raster == nil || mask == nil || mask[0] == '\0' ||
-	   tex->mask[0] == '\0' || strncmp_ci(tex->mask, mask, 32) != 0)
+	if(tex == nil || tex->raster == nil)
 		return;
+	if(nameOnly){
+		// Empty masks have no extra identity information. They are safe only
+		// when the exact name identifies one resident texture globally.
+		if(mask && mask[0] != '\0')
+			return;
+	}else if(mask == nil || mask[0] == '\0' || tex->mask[0] == '\0' ||
+	         strncmp_ci(tex->mask, mask, 32) != 0){
+		return;
+	}
 	if(*match == tex)
 		return;
 	*match = tex;
@@ -438,20 +578,26 @@ considerGxTextureAlias(Texture *tex, TexDictionary *dict, const char *mask,
 }
 
 static Texture*
-findGxTextureAlias(const char *name, const char *mask)
+findGxTextureAlias(const char *name, const char *mask, uint32 *candidateCount,
+	TexDictionary **donorDict)
 {
+#ifdef GX_MISSING_TEXTURE_DIAGNOSTICS
 	static int s_aliasLogCount = 0;
 	static int s_aliasAmbiguousLogCount = 0;
+#endif
 	TexDictionary *current = TEXTUREGLOBAL(currentTexDict);
-	if(current == nil || name == nil || name[0] == '\0' ||
-	   mask == nil || mask[0] == '\0')
+	if(candidateCount)
+		*candidateCount = 0;
+	if(donorDict)
+		*donorDict = nil;
+	const bool32 nameOnly = mask == nil || mask[0] == '\0';
+	if(current == nil || name == nil || name[0] == '\0')
 		return nil;
 
 	// Some converted GX assets keep a platform-resolution suffix while the DFF
-	// retains the source name. The source mask is part of the texture identity:
-	// accepting a suffix alone can bind an unrelated uniform shadow texture.
-	// Search all resident dictionaries only when the full name family + mask
-	// identifies exactly one texture, so list order cannot decide the result.
+	// retains the source name. The source mask is part of that identity. For an
+	// empty mask, only the exact name is considered; suffix expansion would make
+	// a resolution variant look like an unrelated material texture.
 	static const char *resolutionSuffixes[] = {
 		"64", "_64", "128", "_128", "32", "_32", "256", "_256"
 	};
@@ -462,32 +608,45 @@ findGxTextureAlias(const char *name, const char *mask)
 	uint32 numMatches = 0;
 	FORLIST(lnk, TEXTUREGLOBAL(texDicts)){
 		TexDictionary *dict = TexDictionary::fromLink(lnk);
-		considerGxTextureAlias(dict->find(name), dict, mask,
+		considerGxTextureAlias(dict->find(name), dict, mask, nameOnly,
 		                       &match, &matchDict, &numMatches);
-		for(uint32 i = 0; i < sizeof(resolutionSuffixes)/sizeof(resolutionSuffixes[0]); i++){
-			size_t suffixLen = strlen(resolutionSuffixes[i]);
-			if(nameLen + suffixLen >= sizeof(candidate))
-				continue;
-			memcpy(candidate, name, nameLen);
-			memcpy(candidate + nameLen, resolutionSuffixes[i], suffixLen + 1);
-			considerGxTextureAlias(dict->find(candidate), dict, mask,
-			                       &match, &matchDict, &numMatches);
+		if(!nameOnly){
+			for(uint32 i = 0; i < sizeof(resolutionSuffixes)/sizeof(resolutionSuffixes[0]); i++){
+				size_t suffixLen = strlen(resolutionSuffixes[i]);
+				if(nameLen + suffixLen >= sizeof(candidate))
+					continue;
+				memcpy(candidate, name, nameLen);
+				memcpy(candidate + nameLen, resolutionSuffixes[i], suffixLen + 1);
+				considerGxTextureAlias(dict->find(candidate), dict, mask, false,
+				                       &match, &matchDict, &numMatches);
+			}
 		}
 	}
+	if(candidateCount)
+		*candidateCount = numMatches;
 	if(numMatches == 1){
-		if(s_aliasLogCount < 128){
-			printf("[TEX-ALIAS] exact-mask name='%s' mask='%s' -> '%s' candidates=%u current=%p hit=%p raster=%p\n",
-			       name, mask, match->name, (unsigned)numMatches,
-			       (void*)current, (void*)matchDict, (void*)match->raster);
+		if(donorDict)
+			*donorDict = matchDict;
+#ifdef GX_MISSING_TEXTURE_DIAGNOSTICS
+		if(s_aliasLogCount < 48){
+			printf("[TEX-ALIAS-HIT] mode=%s name='%s' mask='%s' resolved='%s' candidates=%u current=%p donor=%p tex=%p raster=%p texRef=%d\n",
+			       nameOnly ? "name-only" : "exact-mask", name, mask ? mask : "",
+			       match->name, (unsigned)numMatches,
+			       (void*)current, (void*)matchDict, (void*)match,
+			       (void*)match->raster, match->refCount);
 			s_aliasLogCount++;
 		}
+#endif
 		return match;
 	}
+#ifdef GX_MISSING_TEXTURE_DIAGNOSTICS
 	if(numMatches > 1 && s_aliasAmbiguousLogCount < 64){
-		printf("[TEX-ALIAS] ambiguous-exact-mask name='%s' mask='%s' candidates=%u current=%p\n",
-		       name, mask, (unsigned)numMatches, (void*)current);
+		printf("[TEX-ALIAS-AMBIGUOUS] mode=%s name='%s' mask='%s' candidates=%u current=%p\n",
+		       nameOnly ? "name-only" : "exact-mask", name, mask ? mask : "",
+		       (unsigned)numMatches, (void*)current);
 		s_aliasAmbiguousLogCount++;
 	}
+#endif
 	return nil;
 }
 #endif
@@ -548,24 +707,77 @@ defaultReadCB(const char *name, const char *mask)
 Texture*
 Texture::read(const char *name, const char *mask)
 {
+	#if defined(RW_GX) && defined(GX_MISSING_TEXTURE_DIAGNOSTICS)
+	static int s_aliasLifetimeLogCount = 0;
+	#endif
+	#ifdef RW_GX
+	gxClearLastTextureResolveDiag();
+	#endif
 	Raster *raster = nil;
-	Texture *tex;
+	Texture *tex = nil;
+	#ifdef RW_GX
+	uint32 aliasCandidates = 0;
+	TexDictionary *aliasDonor = nil;
+	const char *resolveFailReason = nil;
+	bool32 aliasPinFailed = false;
+	#endif
 
 	if(tex = Texture::findCB(name), tex){
 		tex->addRef();
 		return tex;
 	}
 #ifdef RW_GX
-	if(tex = findGxTextureAlias(name, mask), tex){
-		tex->addRef();
-		return tex;
+	if(tex = findGxTextureAlias(name, mask, &aliasCandidates, &aliasDonor), tex){
+		if(aliasDonor && aliasDonor != TEXTUREGLOBAL(currentTexDict)){
+			if(!tex->pinAliasDonor(aliasDonor)){
+				aliasPinFailed = true;
+				tex = nil;
+			}else{
+#ifdef GX_MISSING_TEXTURE_DIAGNOSTICS
+				if(s_aliasLifetimeLogCount < 48){
+					printf("[TEX-ALIAS-LIFETIME] consumer=%p donor=%p tex=%p name='%s' mask='%s' texRefBefore=%d action=pinned\n",
+					       (void*)TEXTUREGLOBAL(currentTexDict), (void*)aliasDonor,
+					       (void*)tex, tex->name, tex->mask, tex->refCount);
+					s_aliasLifetimeLogCount++;
+				}
+#endif
+			}
+		}
+		if(tex){
+			tex->addRef();
+			return tex;
+		}
 	}
 #endif
 	if(TEXTUREGLOBAL(loadTextures)){
 		tex = Texture::readCB(name, mask);
-		if(tex == nil)
+		if(tex == nil){
+			#ifdef RW_GX
+			const bool bareName = name != nil &&
+				strchr(name, '\\') == nil && strchr(name, '/') == nil &&
+				strchr(name, '.') == nil;
+			resolveFailReason = aliasPinFailed ? "alias-lifetime-unpinned" :
+				aliasCandidates > 1 ? "alias-ambiguous" :
+				bareName ? "bare-vfs-disabled" : "read-failed";
+			#endif
 			goto dummytex;
-	}else dummytex: if(TEXTUREGLOBAL(makeDummies)){
+		}
+	}else{
+		#ifdef RW_GX
+		resolveFailReason = aliasCandidates > 1 ? "alias-ambiguous" : "fallback-disabled";
+		#endif
+	}
+dummytex:
+	#ifdef RW_GX
+	if(resolveFailReason){
+		gxSetLastTextureResolveDiag(name, mask, aliasCandidates, resolveFailReason);
+#ifdef GX_MISSING_TEXTURE_DIAGNOSTICS
+		gxLogResolveFailure(name, mask, TEXTUREGLOBAL(currentTexDict),
+		                    aliasCandidates, resolveFailReason);
+#endif
+	}
+	#endif
+	if(tex == nil && TEXTUREGLOBAL(makeDummies)){
 //printf("missing texture %s %s\n", name ? name : "", mask ? mask : "");
 		tex = Texture::create(nil);
 		if(tex == nil)
@@ -587,6 +799,9 @@ Texture::read(const char *name, const char *mask)
 Texture*
 Texture::streamRead(Stream *stream)
 {
+	#ifdef RW_GX
+	gxClearLastTextureResolveDiag();
+	#endif
 	uint32 length;
 	char name[128], mask[128];
 	if(!findChunk(stream, ID_STRUCT, nil, nil)){
@@ -691,14 +906,18 @@ Texture::streamReadNative(Stream *stream)
 		RWERROR((ERR_CHUNK, "STRUCT"));
 		return nil;
 	}
-	uint32 platform = stream->readU32();
+	uint32 platform;
+	if(stream->read32(&platform, sizeof(platform)) != sizeof(platform))
+		return nil;
 	stream->seek(-16);
+#ifdef RW_GX
+	if(platform == PLATFORM_GX || platform == gx::PLATFORM_GX_TILED_V2)
+		return gx::readNativeTexture(stream);
+	RWERROR((ERR_PLATFORM, platform));
+	return nil;
+#else
 	if(platform == FOURCC_PS2)
 		return ps2::readNativeTexture(stream);
-#ifdef RW_GX
-	if(platform == PLATFORM_GX)
-		return gx::readNativeTexture(stream);
-#endif
 	if(platform == PLATFORM_D3D8)
 		return d3d8::readNativeTexture(stream);
 	if(platform == PLATFORM_D3D9)
@@ -709,6 +928,7 @@ Texture::streamReadNative(Stream *stream)
 		return gl3::readNativeTexture(stream);
 	assert(0 && "unsupported platform");
 	return nil;
+#endif
 }
 
 void

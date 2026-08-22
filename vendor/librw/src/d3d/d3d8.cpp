@@ -465,6 +465,61 @@ makeDefaultPipeline(void)
 
 // Native Texture and Raster
 
+static bool
+readExact(Stream *stream, void *data, uint32 size)
+{
+	return size == 0 || stream->read8(data, size) == size;
+}
+
+static bool
+readU32Exact(Stream *stream, uint32 &value)
+{
+	return stream->read32(&value, sizeof(value)) == sizeof(value);
+}
+
+static bool
+readI32Exact(Stream *stream, int32 &value)
+{
+	return stream->read32(&value, sizeof(value)) == sizeof(value);
+}
+
+static bool
+readU16Exact(Stream *stream, uint16 &value)
+{
+	return stream->read16(&value, sizeof(value)) == sizeof(value);
+}
+
+static bool
+readU8Exact(Stream *stream, uint8 &value)
+{
+	return readExact(stream, &value, sizeof(value));
+}
+
+static bool
+skipExact(Stream *stream, uint32 size)
+{
+	uint8 scratch[256];
+	while(size > 0){
+		uint32 chunk = size < sizeof(scratch) ? size : sizeof(scratch);
+		if(!readExact(stream, scratch, chunk))
+			return false;
+		size -= chunk;
+	}
+	return true;
+}
+
+static Raster*
+failImageRead(Raster *raster, Image *image, uint8 *data)
+{
+	if(raster)
+		raster->destroy();
+	if(data)
+		rwFree(data);
+	if(image)
+		image->destroy();
+	return nil;
+}
+
 // only handles 4 and 8 bit textures right now
 Raster*
 readAsImage(Stream *stream, int32 width, int32 height, int32 depth, int32 format, int32 numLevels)
@@ -474,14 +529,18 @@ readAsImage(Stream *stream, int32 width, int32 height, int32 depth, int32 format
 	uint8 *data = nil;
 
 	Image *img = Image::create(width, height, 32);
+	if(img == nil)
+		return nil;
 	img->allocate();
 
 	if(format & Raster::PAL4){
 		pallen = 16;
-		stream->read8(palette, 4*32);
+		if(!readExact(stream, palette, 4*32))
+			return failImageRead(nil, img, data);
 	}else if(format & Raster::PAL8){
 		pallen = 256;
-		stream->read8(palette, 4*256);
+		if(!readExact(stream, palette, 4*256))
+			return failImageRead(nil, img, data);
 	}
 	if(!Raster::formatHasAlpha(format))
 		for(int32 i = 0; i < pallen; i++)
@@ -490,18 +549,25 @@ readAsImage(Stream *stream, int32 width, int32 height, int32 depth, int32 format
 	Raster *ras = nil;
 
 	for(int i = 0; i < numLevels; i++){
-		uint32 size = stream->readU32();
+		uint32 size;
+		if(!readU32Exact(stream, size))
+			return failImageRead(ras, img, data);
 
 		// don't read levels that don't exist
 		if(ras && i >= ras->getNumLevels()){
-			stream->seek(size);
+			if(!skipExact(stream, size))
+				return failImageRead(ras, img, data);
 			continue;
 		}
 
 		// one allocation is enough, first level is largest
-		if(data == nil)
+		if(data == nil){
 			data = rwNewT(uint8, size, MEMDUR_FUNCTION | ID_IMAGE);
-		stream->read8(data, size);
+			if(data == nil)
+				return failImageRead(ras, img, data);
+		}
+		if(!readExact(stream, data, size))
+			return failImageRead(ras, img, data);
 
 		if(ras){
 			ras->lock(i, Raster::LOCKWRITE|Raster::LOCKNOFETCH);
@@ -534,6 +600,8 @@ readAsImage(Stream *stream, int32 width, int32 height, int32 depth, int32 format
 			Raster::imageFindRasterFormat(img, format&7, &width, &height, &depth, &newformat);
 			newformat |= format & (Raster::MIPMAP | Raster::AUTOMIPMAP);
 			ras = Raster::create(width, height, depth, newformat);
+			if(ras == nil)
+				return failImageRead(nil, img, data);
 			ras->lock(i, Raster::LOCKWRITE|Raster::LOCKNOFETCH);
 		}
 
@@ -541,7 +609,8 @@ readAsImage(Stream *stream, int32 width, int32 height, int32 depth, int32 format
 		ras->unlock(i);
 	}
 
-	rwFree(data);
+	if(data)
+		rwFree(data);
 	img->destroy();
 	return ras;
 }
@@ -554,7 +623,8 @@ readNativeTexture(Stream *stream)
 		RWERROR((ERR_CHUNK, "STRUCT"));
 		return nil;
 	}
-	platform = stream->readU32();
+	if(!readU32Exact(stream, platform))
+		return nil;
 	if(platform != PLATFORM_D3D8){
 		RWERROR((ERR_PLATFORM, platform));
 		return nil;
@@ -564,19 +634,38 @@ readNativeTexture(Stream *stream)
 		return nil;
 
 	// Texture
-	tex->filterAddressing = stream->readU32();
-	stream->read8(tex->name, 32);
-	stream->read8(tex->mask, 32);
+	if(!readU32Exact(stream, tex->filterAddressing) ||
+	   !readExact(stream, tex->name, 32) ||
+	   !readExact(stream, tex->mask, 32)){
+		tex->destroy();
+		return nil;
+	}
+	tex->name[31] = '\0';
+	tex->mask[31] = '\0';
 
 	// Raster
-	uint32 format = stream->readU32();
-	bool32 hasAlpha = stream->readI32();
-	int32 width = stream->readU16();
-	int32 height = stream->readU16();
-	int32 depth = stream->readU8();
-	int32 numLevels = stream->readU8();
-	int32 type = stream->readU8();
-	int32 compression = stream->readU8();
+	uint32 format;
+	int32 hasAlphaValue;
+	uint16 widthValue, heightValue;
+	uint8 depthValue, numLevelsValue, typeValue, compressionValue;
+	if(!readU32Exact(stream, format) ||
+	   !readI32Exact(stream, hasAlphaValue) ||
+	   !readU16Exact(stream, widthValue) ||
+	   !readU16Exact(stream, heightValue) ||
+	   !readU8Exact(stream, depthValue) ||
+	   !readU8Exact(stream, numLevelsValue) ||
+	   !readU8Exact(stream, typeValue) ||
+	   !readU8Exact(stream, compressionValue)){
+		tex->destroy();
+		return nil;
+	}
+	bool32 hasAlpha = hasAlphaValue;
+	int32 width = widthValue;
+	int32 height = heightValue;
+	int32 depth = depthValue;
+	int32 numLevels = numLevelsValue;
+	int32 type = typeValue;
+	int32 compression = compressionValue;
 	if(isFocusedVegetationTexture(tex->name)){
 		printf("[D3D8-TEX] %s: fmt=0x%08X hasAlpha=%d %dx%d depth=%d levels=%d type=%d cmp=%d\n",
 		       tex->name,
@@ -595,38 +684,58 @@ readNativeTexture(Stream *stream)
 		pallength = format & Raster::PAL4 ? 32 : 256;
 		if(!d3d::isP8supported){
 			tex->raster = readAsImage(stream, width, height, depth, format|type, numLevels);
+			if(tex->raster == nil){
+				tex->destroy();
+				return nil;
+			}
 			return tex;
 		}
 	}
 
 	Raster *raster;
 	D3dRaster *ras;
-	if(compression){
+	if(compression)
 		raster = Raster::create(width, height, depth, format | type | Raster::DONTALLOCATE, PLATFORM_D3D8);
-		ras = GETD3DRASTEREXT(raster);
+	else
+		raster = Raster::create(width, height, depth, format | type, PLATFORM_D3D8);
+	if(raster == nil){
+		tex->destroy();
+		return nil;
+	}
+	ras = GETD3DRASTEREXT(raster);
+	if(compression){
 		allocateDXT(raster, compression, numLevels, hasAlpha);
 		ras->customFormat = 1;
-	}else{
-		raster = Raster::create(width, height, depth, format | type, PLATFORM_D3D8);
-		ras = GETD3DRASTEREXT(raster);
 	}
 	tex->raster = raster;
 
 	// TODO: check if format supported and convert if necessary
 
-	if(pallength != 0)
-		stream->read8(ras->palette, 4*pallength);
+	if(pallength != 0 && !readExact(stream, ras->palette, 4*pallength)){
+		tex->destroy();
+		return nil;
+	}
 
 	uint32 size;
 	uint8 *data;
 	for(int32 i = 0; i < numLevels; i++){
-		size = stream->readU32();
+		if(!readU32Exact(stream, size)){
+			tex->destroy();
+			return nil;
+		}
 		if(i < raster->getNumLevels()){
 			data = raster->lock(i, Raster::LOCKWRITE|Raster::LOCKNOFETCH);
-			stream->read8(data, size);
+			if(data == nil || !readExact(stream, data, size)){
+				if(data)
+					raster->unlock(i);
+				tex->destroy();
+				return nil;
+			}
 			raster->unlock(i);
-		}else
-			stream->seek(size);
+		}else if(!skipExact(stream, size)){
+			tex->destroy();
+			return nil;
+		}
 	}
 	return tex;
 }

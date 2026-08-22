@@ -45,6 +45,10 @@
 #include "Wanted.h"
 #include "debugmenu.h"
 
+#ifndef WII_AUDIO_DECODE_ENABLE
+#define WII_AUDIO_DECODE_ENABLE 1
+#endif
+
 #if GC_MISSION_AUDIO_DEBUG_LOG
 #define MISSION_AUDIO_LOG(...) printf("[MISSION-AUDIO] " __VA_ARGS__)
 #else
@@ -2515,13 +2519,18 @@ PlayCruising:
 							CurrentPretendGear++;
 						else {
 							nCruising = 1;
+						#if !defined(WII) || WII_AUDIO_DECODE_ENABLE
+							// A disabled backend never owns this channel, so it cannot signal a gear change to physics.
 							params.m_pVehicle->bAudioChangingGear = TRUE;
+						#endif
 							goto PlayCruising;
 						}
 					}
 
 					gearSoundStartTime = CTimer::GetTimeInMilliseconds();
+				#if !defined(WII) || WII_AUDIO_DECODE_ENABLE
 					params.m_pVehicle->bAudioChangingGear = TRUE;
+				#endif
 #ifdef GTA_PS2
 					SampleManager.InitialiseChannel(nChannel, soundOffset + SFX_CAR_ACCEL_1, SFX_BANK_0);
 #else
@@ -10050,6 +10059,19 @@ void
 cAudioManager::PreloadMissionAudio(uint8 slot, Const char *name)
 {
 	if (m_bIsInitialised && slot < MISSION_AUDIO_SLOTS) {
+	#if defined(WII) && !WII_AUDIO_DECODE_ENABLE
+		m_nMissionAudioSampleIndex[slot] = NO_SAMPLE;
+		m_nMissionAudioLoadingStatus[slot] = LOADING_STATUS_LOADED;
+		m_nMissionAudioPlayStatus[slot] = PLAY_STATUS_FINISHED;
+		m_bIsMissionAudioPlaying[slot] = FALSE;
+		m_bIsMissionAudioAllowedToPlay[slot] = FALSE;
+		m_bIsMissionAudio2D[slot] = TRUE;
+		m_nMissionAudioFramesToPlay[slot] = 0;
+		g_bMissionAudioLoadFailed[slot] = FALSE;
+		MISSION_AUDIO_LOG("PreloadMissionAudio slot=%u name='%s' suppressed: decode disabled\n",
+		                  uint32(slot), name != nil ? name : "<null>");
+		return;
+	#endif
 		uint32 missionAudioTrack = FindMissionAudioTrack(name);
 		const char *label = missionAudioTrack < ARRAY_SIZE(PS2StreamedNameTable) ? PS2StreamedNameTable[missionAudioTrack] : "";
 #if !GC_MISSION_AUDIO_DEBUG_LOG

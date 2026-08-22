@@ -207,7 +207,12 @@ CColStore::LoadCollision(const CVector2D &pos)
 		if(wantThisOne)
 			CStreaming::RequestCol(i, STREAMFLAGS_PRIORITY);
 		else
+#ifdef WII
+		if(!CStreaming::ShouldKeepColForIslandTransition(i))
 			CStreaming::RemoveCol(i);
+#else
+			CStreaming::RemoveCol(i);
+#endif
 	}
 	bLoadAtSecondPosition = false;
 }
@@ -233,11 +238,11 @@ CColStore::EnsureCollisionIsInMemory(const CVector2D &pos)
 	for(i = 1; i < COLSTORESIZE; i++)
 		if(GetSlot(i) && GetBoundingBox(i).IsPointInside(pos, -110.0f) &&
 		   !CStreaming::HasColLoaded(i)){
-			CStreaming::RequestCol(i, 0);
+			CStreaming::RequestCol(i, STREAMFLAGS_PRIORITY);
 			if(TheCamera.GetScreenFadeStatus() == FADE_0)
 				FrontEndMenuManager.MessageScreen("LOADCOL", false);
 			CTimer::Suspend();
-			CStreaming::LoadAllRequestedModels(false);
+			CStreaming::LoadAllRequestedModels(true);
 			CTimer::Resume();
 		}
 }

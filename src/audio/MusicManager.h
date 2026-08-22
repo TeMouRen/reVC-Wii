@@ -76,6 +76,7 @@ public:
 	void StopCutSceneMusic(void);
 	tTrack GetRadioInCar(void);
 	void SetRadioInCar(tTrack);
+	void StartModernTalkingRadio(void);
 	void SetRadioChannelByScript(tTrack, int32);
 
 	void ResetTimers(uint32);

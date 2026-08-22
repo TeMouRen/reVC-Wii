@@ -6,6 +6,8 @@ char *UnicodeToAsciiForSaveLoad(wchar *src);
 char *UnicodeToAsciiForMemoryCard(wchar *src);
 void TextCopy(wchar *dst, const wchar *src);
 
+enum { MISSION_TEXT_TABLE_NAME_LENGTH = 8 };
+
 struct CKeyEntry
 {
 #if defined(FIX_BUGS) || defined(FIX_BUGS_64)
@@ -83,7 +85,7 @@ class CText
 	char encoding;
 	bool bHasMissionTextOffsets;
 	bool bIsMissionTextLoaded;
-	char szMissionTableName[8];
+	char szMissionTableName[MISSION_TEXT_TABLE_NAME_LENGTH + 1];
 	CMissionTextOffsets MissionTextOffsets;
 public:
 	CText(void);

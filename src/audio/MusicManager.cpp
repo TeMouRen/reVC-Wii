@@ -55,6 +55,18 @@ bool8 g_bAnnouncementReadPosAlready;
 uint8 RadioStaticCounter = 5;
 uint32 RadioStaticTimer;
 
+static inline int32
+RadioStationForTuning(uint8 station)
+{
+	return station == RADIO_MODERN_TALKING ? RADIO_OFF : station;
+}
+
+static wchar ModernTalkingStationText[] =
+{
+	'M', 'o', 'd', 'e', 'r', 'n', ' ',
+	'T', 'a', 'l', 'k', 'i', 'n', 'g', '\0'
+};
+
 static bool
 UseOfficialChineseRadioHudLayout(void)
 {
@@ -347,6 +359,28 @@ cMusicManager::SetRadioInCar(tTrack station)
 		else
 			veh->m_nRadioStation = station;
 	}
+}
+
+void
+cMusicManager::StartModernTalkingRadio(void)
+{
+	if (!m_bIsInitialised || !PlayerInCar())
+		return;
+
+	CVehicle *vehicle = AudioManager.FindVehicleOfPlayer();
+	if (vehicle == nil || UsesPoliceRadio(vehicle) || UsesTaxiRadio(vehicle) ||
+	    vehicle->m_nRadioStation != RADIO_OFF)
+		return;
+
+	vehicle->m_nRadioStation = RADIO_MODERN_TALKING;
+	m_nFrontendTrack = STREAMED_SOUND_RADIO_MODERN_TALKING;
+	m_nNextTrack = NO_TRACK;
+	m_bTrackChangeStarted = FALSE;
+	m_bVerifyNextTrackStartedToPlay = FALSE;
+	m_bSetNextStation = FALSE;
+	gNumRetunePresses = 0;
+	gRetuneCounter = 0;
+	RadioStaticCounter = 0;
 }
 
 void
@@ -645,7 +679,7 @@ cMusicManager::ServiceGameMode()
 							gNumRetunePresses--;
 							gRetuneCounter = RETUNE_TIME;
 							RadioStaticCounter = 0;
-							int track = gNumRetunePresses + vehicle->m_nRadioStation;
+							int track = gNumRetunePresses + RadioStationForTuning(vehicle->m_nRadioStation);
 							while(track < 0) track += NUM_RADIOS + 1;
 							while(track >= NUM_RADIOS + 1) track -= NUM_RADIOS + 1;
 #ifdef GTA_PC
@@ -734,7 +768,7 @@ cMusicManager::ServiceGameMode()
 				}
 #endif
 				if (gRetuneCounter != 0) {
-					int32 station = gNumRetunePresses + vehicle->m_nRadioStation;
+					int32 station = gNumRetunePresses + RadioStationForTuning(vehicle->m_nRadioStation);
 #ifdef RADIO_SCROLL_TO_PREV_STATION
 					while (station < 0) station += NUM_RADIOS + 1;
 #endif
@@ -1289,6 +1323,8 @@ cMusicManager::GetCarTuning()
 	if (veh) {
 		if (UsesPoliceRadio(veh)) return STREAMED_SOUND_RADIO_POLICE;
 		if (UsesTaxiRadio(veh)) return STREAMED_SOUND_RADIO_TAXI;
+		if (veh->m_nRadioStation == RADIO_MODERN_TALKING)
+			return STREAMED_SOUND_RADIO_MODERN_TALKING;
 #ifdef GTA_PC
 		if (veh->m_nRadioStation == USERTRACK && !SampleManager.IsMP3RadioChannelAvailable())
 			veh->m_nRadioStation = AudioManager.m_anRandomTable[2] % USERTRACK;
@@ -1308,12 +1344,12 @@ cMusicManager::GetNextCarTuning()
 		if (gNumRetunePresses != 0) {
 #ifdef RADIO_SCROLL_TO_PREV_STATION
 			// m_nRadioStation is unsigned, so...
-			int station = veh->m_nRadioStation + gNumRetunePresses;
+			int station = RadioStationForTuning(veh->m_nRadioStation) + gNumRetunePresses;
 			while(station < 0) station += NUM_RADIOS + 1;
 			while(station >= NUM_RADIOS + 1) station -= NUM_RADIOS + 1;
 			veh->m_nRadioStation = station;
 #else
-			veh->m_nRadioStation += gNumRetunePresses;
+			veh->m_nRadioStation = RadioStationForTuning(veh->m_nRadioStation) + gNumRetunePresses;
 			while(veh->m_nRadioStation >= NUM_RADIOS + 1)
 				veh->m_nRadioStation -= NUM_RADIOS + 1;
 #endif
@@ -1468,6 +1504,7 @@ cMusicManager::DisplayRadioStationName()
 	CVehicle *vehicle = AudioManager.FindVehicleOfPlayer();
 
 	if (!vehicle) return;
+	bool isModernTalking = vehicle->m_nRadioStation == RADIO_MODERN_TALKING;
 
 	// Prev scroll needs it to be signed, and m_nFrontendTrack can be NO_TRACK thus FIX_BUGS
 #if defined RADIO_SCROLL_TO_PREV_STATION || defined FIX_BUGS
@@ -1476,6 +1513,8 @@ cMusicManager::DisplayRadioStationName()
 	uint8 track;
 #endif
 	gStreamedSound = vehicle->m_nRadioStation;
+	if (gStreamedSound == RADIO_MODERN_TALKING)
+		gStreamedSound = RADIO_OFF;
 	if (gStreamedSound >= STREAMED_SOUND_CITY_AMBIENT && gStreamedSound <= STREAMED_SOUND_AMBSIL_AMBIENT)
 		gStreamedSound = RADIO_OFF;
 	if (gNumRetunePresses != 0) {
@@ -1496,8 +1535,12 @@ cMusicManager::DisplayRadioStationName()
 #else
 		track = m_nFrontendTrack;
 #endif
+	if (track == STREAMED_SOUND_RADIO_MODERN_TALKING)
+		track = RADIO_OFF;
 	wchar* string = nil;
-	switch (track) {
+	if (isModernTalking && gNumRetunePresses == 0) {
+		string = ModernTalkingStationText;
+	} else switch (track) {
 	case WILDSTYLE: string = TheText.Get("FEA_FM0"); break;
 	case FLASH_FM: string = TheText.Get("FEA_FM1"); break;
 	case KCHAT: string = TheText.Get("FEA_FM2"); break;
@@ -1550,7 +1593,8 @@ cMusicManager::DisplayRadioStationName()
 	CFont::SetBackgroundOff();
 	CFont::SetScale(SCREEN_SCALE_X(0.8f), SCREEN_SCALE_Y(1.35f));
 	CFont::SetPropOn();
-	CFont::SetFontStyle(FONT_STANDARD);
+	bool useModernTalkingStyle = isModernTalking && gNumRetunePresses == 0;
+	CFont::SetFontStyle(useModernTalkingStyle ? FONT_BANK : FONT_STANDARD);
 	float radioTextX = SCREEN_WIDTH / 2;
 	float radioTextY = SCREEN_SCALE_Y(22.0f);
 	if (UseOfficialChineseRadioHudLayout()) {
@@ -1560,6 +1604,12 @@ cMusicManager::DisplayRadioStationName()
 	} else {
 		CFont::SetCentreOn();
 		CFont::SetCentreSize(SCREEN_STRETCH_X(DEFAULT_SCREEN_WIDTH));
+	}
+	if (useModernTalkingStyle) {
+		CFont::SetSlantRefPoint(radioTextX, radioTextY);
+		CFont::SetSlant(0.15f);
+	} else {
+		CFont::SetSlant(0.0f);
 	}
 	CFont::SetColor(CRGBA(0, 0, 0, 255));
 	CFont::PrintString(radioTextX + SCREEN_SCALE_X(2.0f), radioTextY + SCREEN_SCALE_Y(2.0f), pCurrentStation);
@@ -1571,4 +1621,5 @@ cMusicManager::DisplayRadioStationName()
 
 	CFont::PrintString(radioTextX, radioTextY, pCurrentStation);
 	CFont::DrawFonts();
+	CFont::SetSlant(0.0f);
 }

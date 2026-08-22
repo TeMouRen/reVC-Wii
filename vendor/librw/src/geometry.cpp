@@ -23,6 +23,232 @@ PluginList Material::s_plglist(sizeof(Material));
 
 static SurfaceProperties defaultSurfaceProps = { 1.0f, 1.0f, 1.0f };
 
+#ifdef RW_GX
+// Define GX_MISSING_TEXTURE_DIAGNOSTICS for targeted missing-resource probes.
+enum { GX_MISSING_MATERIAL_DIAG_CAPACITY = 256 };
+enum { GX_MISSING_MATERIAL_DIAG_PROBE_COUNT = 8 };
+
+struct GxTextureStreamContext
+{
+	int32 modelId;
+	int32 txdSlot;
+	char modelName[32];
+	char txdName[20];
+};
+
+struct GxMissingMaterialEntry
+{
+	const Material *material;
+#ifdef GX_MISSING_TEXTURE_DIAGNOSTICS
+	uint32 serial;
+	int32 modelId;
+	int32 txdSlot;
+	char modelName[32];
+	char txdName[20];
+	char textureName[32];
+	char maskName[32];
+	uint32 aliasCandidates;
+	char reason[24];
+#endif
+};
+
+static GxTextureStreamContext gTextureStreamContext = { -1, -1, { 0 }, { 0 } };
+static GxMissingMaterialEntry gMissingMaterialDiags[GX_MISSING_MATERIAL_DIAG_CAPACITY];
+#ifdef GX_MISSING_TEXTURE_DIAGNOSTICS
+static uint32 gMissingMaterialDiagSerial = 0;
+#endif
+
+static uint32
+gxMissingMaterialDiagIndex(const Material *mat)
+{
+	return ((uintptr_t)mat >> 4) & (GX_MISSING_MATERIAL_DIAG_CAPACITY - 1);
+}
+
+static GxMissingMaterialEntry*
+gxFindMissingMaterialDiagEntry(const Material *mat, bool forInsert)
+{
+	const uint32 base = gxMissingMaterialDiagIndex(mat);
+	GxMissingMaterialEntry *empty = nil;
+	for(uint32 probe = 0; probe < GX_MISSING_MATERIAL_DIAG_PROBE_COUNT; probe++){
+		GxMissingMaterialEntry *entry =
+			&gMissingMaterialDiags[(base + probe) & (GX_MISSING_MATERIAL_DIAG_CAPACITY - 1)];
+		if(entry->material == mat)
+			return entry;
+		if(forInsert && empty == nil && entry->material == nil)
+			empty = entry;
+	}
+	return forInsert ? (empty ? empty : &gMissingMaterialDiags[base]) : nil;
+}
+
+static void
+gxCopyDiagString(char *dst, size_t size, const char *src)
+{
+	if(size == 0)
+		return;
+	strncpy(dst, src ? src : "", size - 1);
+	dst[size - 1] = '\0';
+}
+
+void
+gxSetTextureStreamContext(int32 modelId, const char *modelName,
+	int32 txdSlot, const char *txdName)
+{
+	gTextureStreamContext.modelId = modelId;
+	gTextureStreamContext.txdSlot = txdSlot;
+	gxCopyDiagString(gTextureStreamContext.modelName,
+	                 sizeof(gTextureStreamContext.modelName), modelName);
+	gxCopyDiagString(gTextureStreamContext.txdName,
+	                 sizeof(gTextureStreamContext.txdName), txdName);
+}
+
+void
+gxClearTextureStreamContext(void)
+{
+	gTextureStreamContext.modelId = -1;
+	gTextureStreamContext.txdSlot = -1;
+	gTextureStreamContext.modelName[0] = '\0';
+	gTextureStreamContext.txdName[0] = '\0';
+}
+
+static void
+gxForgetMissingMaterialDiag(const Material *mat)
+{
+	GxMissingMaterialEntry *entry = gxFindMissingMaterialDiagEntry(mat, false);
+	if(entry)
+		entry->material = nil;
+}
+
+static void
+gxStoreMissingMaterialDiag(const Material *mat, const GxMissingMaterialDiag *source)
+{
+	GxMissingMaterialEntry *entry = gxFindMissingMaterialDiagEntry(mat, true);
+	entry->material = mat;
+#ifdef GX_MISSING_TEXTURE_DIAGNOSTICS
+	if(source == nil)
+		return;
+	entry->serial = source->serial;
+	entry->modelId = source->modelId;
+	entry->txdSlot = source->txdSlot;
+	gxCopyDiagString(entry->modelName, sizeof(entry->modelName), source->modelName);
+	gxCopyDiagString(entry->txdName, sizeof(entry->txdName), source->txdName);
+	gxCopyDiagString(entry->textureName, sizeof(entry->textureName), source->textureName);
+	gxCopyDiagString(entry->maskName, sizeof(entry->maskName), source->maskName);
+	entry->aliasCandidates = source->aliasCandidates;
+	gxCopyDiagString(entry->reason, sizeof(entry->reason), source->reason);
+#else
+	(void)source;
+#endif
+}
+
+static void
+gxRememberMissingMaterialDiag(const Material *mat)
+{
+#ifdef GX_MISSING_TEXTURE_DIAGNOSTICS
+	const GxTextureResolveDiag *resolve = gxGetLastTextureResolveDiag();
+	GxMissingMaterialDiag source;
+	source.serial = ++gMissingMaterialDiagSerial;
+	source.modelId = gTextureStreamContext.modelId;
+	source.txdSlot = gTextureStreamContext.txdSlot;
+	source.modelName = gTextureStreamContext.modelName;
+	source.txdName = gTextureStreamContext.txdName;
+	source.textureName = resolve ? resolve->name :
+		(mat->texture ? mat->texture->name : "");
+	source.maskName = resolve ? resolve->mask :
+		(mat->texture ? mat->texture->mask : "");
+	source.aliasCandidates = resolve ? resolve->aliasCandidates : 0;
+	source.reason = resolve ? resolve->reason :
+		(mat->texture ? "dummy-texture" : "stream-read-failed");
+	gxStoreMissingMaterialDiag(mat, &source);
+	const GxMissingMaterialEntry *entry = gxFindMissingMaterialDiagEntry(mat, false);
+	if(entry == nil)
+		return;
+
+	fprintf(stdout,
+	        "[MAT-TEX-MISS] serial=%u mat=%p modelId=%d model=%s txdSlot=%d txd=%s tex='%s' mask='%s' aliases=%u reason=%s\n",
+	        (unsigned)entry->serial, (void*)mat, entry->modelId,
+	        entry->modelName[0] ? entry->modelName : "<unknown>",
+	        entry->txdSlot, entry->txdName[0] ? entry->txdName : "<unknown>",
+	        entry->textureName, entry->maskName,
+	        (unsigned)entry->aliasCandidates, entry->reason);
+#else
+	// The normal Wii build only needs the unresolved-material presence set used
+	// by both GX pipelines. Omit the 39 KiB string payload unless the targeted
+	// diagnostic build is explicitly enabled.
+	gxStoreMissingMaterialDiag(mat, nil);
+#endif
+}
+
+bool
+gxGetMissingMaterialDiag(const Material *mat, GxMissingMaterialDiag *diag)
+{
+	const GxMissingMaterialEntry *entry = gxFindMissingMaterialDiagEntry(mat, false);
+	if(entry == nil)
+		return false;
+	if(diag){
+#ifdef GX_MISSING_TEXTURE_DIAGNOSTICS
+		diag->serial = entry->serial;
+		diag->modelId = entry->modelId;
+		diag->txdSlot = entry->txdSlot;
+		diag->modelName = entry->modelName;
+		diag->txdName = entry->txdName;
+		diag->textureName = entry->textureName;
+		diag->maskName = entry->maskName;
+		diag->aliasCandidates = entry->aliasCandidates;
+		diag->reason = entry->reason;
+#else
+		memset(diag, 0, sizeof(*diag));
+		diag->modelId = -1;
+		diag->txdSlot = -1;
+#endif
+	}
+	return true;
+}
+
+bool
+gxShouldSkipUnresolvedTexturedMesh(const Material *mat,
+	const char *pipeline, uint32 meshIndex, uint32 numIndices)
+{
+	GxMissingMaterialDiag diag;
+	if(!gxGetMissingMaterialDiag(mat, &diag))
+		return false;
+
+	// A material without a texture can be intentional. This table only holds
+	// materials whose stream declared a texture that failed to resolve.
+#ifdef GX_MISSING_TEXTURE_DIAGNOSTICS
+	static uint32 loggedSerials[128];
+	static uint32 numLoggedSerials = 0;
+	bool alreadyLogged = false;
+	for(uint32 i = 0; i < numLoggedSerials; i++){
+		if(loggedSerials[i] == diag.serial){
+			alreadyLogged = true;
+			break;
+		}
+	}
+	if(!alreadyLogged &&
+	   numLoggedSerials < sizeof(loggedSerials) / sizeof(loggedSerials[0])){
+		loggedSerials[numLoggedSerials++] = diag.serial;
+		fprintf(stdout,
+		        "[GX-MAT-TEX-SKIP] serial=%u pipe=%s modelId=%d model=%s txdSlot=%d txd=%s tex='%s' mask='%s' aliases=%u reason=%s mesh=%u idx=%u\n",
+		        (unsigned)diag.serial, pipeline ? pipeline : "unknown",
+		        diag.modelId,
+		        diag.modelName && diag.modelName[0] ? diag.modelName : "<unknown>",
+		        diag.txdSlot,
+		        diag.txdName && diag.txdName[0] ? diag.txdName : "<unknown>",
+		        diag.textureName ? diag.textureName : "",
+		        diag.maskName ? diag.maskName : "",
+		        (unsigned)diag.aliasCandidates,
+		        diag.reason ? diag.reason : "unknown",
+		        (unsigned)meshIndex, (unsigned)numIndices);
+	}
+#else
+	(void)pipeline;
+	(void)meshIndex;
+	(void)numIndices;
+#endif
+	return true;
+}
+#endif
+
 // We allocate twice because we have to allocate the data separately for uninstancing
 Geometry*
 Geometry::create(int32 numVerts, int32 numTris, uint32 flags)
@@ -908,6 +1134,11 @@ Material::clone(void)
 		mat->setTexture(this->texture);
 	mat->pipeline = this->pipeline;
 	s_plglist.copy(mat, this);
+	#ifdef RW_GX
+	GxMissingMaterialDiag missingDiag;
+	if(gxGetMissingMaterialDiag(this, &missingDiag))
+		gxStoreMissingMaterialDiag(mat, &missingDiag);
+	#endif
 	return mat;
 }
 
@@ -916,6 +1147,9 @@ Material::destroy(void)
 {
 	this->refCount--;
 	if(this->refCount <= 0){
+		#ifdef RW_GX
+		gxForgetMissingMaterialDiag(this);
+		#endif
 		s_plglist.destruct(this);
 		if(this->texture)
 			this->texture->destroy();
@@ -927,6 +1161,9 @@ Material::destroy(void)
 void
 Material::setTexture(Texture *tex)
 {
+	#ifdef RW_GX
+	gxForgetMissingMaterialDiag(this);
+	#endif
 	if(this->texture)
 		this->texture->destroy();
 	if(tex)
@@ -972,6 +1209,15 @@ Material::streamRead(Stream *stream)
 			goto fail;
 		}
 		mat->texture = Texture::streamRead(stream);
+		#ifdef RW_GX
+		const bool placeholderTexture = mat->texture != nil &&
+			(mat->texture->raster == nil ||
+			 mat->texture->raster->width == 0 ||
+			 mat->texture->raster->height == 0);
+		if(mat->texture == nil || placeholderTexture ||
+		   gxGetLastTextureResolveDiag() != nil)
+			gxRememberMissingMaterialDiag(mat);
+		#endif
 	}
 
 	materialRights[0] = 0;

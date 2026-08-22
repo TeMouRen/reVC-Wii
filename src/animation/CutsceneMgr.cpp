@@ -30,6 +30,11 @@
 
 #if GX_CONSOLE
 #include "gxmemory.h"
+#ifdef WII
+namespace rw { namespace gx {
+void texPoolEnforceBudgetImmediate(const char *reason, int maxSteps);
+} }
+#endif
 #endif
 
 #if GX_CONSOLE
@@ -37,7 +42,7 @@ static uint32
 GxIntroCutsceneTexBudget(void)
 {
 #ifdef WII
-	return 44u * 1024u * 1024u;
+	return 22u * 1024u * 1024u;
 #else
 	return 18u * 1024u * 1024u;
 #endif
@@ -47,7 +52,7 @@ static uint32
 GxCutsceneLoadTexBudget(void)
 {
 #ifdef WII
-	return 48u * 1024u * 1024u;
+	return 22u * 1024u * 1024u;
 #else
 	return 20u * 1024u * 1024u;
 #endif
@@ -57,9 +62,19 @@ static uint32
 GxPostCutsceneTexBudget(void)
 {
 #ifdef WII
-	return 48u * 1024u * 1024u;
+	return 22u * 1024u * 1024u;
 #else
 	return 22u * 1024u * 1024u;
+#endif
+}
+
+static void
+GxEnforceCutsceneTexBudget(const char *reason)
+{
+#ifdef WII
+	rw::gx::texPoolEnforceBudgetImmediate(reason, 32);
+#else
+	rw::gx::texPoolEnforceBudget(reason);
 #endif
 }
 #endif
@@ -257,13 +272,17 @@ CCutsceneMgr::LoadCutsceneData(const char *szCutsceneName)
 	CStreaming::RemoveUnusedModelsInLoadedList();
 	CGame::DrasticTidyUpMemory(true);
 
+	ms_cutsceneAssociations.DestroyAssociations();
+	if (ms_animLoaded)
+		CAnimManager::RemoveLastAnimFile();
+	ms_animLoaded = false;
 	strcpy(ms_cutsceneName, szCutsceneName);
 #if GX_CONSOLE
 	if (IsIntroCutsceneName(ms_cutsceneName)) {
 		CGame::playingIntro = true;
 		rw::gx::pushCriticalUiUploadContext(ms_cutsceneName);
 		rw::gx::texPoolSetSoftBudget(GxIntroCutsceneTexBudget());
-		rw::gx::texPoolEnforceBudget("intro-cutscene-preload");
+		GxEnforceCutsceneTexBudget("intro-cutscene-preload");
 	}
 #endif
 
@@ -277,13 +296,11 @@ CCutsceneMgr::LoadCutsceneData(const char *szCutsceneName)
 #if GX_CONSOLE
 		if (IsIntroCutsceneName(szCutsceneName)) {
 			rw::gx::texPoolSetSoftBudget(GxIntroCutsceneTexBudget());
-			rw::gx::texPoolEnforceBudget("intro-cutscene-anim");
+			GxEnforceCutsceneTexBudget("intro-cutscene-anim");
 		} else {
-			// Wii now has a dedicated 64MB GX pool in MEM2, so keep cutscene
-			// texture budgets close to gameplay quality instead of forcing the
-			// old aggressively blurry safety path.
+			// Keep cutscene texture quality aligned with the fixed Wii GX pool.
 			rw::gx::texPoolSetSoftBudget(GxCutsceneLoadTexBudget());
-			rw::gx::texPoolEnforceBudget("cutscene-anim");
+			GxEnforceCutsceneTexBudget("cutscene-anim");
 		}
 #endif
 		CStreaming::MakeSpaceFor(size << 11);
@@ -430,36 +447,42 @@ void
 CCutsceneMgr::SetCutsceneAnim(const char *animName, CObject *pObject)
 {
 	CAnimBlendAssociation *pNewAnim;
+	CAnimBlendAssociation *pTemplateAnim;
 	CAnimBlendClumpData *pAnimBlendClumpData;
 
+	if (animName == nil || animName[0] == '\0') {
+		printf("[CUTSCENE] SetCutsceneAnim skipped empty name obj=%p\n", pObject);
+		return;
+	}
 	if (pObject == nil || pObject->m_rwObject == nil || RwObjectGetType(pObject->m_rwObject) != rpCLUMP) {
 		printf("[CUTSCENE] SetCutsceneAnim skipped invalid object anim=%s obj=%p rw=%p\n",
 		       animName, pObject, pObject ? pObject->m_rwObject : nil);
 		return;
 	}
 	debug("Give cutscene anim %s\n", animName);
-	RpAnimBlendClumpRemoveAllAssociations((RpClump*)pObject->m_rwObject);
 
-	pNewAnim = ms_cutsceneAssociations.GetAnimation(animName);
-	if (!pNewAnim) {
+	pTemplateAnim = ms_cutsceneAssociations.GetAnimation(animName);
+	if (pTemplateAnim == nil || pTemplateAnim->nodes == nil || pTemplateAnim->hierarchy == nil) {
 		debug("\n\nHaven't I told you I can't find the fucking animation %s\n\n\n", animName);
+		printf("[CUTSCENE] missing cutscene animation %s for obj=%p group=%p\n",
+		       animName, pObject, &ms_cutsceneAssociations);
 		return;
 	}
 
-	if (pNewAnim->hierarchy->IsCompressed())
-		pNewAnim->hierarchy->keepCompressed = true;
+	if (pTemplateAnim->hierarchy->IsCompressed())
+		pTemplateAnim->hierarchy->keepCompressed = true;
 
 	CStreaming::ImGonnaUseStreamingMemory();
 	pNewAnim = ms_cutsceneAssociations.CopyAnimation(animName);
 	CStreaming::IHaveUsedStreamingMemory();
-	if (pNewAnim == nil) {
-		printf("[CUTSCENE] CopyAnimation failed for %s\n", animName);
+	if (pNewAnim == nil || pNewAnim->nodes == nil || pNewAnim->hierarchy == nil) {
+		printf("[CUTSCENE] CopyAnimation failed for %s obj=%p anim=%p nodes=%p hier=%p\n",
+		       animName, pObject, pNewAnim, pNewAnim ? pNewAnim->nodes : nil,
+		       pNewAnim ? pNewAnim->hierarchy : nil);
+		if (pNewAnim)
+			delete pNewAnim;
 		return;
 	}
-
-	pNewAnim->SetCurrentTime(0.0f);
-	pNewAnim->flags |= ASSOC_HAS_TRANSLATION;
-	pNewAnim->flags &= ~ASSOC_RUNNING;
 
 	pAnimBlendClumpData = *RPANIMBLENDCLUMPDATA(pObject->m_rwObject);
 	if (pAnimBlendClumpData == nil || pAnimBlendClumpData->frames == nil || pAnimBlendClumpData->numFrames <= 0) {
@@ -468,6 +491,18 @@ CCutsceneMgr::SetCutsceneAnim(const char *animName, CObject *pObject)
 		delete pNewAnim;
 		return;
 	}
+	if (pNewAnim->numNodes != pAnimBlendClumpData->numFrames) {
+		printf("[CUTSCENE] anim/clump frame mismatch for %s obj=%p assocFrames=%d clumpFrames=%d\n",
+		       animName, pObject, (int)pNewAnim->numNodes, (int)pAnimBlendClumpData->numFrames);
+		delete pNewAnim;
+		return;
+	}
+
+	RpAnimBlendClumpRemoveAllAssociations((RpClump*)pObject->m_rwObject);
+
+	pNewAnim->SetCurrentTime(0.0f);
+	pNewAnim->flags |= ASSOC_HAS_TRANSLATION;
+	pNewAnim->flags &= ~ASSOC_RUNNING;
 	pAnimBlendClumpData->link.Prepend(&pNewAnim->link);
 
 	if (pNewAnim->hierarchy->keepCompressed)
@@ -477,7 +512,13 @@ CCutsceneMgr::SetCutsceneAnim(const char *animName, CObject *pObject)
 void
 CCutsceneMgr::SetCutsceneAnimToLoop(const char* animName)
 {
-	ms_cutsceneAssociations.GetAnimation(animName)->flags |= ASSOC_REPEAT;
+	CAnimBlendAssociation *assoc = ms_cutsceneAssociations.GetAnimation(animName);
+	if (assoc == nil || assoc->nodes == nil || assoc->hierarchy == nil) {
+		printf("[CUTSCENE] SetCutsceneAnimToLoop skipped missing animation %s\n",
+		       animName ? animName : "<null>");
+		return;
+	}
+	assoc->flags |= ASSOC_REPEAT;
 }
 
 CCutsceneHead *
@@ -559,6 +600,9 @@ void
 CCutsceneMgr::DeleteCutsceneData(void)
 {
 	if (!ms_loaded) return;
+	const bool hadCamLoaded = bCamLoaded;
+	char deletedCutsceneName[CUTSCENENAMESIZE];
+	strcpy(deletedCutsceneName, ms_cutsceneName);
 #ifdef WII
 	printf("[CUT-WII] delete_cutscene name=%s loaded=%d processing=%d running=%d status=%u objs=%d\n",
 		ms_cutsceneName,
@@ -596,6 +640,8 @@ CCutsceneMgr::DeleteCutsceneData(void)
 		}
 	}
 
+	ms_cutsceneAssociations.DestroyAssociations();
+
 	if (ms_animLoaded)
 		CAnimManager::RemoveLastAnimFile();
 
@@ -619,30 +665,29 @@ CCutsceneMgr::DeleteCutsceneData(void)
 	CPad::GetPad(0)->SetEnablePlayerControls(PLAYERCONTROL_CUTSCENE);
 	CWorld::Players[CWorld::PlayerInFocus].MakePlayerSafe(false);
 
-	if (CGeneral::faststricmp(ms_cutsceneName, "finale")) {
+	if (CGeneral::faststricmp(deletedCutsceneName, "finale")) {
 		DMAudio.StopCutSceneMusic();
 		DMAudio.ChangeMusicMode(MUSICMODE_GAME);
 	}
 #if GX_CONSOLE
 	if (wasIntroCutscene) {
-		rw::gx::popCriticalUiUploadContext(ms_cutsceneName);
+		rw::gx::popCriticalUiUploadContext(deletedCutsceneName);
 		CGame::playingIntro = false;
 		// Keep intro cleanup on the conservative budget path so later
 		// cutscene/gameplay rwMalloc calls are not starved by texture growth.
 		rw::gx::texPoolSetSoftBudget(GxCutsceneLoadTexBudget());
-		rw::gx::texPoolEnforceBudget("intro-cutscene-end");
+		GxEnforceCutsceneTexBudget("intro-cutscene-end");
 	} else {
-		// Keep post-cutscene gameplay near the full-quality Wii budget now that
-		// the dedicated GX MEM2 pool is large enough to avoid the old 26MB cap.
+		// Restore the normal Wii texture budget after the cutscene.
 		rw::gx::texPoolSetSoftBudget(GxPostCutsceneTexBudget());
-		rw::gx::texPoolEnforceBudget("cutscene-end");
+		GxEnforceCutsceneTexBudget("cutscene-end");
 	}
 #endif
 
 	CStreaming::ms_disableStreaming = false;
 	CWorld::bProcessCutsceneOnly = false;
 
-	if(bCamLoaded)
+	if(hadCamLoaded)
 		CGame::DrasticTidyUpMemory(TheCamera.GetScreenFadeStatus() == FADE_2);
 	
 	CPad::GetPad(0)->Clear(false);

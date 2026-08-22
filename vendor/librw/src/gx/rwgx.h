@@ -12,8 +12,11 @@
 namespace rw {
 struct Texture;  // forward declare rw::Texture (defined in rwobjects.h)
 struct Raster;   // forward declare rw::Raster (defined in rwobjects.h)
+struct Material; // forward declare rw::Material (defined in rwobjects.h)
 struct Stream;  // forward declare rw::Stream (defined in rwbase.h)
 namespace gx {
+
+static const uint32_t PLATFORM_GX_TILED_V2 = 0x8000000Du;
 
 struct Im2DVertex
 {
@@ -79,12 +82,20 @@ enum GxRasterAlphaKind
     GX_RASTER_ALPHA_SMOOTH
 };
 
+enum GxRasterCpuStorage
+{
+    GX_RASTER_CPU_NONE = 0,
+    GX_RASTER_CPU_GENERIC_MEM2,
+    GX_RASTER_CPU_GX
+};
+
 struct GxRaster
 {
     GXTexObj  texObj;
     void     *gxData;
     void     *cpuData;
     uint32_t  dataSize;
+    uint32_t  cpuDataSize;
     uint16_t  w, h;
     uint8_t   gxFmt;
     uint8_t   hasAlpha;
@@ -92,6 +103,8 @@ struct GxRaster
     uint8_t   wrapS, wrapT;
     uint8_t   minFilter, magFilter;
     uint8_t   preferOwnSampler;
+    uint8_t   usageClass;
+    uint8_t   cpuDataStorage;
     bool      dirty;
     bool      texObjValid;
 };
@@ -141,6 +154,11 @@ uint32_t rgba8TiledSize(int w, int h);
 void invalidateTextureBinding(void *raster);
 void syncNativeSamplerFromTexture(Texture *tex, Raster *raster);
 void *destroyNativeData(void *object, int, int);  // geometry buffer cleanup
+
+// MatFX owns effect-specific GX state. The default object pipe owns the base
+// material pass and calls these only for the MatFX pipeline.
+bool gxMatFXEnvReady(Material *mat, bool hasNormals);
+bool gxMatFXSetupEnv(Material *mat, bool baseTextured);
 
 // ── Device lifecycle ────────────────────────────────────────
 struct EngineOpenParams;

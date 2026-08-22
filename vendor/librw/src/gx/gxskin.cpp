@@ -20,6 +20,7 @@
 #include "../rwplugins.h"
 #include "../rwrender.h"
 #include "rwgx.h"
+#include "gxmemory.h"
 
 // Define GX_PIPELINE_DIAGNOSTICS when targeted pipeline tracing is needed.
 #ifndef GX_PIPELINE_DIAGNOSTICS
@@ -126,6 +127,202 @@ skinFocusTexture(const char *name)
            nameContainsNoCase(name, "branch") ||
            nameContainsNoCase(name, "frond") ||
            nameContainsNoCase(name, "shadow");
+}
+
+struct GxSkinSolidDiagState
+{
+    const char *reason;
+    Texture *texture;
+    Raster *raster;
+    GxRaster *natras;
+    void *texObjData;
+    uint16 texObjWidth;
+    uint16 texObjHeight;
+    uint8 texObjFmt;
+    bool passClr;
+};
+
+static GxSkinSolidDiagState
+classifySkinSolidFallback(Material *mat)
+{
+    GxSkinSolidDiagState state;
+    state.reason = "no-texture";
+    state.texture = nil;
+    state.raster = nil;
+    state.natras = nil;
+    state.texObjData = nil;
+    state.texObjWidth = 0;
+    state.texObjHeight = 0;
+    state.texObjFmt = 0xFF;
+    state.passClr = true;
+
+    if(mat == nil || mat->texture == nil)
+        return state;
+
+    state.texture = mat->texture;
+    state.raster = mat->texture->raster;
+    if(state.raster == nil) {
+        state.reason = "no-raster";
+        return state;
+    }
+
+    state.natras = PLUGINOFFSET(GxRaster, state.raster, nativeRasterOffset);
+    if(state.natras == nil) {
+        state.reason = "no-natras";
+        return state;
+    }
+
+    if(!state.natras->texObjValid) {
+        state.reason = "texobj-invalid";
+        return state;
+    }
+
+    state.passClr = false;
+
+    state.texObjData = GX_GetTexObjData(&state.natras->texObj);
+    state.texObjWidth = GX_GetTexObjWidth(&state.natras->texObj);
+    state.texObjHeight = GX_GetTexObjHeight(&state.natras->texObj);
+    state.texObjFmt = (uint8)GX_GetTexObjFmt(&state.natras->texObj);
+    if(state.natras->gxData == nil || state.natras->dataSize == 0) {
+        state.reason = "no-gxdata";
+        return state;
+    }
+    if((uintptr_t)state.texObjData !=
+       (uintptr_t)MEM_VIRTUAL_TO_PHYSICAL(state.natras->gxData)) {
+        state.reason = "texobj-data-mismatch";
+        return state;
+    }
+    if(state.texObjWidth != state.natras->w ||
+       state.texObjHeight != state.natras->h) {
+        state.reason = "texobj-size-mismatch";
+        return state;
+    }
+    if(state.texObjFmt != state.natras->gxFmt) {
+        state.reason = "texobj-format-mismatch";
+        return state;
+    }
+
+    state.reason = nil;
+    return state;
+}
+
+static void
+logSkinSolidFallback(Atomic *atomic, Geometry *geo, uint32 meshIndex,
+                     uint32 passIndex, GxSkinData::MeshData *md,
+                     const GxSkinSolidDiagState &diag)
+{
+    Material *material = md ? md->material : nil;
+    // Missing-material meshes are handled by gxShouldSkipUnresolvedTexturedMesh.
+    // Keep this diagnostic reserved for actual GX texture-object faults.
+    if(material != nil && gxGetMissingMaterialDiag(material, nil))
+        return;
+    const bool ordinaryUntextured = material == nil || material->texture == nil;
+    if(ordinaryUntextured)
+        return;
+
+    struct SeenKey {
+        const void *geo;
+        const void *mat;
+        const void *tex;
+        const char *reason;
+        uint32 shrink;
+        uint32 compaction;
+    };
+    static SeenKey seen[96];
+    static uint32 seenCount = 0;
+    static uint32 seenNext = 0;
+    static uint32 windowStartFrame = 0;
+    static uint32 windowPassClrCount = 0;
+    static uint32 windowFaultCount = 0;
+
+    const void *matKey = md ? md->material : nil;
+    const void *texKey = diag.texture;
+    const uint32 shrink = gxMemGetShrinkTotalCount();
+    const uint32 compaction = gxMemGetCompactionGeneration();
+    for(uint32 i = 0; i < seenCount; i++) {
+        if(seen[i].geo == geo &&
+           seen[i].mat == matKey &&
+           seen[i].tex == texKey &&
+           seen[i].reason == diag.reason &&
+           seen[i].shrink == shrink &&
+           seen[i].compaction == compaction)
+            return;
+    }
+
+    if(windowStartFrame == 0 ||
+       (uint32)(gxFrameNum - windowStartFrame) >= 150u) {
+        windowStartFrame = gxFrameNum;
+        windowPassClrCount = 0;
+        windowFaultCount = 0;
+    }
+    uint32 *windowCount = diag.passClr ? &windowPassClrCount : &windowFaultCount;
+    const uint32 windowLimit = diag.passClr ? 6u : 16u;
+    if(*windowCount >= windowLimit)
+        return;
+    (*windowCount)++;
+
+    uint32 seenIndex;
+    if(seenCount < (sizeof(seen) / sizeof(seen[0]))) {
+        seenIndex = seenCount++;
+    } else {
+        seenIndex = seenNext++ % (sizeof(seen) / sizeof(seen[0]));
+    }
+    seen[seenIndex].geo = geo;
+    seen[seenIndex].mat = matKey;
+    seen[seenIndex].tex = texKey;
+    seen[seenIndex].reason = diag.reason;
+    seen[seenIndex].shrink = shrink;
+    seen[seenIndex].compaction = compaction;
+
+    const Matrix *ltm = (atomic && atomic->getFrame()) ? atomic->getFrame()->getLTM() : nil;
+    const char *texName = diag.texture ? diag.texture->name : nil;
+    const char *maskName = diag.texture ? diag.texture->mask : nil;
+    RGBA matColor = {255, 255, 255, 255};
+    if(md && md->material)
+        matColor = md->material->color;
+    const uintptr_t expectedTexObjData = diag.natras && diag.natras->gxData ?
+        (uintptr_t)MEM_VIRTUAL_TO_PHYSICAL(diag.natras->gxData) : 0u;
+    fprintf(stdout,
+           "%s pipe=skin path=%s reason=%s serial=%u modelId=%d model=%s txdSlot=%d txd=%s reqTex='%s' reqMask='%s' aliases=%u frame=%u gen=%u shrink=%u atomic=%p geo=%p mesh=%u pass=%u mat=%p tex=%p raster=%p natras=%p gx=%p objGx=%p objMatch=%d texObj=%d texRef=%d texName=%s mask=%s idx=%u rgba=%u,%u,%u,%u vtxA=%d prelit=%d mod=0 pos=%.3f,%.3f,%.3f fmt=0x%02X objFmt=0x%02X size=%u wh=%ux%u objWh=%ux%u hasA=%u aKind=%u\n",
+           "[GX-TEXOBJ-FAULT]",
+           diag.passClr ? "passclr" : "textured",
+           diag.reason,
+           0u, -1, "<unknown>", -1, "<unknown>", "", "", 0u,
+           gxFrameNum,
+           compaction,
+           shrink,
+           (void*)atomic,
+           (void*)geo,
+           (unsigned)meshIndex,
+           (unsigned)passIndex,
+           matKey,
+           (void*)diag.texture,
+           (void*)diag.raster,
+           (void*)diag.natras,
+           diag.natras ? diag.natras->gxData : nil,
+           diag.texObjData,
+           ((uintptr_t)diag.texObjData == expectedTexObjData) ? 1 : 0,
+           (diag.natras && diag.natras->texObjValid) ? 1 : 0,
+           diag.texture ? diag.texture->refCount : 0,
+           texName ? texName : "none",
+           maskName ? maskName : "none",
+           md ? (unsigned)md->numIndices : 0u,
+           (unsigned)matColor.red, (unsigned)matColor.green,
+           (unsigned)matColor.blue, (unsigned)matColor.alpha,
+           (md && md->vertexAlpha) ? 1 : 0,
+           geo && (geo->flags & Geometry::PRELIT) ? 1 : 0,
+           ltm ? (double)ltm->pos.x : 0.0,
+           ltm ? (double)ltm->pos.y : 0.0,
+           ltm ? (double)ltm->pos.z : 0.0,
+           diag.natras ? (unsigned)diag.natras->gxFmt : 0xFFu,
+           (unsigned)diag.texObjFmt,
+           diag.natras ? (unsigned)diag.natras->dataSize : 0u,
+           diag.natras ? (unsigned)diag.natras->w : 0u,
+           diag.natras ? (unsigned)diag.natras->h : 0u,
+           (unsigned)diag.texObjWidth,
+           (unsigned)diag.texObjHeight,
+           diag.natras ? (unsigned)diag.natras->hasAlpha : 0u,
+           diag.natras ? (unsigned)diag.natras->alphaKind : 0u);
 }
 
 static int32
@@ -244,31 +441,13 @@ logSkinMeshDiag(Atomic *atomic, GxSkinData *inst, GxSkinData::MeshData *md,
     GxRaster *natras = (tex && tex->raster)
         ? PLUGINOFFSET(GxRaster, tex->raster, nativeRasterOffset) : nil;
 
-    printf("[SKIN-MESH] tex=%s fmt=%s texObj=%d prim=%s skin=%d idx0=%u numIdx=%u "
-           "v0=(%.3f,%.3f,%.3f) sv0=(%.3f,%.3f,%.3f) uv0=(%.3f,%.3f) "
-           "ltmPos=(%.3f,%.3f,%.3f) wsum=%.3f valid=%d weights=",
-           texName,
-           natras ? gxFmtName(natras->gxFmt) : "none",
-           natras ? natras->texObjValid : 0,
-           prim == GX_TRIANGLESTRIP ? "STRIP" : "TRIS",
-           doSkin ? 1 : 0,
-           (unsigned)vi, (unsigned)md->numIndices,
-           px, py, pz, spx, spy, spz, tu, tv,
-           ltm ? ltm->pos.x : 0.0f, ltm ? ltm->pos.y : 0.0f, ltm ? ltm->pos.z : 0.0f,
-           weightSum, (int)validWeights);
-
-    if(doSkin && skin){
-        for(int32 w = 0; w < weightCount; w++){
-            uint8 bi = skin->indices[vi * 4 + w];
-            float bw = skin->weights[vi * 4 + w];
-            if(bw <= 0.0f)
-                continue;
-            printf("%s%u:%.3f", w == 0 ? "" : ",", (unsigned)bi, bw);
-        }
-    }else{
-        printf("none");
-    }
-    printf("\n");
+    (void)px; (void)py; (void)pz;
+    (void)spx; (void)spy; (void)spz;
+    (void)tu; (void)tv;
+    (void)ltm; (void)natras;
+    (void)weightSum; (void)validWeights;
+    (void)doSkin; (void)skin; (void)weightCount; (void)prim;
+    /* noisy focused skin mesh trace disabled in favor of missing-texture diagnostics */
     s_skinDiagCount++;
 }
 
@@ -419,6 +598,9 @@ setMaterialSkin(Material *mat, bool32 vertexAlpha, uint32 passIndex)
         }else
             hasTexAlpha = Raster::formatHasAlpha(ras->format);
     }
+    (void)texAlphaKind;
+    (void)texFmt;
+    (void)texObjValid;
 
     // Keep skinned meshes on the same RenderWare alpha contract as the
     // default pipeline and the GX2/GL3 backends.
@@ -487,23 +669,7 @@ setMaterialSkin(Material *mat, bool32 vertexAlpha, uint32 passIndex)
 
     static int s_skinTexStateLogCount = 0;
     if(skinFocusTexture(texName) && s_skinTexStateLogCount < 160) {
-        printf("[SKIN-TEXSTATE] tex=%s fmt=0x%02X texObj=%d texA=%d aKind=%u vtxA=%d blend=%d cutout=%d "
-               "matA=%u aFn=%d aRef=%d effARef=%u zWrite=%d zAfterTex=%d cull=%u\n",
-               texName,
-               (unsigned)texFmt,
-               texObjValid ? 1 : 0,
-               hasTexAlpha ? 1 : 0,
-               (unsigned)texAlphaKind,
-               vertexAlpha ? 1 : 0,
-               doBlend ? 1 : 0,
-               doAlphaTest ? 1 : 0,
-               mat ? (unsigned)mat->color.alpha : 255u,
-               (int)gxState.alphaTestFunc,
-               (int)gxState.alphaTestRef,
-               (unsigned)effectiveAlphaRef,
-               zWriteEnable ? 1 : 0,
-               zAfterTexturing ? 1 : 0,
-               (unsigned)((freeCamDebug || fullbrightDebug) ? GX_CULL_NONE : gxCullFromState()));
+        /* noisy focused skin tex trace disabled in favor of missing-texture diagnostics */
         s_skinTexStateLogCount++;
     }
 
@@ -722,19 +888,7 @@ skinRender(rw::ObjPipeline *rwpipe, Atomic *atomic)
         const char *meshTexName = meshTex ? meshTex->name : nil;
         static int s_skinFocusMeshLogCount = 0;
         if(skinFocusTexture(meshTexName) && s_skinFocusMeshLogCount < 160) {
-            printf("[SKIN-FOCUS] tex=%s mesh=%u prim=%s doSkin=%d bones=%d weights=%d "
-                   "vAlpha=%d hasNrm=%d hasCol=%d texCoords=%u numIdx=%u\n",
-                   meshTexName,
-                   (unsigned)m,
-                   prim == GX_TRIANGLESTRIP ? "STRIP" : "TRIS",
-                   doSkin ? 1 : 0,
-                   (int)boneCount,
-                   (int)weightCount,
-                   md->vertexAlpha ? 1 : 0,
-                   inst->hasNormals ? 1 : 0,
-                   inst->hasColors ? 1 : 0,
-                   (unsigned)inst->numTexCoords,
-                   (unsigned)md->numIndices);
+            /* noisy focused skin mesh trace disabled in favor of missing-texture diagnostics */
             s_skinFocusMeshLogCount++;
         }
 
@@ -761,9 +915,15 @@ skinRender(rw::ObjPipeline *rwpipe, Atomic *atomic)
                    (unsigned)inst->totalVertices, (unsigned)numIdx);
             continue;
         }
+        if(gxShouldSkipUnresolvedTexturedMesh(md->material, "skin", m,
+                                              numIdx))
+            continue;
         logSkinMeshDiag(atomic, inst, md, meshIdx, prim, doSkin, skin, hier,
                         boneMats, boneCount, weightCount);
         uint32 passCount = setMaterialSkin(md->material, md->vertexAlpha, 0);
+        GxSkinSolidDiagState solidDiag = classifySkinSolidFallback(md->material);
+        if(solidDiag.reason != nil)
+            logSkinSolidFallback(atomic, geo, m, 0, md, solidDiag);
         for(uint32 pass = 0; pass < passCount; pass++) {
             GX_LoadPosMtxImm(modelView, GX_PNMTX0);
             if(pass > 0)

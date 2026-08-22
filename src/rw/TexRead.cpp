@@ -176,6 +176,7 @@ found_texture_native:
 		return nil;
 	}
 
+	#if 0 // [TXD-SRC] focused source tracing disabled for normal runs.
 	if(tex && shouldLogFocusedTxdSource(tex->name)){
 		printf("[TXD-SRC] txd=%s slot=%d tex=%s plat=%d raster=%dx%d\n",
 		       CTxdStore::GetLoadingTxdName(),
@@ -185,6 +186,7 @@ found_texture_native:
 		       tex->raster ? tex->raster->width : 0,
 		       tex->raster ? tex->raster->height : 0);
 	}
+	#endif
 
 #ifdef GTA_PC
 	if (gGameState == GS_INIT_PLAYING_GAME) {

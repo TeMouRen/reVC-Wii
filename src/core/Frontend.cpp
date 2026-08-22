@@ -9,6 +9,11 @@
 #include "common.h"
 #ifdef RW_GX
 #include "../../vendor/librw/src/gx/gxmemory.h"
+#ifdef WII
+namespace rw { namespace gx {
+void texPoolEnforceBudgetImmediate(const char *reason, int maxSteps);
+} }
+#endif
 #endif
 #ifndef PS2_MENU
 #include "crossplatform.h"
@@ -672,7 +677,7 @@ CMenuManager::CMenuManager()
 	m_PrefsBrightness = 256;
 	m_PrefsLOD = CRenderer::ms_lodDistScale;
 #ifdef WII
-	m_PrefsLOD = 1.0f;
+	m_PrefsLOD = 1.10f;
 	CRenderer::ms_lodDistScale = m_PrefsLOD;
 #endif
 	m_KeyPressedCode = -1;
@@ -816,9 +821,11 @@ CMenuManager::Initialise(void)
 
 	DMAudio.SetMP3BoostVolume(m_PrefsMP3BoostVolume);
 	if (DMAudio.IsMP3RadioChannelAvailable()) {
-		if (m_PrefsRadioStation < WILDSTYLE || m_PrefsRadioStation > USERTRACK)
+		if (m_PrefsRadioStation != RADIO_MODERN_TALKING &&
+		    (m_PrefsRadioStation < WILDSTYLE || m_PrefsRadioStation > USERTRACK))
 			m_PrefsRadioStation = CGeneral::GetRandomNumber() % (USERTRACK + 1);
-	} else if (m_PrefsRadioStation < WILDSTYLE || m_PrefsRadioStation > WAVE)
+	} else if (m_PrefsRadioStation != RADIO_MODERN_TALKING &&
+	           (m_PrefsRadioStation < WILDSTYLE || m_PrefsRadioStation > WAVE))
 		m_PrefsRadioStation = CGeneral::GetRandomNumber() % (WAVE + 1);
 
 	CFileMgr::SetDir("");
@@ -1477,6 +1484,10 @@ CMenuManager::DrawStandardMenus(bool activeScreen)
 							break;
 						case USERTRACK:
 							rightText = TheText.Get("FEA_MP3");
+							break;
+						case RADIO_OFF:
+						case RADIO_MODERN_TALKING:
+							rightText = TheText.Get("FEA_NON");
 							break;
 					}
 					break;
@@ -3263,6 +3274,8 @@ CMenuManager::InitialiseChangedLanguageSettings()
 {
 	if (m_bFrontEnd_ReloadObrTxtGxt) {
 		m_bFrontEnd_ReloadObrTxtGxt = false;
+		char missionTextName[MISSION_TEXT_TABLE_NAME_LENGTH + 1] = { 0 };
+		TheText.GetNameOfLoadedMissionText(missionTextName);
 		// Text reload invalidates cached TheText pointers kept by HUD/brief/pager state.
 		CMessages::ClearAllMessagesDisplayedByGame();
 #ifdef FIX_BUGS
@@ -3271,6 +3284,8 @@ CMenuManager::InitialiseChangedLanguageSettings()
 		CTimer::Stop();
 		TheText.Unload();
 		TheText.Load();
+		if (missionTextName[0] != '\0')
+			TheText.LoadMissionText(missionTextName);
 #ifdef FIX_BUGS
 		if (gGameState > GS_INIT_ONCE)
 #endif
@@ -3330,6 +3345,9 @@ CMenuManager::InitialiseChangedLanguageSettings()
 			break;
 		}
 
+		// Reloaded text and font metrics can change the selected row width.
+		m_nOptionHighlightTransitionBlend = 0;
+
 	}
 }
 
@@ -3341,7 +3359,11 @@ CMenuManager::LoadAllTextures()
 
 #ifdef RW_GX
 	rw::gx::pushCriticalUiUploadContext("frontend-load");
+#ifdef WII
+	rw::gx::texPoolEnforceBudgetImmediate("frontend-load-pre", 32);
+#else
 	rw::gx::texPoolEnforceBudget("frontend-load-pre");
+#endif
 #endif
 
 	// First icon is hidden behind arrow
@@ -4254,7 +4276,10 @@ CMenuManager::PrintRadioSelector(void)
 		rightMostSprite = MENUSPRITE_WAVE;
 		rightMostStation = WAVE;
 	}
- #ifdef THIS_IS_STUPID
+
+	if (m_PrefsRadioStation >= NUM_RADIOS)
+		return;
+#ifdef THIS_IS_STUPID
 
 	// First radio
 	if (m_ScrollRadioBy == 1) {
@@ -5302,7 +5327,11 @@ CMenuManager::ProcessUserInput(uint8 goDown, uint8 goUp, uint8 optionSelected, u
 					SaveSettings();
 				} else if (m_nCurrScreen == MENUPAGE_DISPLAY_SETTINGS) {
 					m_PrefsBrightness = 256;
+#ifdef WII
+					m_PrefsLOD = 1.10f;
+#else
 					m_PrefsLOD = 1.2f;
+#endif
 #ifdef LEGACY_MENU_OPTIONS
 					m_PrefsVsync = true;
 #endif

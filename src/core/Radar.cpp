@@ -243,13 +243,26 @@ void ClipRadarTileCoords(int32 &x, int32 &y)
 void RequestMapSection(int32 x, int32 y)
 {
 	ClipRadarTileCoords(x, y);
+#ifdef WII
+	CStreaming::RequestRadarTxd(gRadarTxdIds[x + RADAR_NUM_TILES * y],
+	                            STREAMFLAGS_DONT_REMOVE | STREAMFLAGS_DEPENDENCY |
+	                            STREAMFLAGS_PRIORITY,
+	                            x, y);
+#else
 	CStreaming::RequestTxd(gRadarTxdIds[x + RADAR_NUM_TILES * y], STREAMFLAGS_DONT_REMOVE | STREAMFLAGS_DEPENDENCY);
+#endif
 }
 
 void RemoveMapSection(int32 x, int32 y)
 {
-	if (x >= 0 && x <= RADAR_NUM_TILES - 1 && y >= 0 && y <= RADAR_NUM_TILES - 1)
-		CStreaming::RemoveTxd(gRadarTxdIds[x + RADAR_NUM_TILES * y]);
+	if (x >= 0 && x <= RADAR_NUM_TILES - 1 && y >= 0 && y <= RADAR_NUM_TILES - 1){
+		int32 txd = gRadarTxdIds[x + RADAR_NUM_TILES * y];
+#ifdef WII
+		if(CStreaming::ShouldKeepRadarTxdForIslandTransition(txd))
+			return;
+#endif
+		CStreaming::RemoveTxd(txd);
+	}
 }
 
 // Transform from section indices to world coordinates
@@ -1482,6 +1495,20 @@ void CRadar::StreamRadarSections(const CVector &posn)
 	if (!CStreaming::ms_disableStreaming)
 		StreamRadarSections(Floor((RADAR_MAX_X + posn.x) / RADAR_TILE_SIZE), Ceil((RADAR_NUM_TILES - 1) - (RADAR_MAX_Y + posn.y) / RADAR_TILE_SIZE));
 }
+
+#ifdef WII
+void CRadar::RequestRadarSections(const CVector &posn)
+{
+	if(CStreaming::ms_disableStreaming)
+		return;
+
+	int32 x = Floor((RADAR_MAX_X + posn.x) / RADAR_TILE_SIZE);
+	int32 y = Ceil((RADAR_NUM_TILES - 1) - (RADAR_MAX_Y + posn.y) / RADAR_TILE_SIZE);
+	for(int32 tx = x - 1; tx <= x + 1; tx++)
+		for(int32 ty = y - 1; ty <= y + 1; ty++)
+			RequestMapSection(tx, ty);
+}
+#endif
 
 void CRadar::StreamRadarSections(int32 x, int32 y)
 {

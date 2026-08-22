@@ -8,6 +8,7 @@
 #include "ModelInfo.h"
 #include "VisibilityPlugins.h"
 #include "DMAudio.h"
+#include "sampman.h"
 #include "Clock.h"
 #include "Timecycle.h"
 #include "ZoneCull.h"
@@ -5327,7 +5328,6 @@ CAutomobile::SetUpWheelColModel(CColModel *colModel)
 {
 	CVehicleModelInfo *mi = (CVehicleModelInfo*)CModelInfo::GetModelInfo(GetModelIndex());
 	CColModel *vehColModel = mi->GetColModel();
-	CVector wheelPos;
 
 	if(GetVehicleAppearance() == VEHICLE_APPEARANCE_HELI ||
 	   GetVehicleAppearance() == VEHICLE_APPEARANCE_PLANE)
@@ -5336,20 +5336,21 @@ CAutomobile::SetUpWheelColModel(CColModel *colModel)
 	colModel->boundingSphere = vehColModel->boundingSphere;
 	colModel->boundingBox = vehColModel->boundingBox;
 
-	mi->GetWheelPosn(0, wheelPos);
-	colModel->spheres[0].Set(mi->m_wheelScale / 2, wheelPos, SURFACE_RUBBER, CAR_PIECE_WHEEL_LF);
-	mi->GetWheelPosn(1, wheelPos);
-	colModel->spheres[1].Set(mi->m_wheelScale / 2, wheelPos, SURFACE_RUBBER, CAR_PIECE_WHEEL_LR);
-	mi->GetWheelPosn(2, wheelPos);
-	colModel->spheres[2].Set(mi->m_wheelScale / 2, wheelPos, SURFACE_RUBBER, CAR_PIECE_WHEEL_RF);
-	mi->GetWheelPosn(3, wheelPos);
-	colModel->spheres[3].Set(mi->m_wheelScale / 2, wheelPos, SURFACE_RUBBER, CAR_PIECE_WHEEL_RR);
+	CMatrix mat;
+	mat.Attach(RwFrameGetMatrix(m_aCarNodes[CAR_WHEEL_LF]));
+	colModel->spheres[0].Set(mi->m_wheelScale / 2, mat.GetPosition(), SURFACE_RUBBER, CAR_PIECE_WHEEL_LF);
+	mat.Attach(RwFrameGetMatrix(m_aCarNodes[CAR_WHEEL_LB]));
+	colModel->spheres[1].Set(mi->m_wheelScale / 2, mat.GetPosition(), SURFACE_RUBBER, CAR_PIECE_WHEEL_LR);
+	mat.Attach(RwFrameGetMatrix(m_aCarNodes[CAR_WHEEL_RF]));
+	colModel->spheres[2].Set(mi->m_wheelScale / 2, mat.GetPosition(), SURFACE_RUBBER, CAR_PIECE_WHEEL_RF);
+	mat.Attach(RwFrameGetMatrix(m_aCarNodes[CAR_WHEEL_RB]));
+	colModel->spheres[3].Set(mi->m_wheelScale / 2, mat.GetPosition(), SURFACE_RUBBER, CAR_PIECE_WHEEL_RR);
 
 	if(m_aCarNodes[CAR_WHEEL_LM] != nil && m_aCarNodes[CAR_WHEEL_RM] != nil){
-		mi->GetWheelPosn(4, wheelPos);
-		colModel->spheres[4].Set(mi->m_wheelScale / 2, wheelPos, SURFACE_RUBBER, CAR_PIECE_WHEEL_LR);
-		mi->GetWheelPosn(5, wheelPos);
-		colModel->spheres[5].Set(mi->m_wheelScale / 2, wheelPos, SURFACE_RUBBER, CAR_PIECE_WHEEL_RR);
+		mat.Attach(RwFrameGetMatrix(m_aCarNodes[CAR_WHEEL_LM]));
+		colModel->spheres[4].Set(mi->m_wheelScale / 2, mat.GetPosition(), SURFACE_RUBBER, CAR_PIECE_WHEEL_LR);
+		mat.Attach(RwFrameGetMatrix(m_aCarNodes[CAR_WHEEL_RM]));
+		colModel->spheres[5].Set(mi->m_wheelScale / 2, mat.GetPosition(), SURFACE_RUBBER, CAR_PIECE_WHEEL_RR);
 		colModel->numSpheres = 6;
 	}else
 		colModel->numSpheres = 4;

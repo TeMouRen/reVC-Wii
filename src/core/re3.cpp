@@ -627,7 +627,6 @@ bool LoadINISettings()
 {
 	if (!IniReadStorage(cfg))
 		return false;
-
 #ifdef IMPROVED_VIDEOMODE
 	ReadIniIfExists("VideoMode", "Width", &FrontEndMenuManager.m_nPrefsWidth);
 	ReadIniIfExists("VideoMode", "Height", &FrontEndMenuManager.m_nPrefsHeight);

@@ -25,6 +25,50 @@
 #include "main.h"
 #include "General.h"
 #include "VarConsole.h"
+#ifdef RW_GX
+#include "gxmemory.h"
+
+static RwTexture *MarkPersistentHudTexture(RwTexture *texture, void *)
+{
+	if(texture)
+		rw::gx::markPersistentUiTexture(RwTextureGetRaster(texture));
+	return texture;
+}
+
+#if defined(WII_HUD_ACTIVE_WEAPON_RASTER_PIN) && WII_HUD_ACTIVE_WEAPON_RASTER_PIN
+static RwRaster *
+ResolveActiveHudWeaponRaster(CPlayerPed *playerPed)
+{
+	if(playerPed == nil)
+		return nil;
+
+	CWeaponInfo *weaponInfo = CWeaponInfo::GetWeaponInfo(
+		playerPed->GetWeapon()->m_eWeaponType);
+	if(weaponInfo == nil || weaponInfo->m_nModelId <= 0)
+		return nil;
+
+	CBaseModelInfo *weaponModel = CModelInfo::GetModelInfo(weaponInfo->m_nModelId);
+	if(weaponModel == nil)
+		return nil;
+
+	TxdDef *weaponTxdSlot = CTxdStore::GetSlot(weaponModel->GetTxdSlot());
+	if(weaponTxdSlot == nil || weaponTxdSlot->texDict == nil)
+		return nil;
+
+	RwTexture *weaponIcon = RwTexDictionaryFindNamedTexture(
+		weaponTxdSlot->texDict, weaponModel->GetModelName());
+	RwRaster *weaponRaster = weaponIcon ? RwTextureGetRaster(weaponIcon) : nil;
+#if defined(WII_HUD_USED_WEAPON_RASTER_PERSIST) && WII_HUD_USED_WEAPON_RASTER_PERSIST
+	// Resolve through weapon model/TXD ownership, then keep every weapon icon
+	// that has actually been selected at native resolution. This is semantic
+	// lifetime protection, not a texture-name list.
+	if(weaponRaster)
+		rw::gx::markPersistentUiTexture(weaponRaster);
+#endif
+	return weaponRaster;
+}
+#endif
+#endif
 
 #if defined(FIX_BUGS)
 	#define SCREEN_SCALE_X_FIX(a) SCREEN_SCALE_X(a)
@@ -296,8 +340,17 @@ void CHud::Draw()
 	if (CPad::GetPad(1)->GetStartJustDown())
 		m_Wants_To_Draw_Hud = !m_Wants_To_Draw_Hud;
 
-	if (CReplay::IsPlayingBack())
+	if (CReplay::IsPlayingBack()) {
+#if defined(RW_GX) && defined(WII_HUD_ACTIVE_WEAPON_RASTER_PIN) && WII_HUD_ACTIVE_WEAPON_RASTER_PIN
+		rw::gx::clearActiveHudWeaponRaster();
+#endif
 		return;
+	}
+
+#if defined(RW_GX) && defined(WII_HUD_ACTIVE_WEAPON_RASTER_PIN) && WII_HUD_ACTIVE_WEAPON_RASTER_PIN
+	RwRaster *activeHudWeaponRaster = ResolveActiveHudWeaponRaster(FindPlayerPed());
+	rw::gx::setActiveHudWeaponRaster(activeHudWeaponRaster);
+#endif
 
 	if (m_Wants_To_Draw_Hud && !TheCamera.m_WideScreenOn) {
 		// unused statics in here
@@ -569,6 +622,9 @@ void CHud::Draw()
 					if (weaponTxd) {
 						RwTexture *weaponIcon = RwTexDictionaryFindNamedTexture(weaponTxd, weaponModel->GetModelName());
 						if (weaponIcon) {
+#if defined(RW_GX) && defined(WII_HUD_ACTIVE_WEAPON_RASTER_PIN) && WII_HUD_ACTIVE_WEAPON_RASTER_PIN
+							rw::gx::setActiveHudWeaponRaster(RwTextureGetRaster(weaponIcon));
+#endif
 							RwRenderStateSet(rwRENDERSTATETEXTUREFILTER, (void*)rwFILTERLINEAR);
 #ifndef FIX_BUGS
 							const float xSize = SCREEN_SCALE_X(64.0f / 2.0f);
@@ -1811,20 +1867,40 @@ void CHud::GetRidOfAllHudMessages()
 #ifdef RELOADABLES
 void CHud::ReloadTXD()
 {
+	int HudTXD = CTxdStore::FindTxdSlot("hud");
+	if(HudTXD != -1 && CTxdStore::IsTxdAliasPinned(HudTXD)){
+		debug("HUD.TXD reload deferred while an alias donor is pinned.\n");
+		return;
+	}
+
 	for (int i = 0; i < NUM_HUD_SPRITES; ++i) {
 		Sprites[i].Delete();
 	}
 
-	int HudTXD = CTxdStore::FindTxdSlot("hud");
-	CTxdStore::RemoveTxdSlot(HudTXD);
+	if(!CTxdStore::RemoveTxdSlot(HudTXD))
+		return;
 
 	debug("Reloading HUD.TXD...\n");
 
 	HudTXD = CTxdStore::AddTxdSlot("hud");
-	CTxdStore::LoadTxd(HudTXD, "MODELS/HUD.TXD");
+#ifdef RW_GX
+	rw::gx::pushPersistentUiTextureUploadContext("hud-reload");
+#endif
+	bool loaded = CTxdStore::LoadTxd(HudTXD, "MODELS/HUD.TXD");
+#ifdef RW_GX
+	rw::gx::popPersistentUiTextureUploadContext("hud-reload");
+#endif
+	if(!loaded){
+		CTxdStore::PopCurrentTxd();
+		return;
+	}
 	CTxdStore::AddRef(HudTXD);
 	CTxdStore::PopCurrentTxd();
 	CTxdStore::SetCurrentTxd(HudTXD);
+#ifdef RW_GX
+	RwTexDictionaryForAllTextures(RwTexDictionaryGetCurrent(),
+		MarkPersistentHudTexture, nil);
+#endif
 
 	for (int i = 0; i < NUM_HUD_SPRITES; i++) {
 		Sprites[i].SetTexture(WeaponFilenames[i].name, WeaponFilenames[i].mask);
@@ -1838,10 +1914,24 @@ void CHud::Initialise()
 	m_Wants_To_Draw_3dMarkers = true;
 
 	int HudTXD = CTxdStore::AddTxdSlot("hud");
-	CTxdStore::LoadTxd(HudTXD, "MODELS/HUD.TXD");
+#ifdef RW_GX
+	rw::gx::pushPersistentUiTextureUploadContext("hud-load");
+#endif
+	bool loaded = CTxdStore::LoadTxd(HudTXD, "MODELS/HUD.TXD");
+#ifdef RW_GX
+	rw::gx::popPersistentUiTextureUploadContext("hud-load");
+#endif
+	if(!loaded){
+		CTxdStore::PopCurrentTxd();
+		return;
+	}
 	CTxdStore::AddRef(HudTXD);
 	CTxdStore::PopCurrentTxd();
 	CTxdStore::SetCurrentTxd(HudTXD);
+#ifdef RW_GX
+	RwTexDictionaryForAllTextures(RwTexDictionaryGetCurrent(),
+		MarkPersistentHudTexture, nil);
+#endif
 
 	for (int i = 0; i < NUM_HUD_SPRITES; i++) {
 		Sprites[i].SetTexture(WeaponFilenames[i].name, WeaponFilenames[i].mask);
@@ -2095,6 +2185,9 @@ void CHud::SetZoneName(wchar *name)
 
 void CHud::Shutdown()
 {
+#if defined(RW_GX) && defined(WII_HUD_ACTIVE_WEAPON_RASTER_PIN) && WII_HUD_ACTIVE_WEAPON_RASTER_PIN
+	rw::gx::clearActiveHudWeaponRaster();
+#endif
 	for (int i = 0; i < NUM_HUD_SPRITES; ++i) {
 		Sprites[i].Delete();
 	}

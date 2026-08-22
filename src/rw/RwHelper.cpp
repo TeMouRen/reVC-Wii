@@ -4,7 +4,7 @@
 
 #include "Timecycle.h"
 #include "skeleton.h"
-#include "Debug.h"
+#include "../core/Debug.h"
 #include "MBlur.h"
 #if !defined(FINAL) || defined(DEBUGMENU)
 #include "rtcharse.h"

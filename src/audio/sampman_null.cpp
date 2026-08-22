@@ -28,8 +28,21 @@ uint32 nNumMP3s;
 #ifdef GAMECUBE
 namespace
 {
+#ifndef WII_AUDIO_DECODE_ENABLE
+#define WII_AUDIO_DECODE_ENABLE 1
+#endif
+#ifndef WII_AUDIO_BASELINE_REQUESTED_BYTES
+#define WII_AUDIO_BASELINE_REQUESTED_BYTES 14177248u
+#endif
+#ifndef WII_MEM2_RECLAIMED_BYTES
+#define WII_MEM2_RECLAIMED_BYTES 0u
+#endif
+#ifndef WII_AUDIO_PCM_CACHE_ENABLE
+#define WII_AUDIO_PCM_CACHE_ENABLE 0
+#endif
+
 static const bool8 GC_AUDIO_ENABLED =
-#if GC_AUDIO_MASTER_ENABLE
+#if GC_AUDIO_MASTER_ENABLE && (!defined(WII) || WII_AUDIO_DECODE_ENABLE)
 	TRUE;
 #else
 	FALSE;
@@ -37,6 +50,13 @@ static const bool8 GC_AUDIO_ENABLED =
 
 static const bool8 GC_IDSP_DSP_ENABLED =
 #if GC_IDSP_DSP_DECODE_ENABLE && defined(WII)
+	TRUE;
+#else
+	FALSE;
+#endif
+
+static const bool8 GC_PS2_SFX_PCM_CACHE_ENABLED =
+#if defined(WII) && WII_AUDIO_PCM_CACHE_ENABLE
 	TRUE;
 #else
 	FALSE;
@@ -78,6 +98,7 @@ static const uint32 GC_STREAM_RESAMPLE_FRAC_MASK = (1U << GC_STREAM_RESAMPLE_FRA
 static const uint32 GC_IDSP_READ_CACHE_SIZE = 32 * 1024;
 static const uint32 GC_IDSP_SECTOR_SIZE = 2048;
 static const uint32 GC_SFX_EDGE_RAMP_FRAMES = 64;
+static const uint32 GC_PS2_SFX_CACHE_FREE_RESERVE_BYTES = 1 * 1024 * 1024;
 
 static const char *GC_PS2_MISSION_SDT_PATH = "AUDIO\\SFX\\Set0\\sfx2.SDT";
 static const char *GC_PS2_MISSION_RAW_PATH = "AUDIO\\SFX\\Set0\\sfx2.RAW";
@@ -96,8 +117,10 @@ static const uint32 VAG_SAMPLES_IN_LINE = 28;
 static const uint32 NUM_VAG_LINES_IN_BLOCK = VB_BLOCK_SIZE / VAG_LINE_SIZE;
 static const uint32 NUM_VAG_SAMPLES_IN_BLOCK = NUM_VAG_LINES_IN_BLOCK * VAG_SAMPLES_IN_LINE;
 static const uint32 GC_SFX_PATH_CAPACITY = 128;
+#if !defined(WII)
 static const char *GC_SAMPLE_BANK_DESC_PATH = "AUDIO\\SFX.SDT";
 static const char *GC_SAMPLE_BANK_DATA_PATH = "AUDIO\\SFX.RAW";
+#endif
 
 enum eDmaBufferState
 {
@@ -139,10 +162,15 @@ struct tGcSampleChannel
 	uint32 stepFixed;
 	uint32 renderedOutputFrames;
 	uint32 edgeRampFrames;
+	uint32 cacheSample;
+	uint32 pendingSample;
+	bool8 startPending;
 };
 
+#if !defined(WII)
 static FILE *gSampleDescFile = NULL;
 static FILE *gSampleDataFile = NULL;
+#endif
 struct tPs2MissionSdtEntry
 {
 	uint32 rawOffset;
@@ -153,7 +181,9 @@ struct tPs2MissionSdtEntry
 enum eGcSfxBackend
 {
 	GC_SFX_BACKEND_UNSELECTED = 0,
+#if !defined(WII)
 	GC_SFX_BACKEND_PC_PCM,
+#endif
 	GC_SFX_BACKEND_PS2_VAG,
 };
 
@@ -173,8 +203,48 @@ static tPs2SfxSdtEntry gPs2SfxSdt[TOTAL_AUDIO_SAMPLES];
 static bool8 gPs2SfxSdtValid[TOTAL_AUDIO_SAMPLES];
 static uint8 *gPs2SfxDecodedArena = NULL;
 static uint32 gPs2SfxDecodedArenaBytes = 0;
+#if WII_AUDIO_PCM_CACHE_ENABLE
+static int16 **gPs2SfxDecoded = NULL;
+static uint32 *gPs2SfxDecodedBytes = NULL;
+#else
 static int16 *gPs2SfxDecoded[TOTAL_AUDIO_SAMPLES];
 static uint32 gPs2SfxDecodedBytes[TOTAL_AUDIO_SAMPLES];
+#endif
+static uint8 *gPs2SfxCacheMetadataArena = NULL;
+static uint32 *gPs2SfxLengthBytes = NULL;
+static uint32 *gPs2SfxLoopStartBytes = NULL;
+static int32 *gPs2SfxLoopEndBytes = NULL;
+enum ePs2SfxCacheState
+{
+	PS2_SFX_CACHE_EMPTY = 0,
+	PS2_SFX_CACHE_QUEUED,
+	PS2_SFX_CACHE_LOADING,
+	PS2_SFX_CACHE_READY,
+};
+static uint8 *gPs2SfxCacheState = NULL;
+static uint16 *gPs2SfxCachePinCount = NULL;
+static uint32 *gPs2SfxCacheLastUse = NULL;
+static uint32 *gPs2SfxCacheQueuedAtMs = NULL;
+static uint32 *gPs2SfxCacheAllocatedBytes = NULL;
+static uint32 gPs2SfxCacheUseClock = 0;
+static uint32 gPs2SfxCacheMaxVagBytes = 0;
+static uint8 *gPs2SfxCacheVagBuffer = NULL;
+static FILE *gPs2SfxCacheDataFiles[PS2_SFX_BANK_COUNT];
+static uint32 gPs2SfxCacheHits = 0;
+static uint32 gPs2SfxCacheMisses = 0;
+static uint32 gPs2SfxCacheEvictions = 0;
+static uint32 gPs2SfxCacheQueuedCount = 0;
+static uint32 gPs2SfxCacheDecodeCount = 0;
+static uint32 gPs2SfxCacheDeniedCount = 0;
+static uint32 gPs2SfxCacheDecodeQueueTotalMs = 0;
+static uint32 gPs2SfxCacheDecodeQueueMaxMs = 0;
+static uint32 gPs2SfxCacheDecodeServiceTotalMs = 0;
+static uint32 gPs2SfxCacheDecodeServiceMaxMs = 0;
+static uint32 gPs2SfxCacheDecodeTotalMs = 0;
+static uint32 gPs2SfxCacheDecodeTotalMaxMs = 0;
+static uint32 gPs2SfxCacheResidentBytes = 0;
+static uint32 gPs2SfxCachePeakBytes = 0;
+static uint32 gPs2SfxCacheLastReportMs = 0;
 static uint32 gPedSlotSizeBytes[MAX_PEDSFX];
 static uint32 gPedSlotCapacityBytes = PED_BLOCKSIZE;
 static bool8 gSampleBankLoaded[MAX_SFX_BANKS];
@@ -185,18 +255,27 @@ static int32 gPedSlotSfx[MAX_PEDSFX];
 static uint8 *gPedSlotSfxAddr[MAX_PEDSFX];
 static uint8 gCurrentPedSlot = 0;
 static tGcSampleChannel gSampleChannels[MAXCHANNELS + MAX2DCHANNELS];
+#if !defined(WII)
 static uint32 gSampleDataEndOffset = 0;
+#endif
 
+#if !defined(WII)
 static uint32 ReadLE32(FILE *file);
+#endif
 static bool8 EndsWithIgnoreCase(const char *path, const char *suffix);
 static bool8 BuildPs2SfxPath(uint32 bank, const char *extension, char *path, uint32 pathCapacity);
 static bool8 MapSfxToPs2Record(uint32 nSfx, uint8 &bank, uint16 &localEntry);
 static bool8 MapPs2RecordToSfx(uint8 bank, uint16 localEntry, uint32 &nSfx);
 static bool8 DecodePs2VagData(const uint8 *vagData, uint32 vagBytes, int16 *pcmData, uint32 pcmCapacityBytes,
 	uint32 &pcmBytes, uint32 &loopStartBytes, int32 &loopEndBytes);
+static bool8 InspectPs2VagLayout(const uint8 *vagData, uint32 vagBytes,
+	uint32 &pcmBytes, uint32 &loopStartBytes, int32 &loopEndBytes);
 static bool8 ResolvePs2SampleAddress(uint32 nSfx, const int16 *&sampleData, uint32 &sampleCount, uint32 &sampleBytes);
 static bool8 InitialisePs2SampleBanks(tSample *samples);
 static bool8 IsPs2PedComment(uint32 nSample);
+static uint8 *AllocAlignedAudioBuffer(uint32 sizeBytes);
+static uint8 *AllocAlignedAudioBufferStrict(uint32 sizeBytes);
+static void FreeAlignedAudioBuffer(void *buffer);
 static inline bool8 ShouldEagerProbePackagedTrack(tTrack track);
 static inline uint32 Ps2MissionTrackToOrdinal(tTrack track);
 static inline uint32 MsToSamples(uint32 sampleRate, uint32 milliseconds);
@@ -218,6 +297,16 @@ static_assert(TOTAL_AUDIO_SAMPLES - SAMPLEBANK_PED_START == PS2_SFX_MISSION_FIRS
 class CGcStreamDecoder
 {
 public:
+	static void *operator new(size_t size)
+	{
+		return AllocAlignedAudioBufferStrict(uint32(size));
+	}
+
+	static void operator delete(void *ptr)
+	{
+		FreeAlignedAudioBuffer(ptr);
+	}
+
 	virtual ~CGcStreamDecoder() {}
 
 	/* Most decoders validate their container in the constructor. Mission bank
@@ -359,13 +448,13 @@ class CPs2MissionSfxDecoder : public CGcStreamDecoder
 			return false;
 		}
 
-		m_pData = new uint8[m_AllocatedBytes];
+		m_pData = AllocAlignedAudioBuffer(m_AllocatedBytes);
 		if (m_pData == NULL || fread(m_pData, 1, m_AllocatedBytes, m_pFile) != m_AllocatedBytes) {
 			MISSION_BANK_LOG("read failed track=%u offset=%u bytes=%u\n",
 			                 uint32(m_Track), m_RawOffset, m_AllocatedBytes);
 			fclose(m_pFile);
 			m_pFile = NULL;
-			delete[] m_pData;
+			FreeAlignedAudioBuffer(m_pData);
 			m_pData = NULL;
 			m_bLoadFailed = true;
 			return false;
@@ -380,7 +469,7 @@ class CPs2MissionSfxDecoder : public CGcStreamDecoder
 				                 uint32(m_Track), frameIndex, uint32(frame[1]), uint32(frame[0] >> 4));
 				fclose(m_pFile);
 				m_pFile = NULL;
-				delete[] m_pData;
+				FreeAlignedAudioBuffer(m_pData);
 				m_pData = NULL;
 				m_bLoadFailed = true;
 				return false;
@@ -391,7 +480,7 @@ class CPs2MissionSfxDecoder : public CGcStreamDecoder
 					                 uint32(m_Track), frameIndex, uint32(frame[1]));
 					fclose(m_pFile);
 					m_pFile = NULL;
-					delete[] m_pData;
+					FreeAlignedAudioBuffer(m_pData);
 					m_pData = NULL;
 					m_bLoadFailed = true;
 					return false;
@@ -405,7 +494,7 @@ class CPs2MissionSfxDecoder : public CGcStreamDecoder
 			MISSION_BANK_LOG("validate failed track=%u missing terminal frame\n", uint32(m_Track));
 			fclose(m_pFile);
 			m_pFile = NULL;
-			delete[] m_pData;
+			FreeAlignedAudioBuffer(m_pData);
 			m_pData = NULL;
 			m_bLoadFailed = true;
 			return false;
@@ -465,7 +554,7 @@ public:
 	{
 		if (m_pFile)
 			fclose(m_pFile);
-		delete[] m_pData;
+		FreeAlignedAudioBuffer(m_pData);
 	}
 
 	bool IsOpened() const
@@ -848,6 +937,8 @@ static inline bool8 IsThisTrackAt16KHz(uint32 track)
 	return track == STREAMED_SOUND_RADIO_KCHAT || track == STREAMED_SOUND_RADIO_VCPR || track == STREAMED_SOUND_RADIO_POLICE;
 }
 
+static const char *const GC_MODERN_TALKING_TRACK_PATH = "AUDIO\\MUSIC\\JET_AIRLINER.idsp";
+
 static inline const char *GetPackagedTrackPath(tTrack track)
 {
 #ifdef PS2_AUDIO_PATHS
@@ -866,6 +957,9 @@ static inline bool8 IsSupportedGcStreamTrack(tTrack track)
 {
 	if (IsPs2MissionBankTrack(track))
 		return gSfxBackend == GC_SFX_BACKEND_PS2_VAG && gPs2MissionBankAvailable;
+
+	if (track == STREAMED_SOUND_RADIO_MODERN_TALKING)
+		return TRUE;
 
 	const char *packagedPath = GetPackagedTrackPath(track);
 	return IsCompressedStreamPath(packagedPath)
@@ -903,6 +997,7 @@ static const char *GetRadioTrackLabel(tTrack track)
 	case STREAMED_SOUND_RADIO_ESPANTOSO: return "ESPANT";
 	case STREAMED_SOUND_RADIO_EMOTION: return "EMOTION";
 	case STREAMED_SOUND_RADIO_WAVE: return "WAVE";
+	case STREAMED_SOUND_RADIO_MODERN_TALKING: return "MODERN_TALKING";
 	case STREAMED_SOUND_RADIO_POLICE: return "POLICE";
 	default: return "UNKNOWN";
 	}
@@ -946,6 +1041,9 @@ static void ResetSampleChannel(tGcSampleChannel &channel)
 	channel.stepFixed = 0;
 	channel.renderedOutputFrames = 0;
 	channel.edgeRampFrames = 0;
+	channel.cacheSample = NO_SAMPLE;
+	channel.pendingSample = NO_SAMPLE;
+	channel.startPending = FALSE;
 }
 
 static void ResetSampleBankState()
@@ -964,7 +1062,45 @@ static void ResetSampleBankState()
 		gPedSlotSizeBytes[i] = 0;
 	}
 	gCurrentPedSlot = 0;
+#if !defined(WII)
 	gSampleDataEndOffset = 0;
+#endif
+	gPs2SfxCacheUseClock = 0;
+	gPs2SfxCacheMaxVagBytes = 0;
+	gPs2SfxCacheHits = 0;
+	gPs2SfxCacheMisses = 0;
+	gPs2SfxCacheEvictions = 0;
+	gPs2SfxCacheQueuedCount = 0;
+	gPs2SfxCacheDecodeCount = 0;
+	gPs2SfxCacheDeniedCount = 0;
+	gPs2SfxCacheDecodeQueueTotalMs = 0;
+	gPs2SfxCacheDecodeQueueMaxMs = 0;
+	gPs2SfxCacheDecodeServiceTotalMs = 0;
+	gPs2SfxCacheDecodeServiceMaxMs = 0;
+	gPs2SfxCacheDecodeTotalMs = 0;
+	gPs2SfxCacheDecodeTotalMaxMs = 0;
+	gPs2SfxCacheResidentBytes = 0;
+	gPs2SfxCachePeakBytes = 0;
+	gPs2SfxCacheLastReportMs = 0;
+	if (gPs2SfxCacheState != NULL)
+		memset(gPs2SfxCacheState, 0, TOTAL_AUDIO_SAMPLES * sizeof(*gPs2SfxCacheState));
+	if (gPs2SfxCachePinCount != NULL)
+		memset(gPs2SfxCachePinCount, 0, TOTAL_AUDIO_SAMPLES * sizeof(*gPs2SfxCachePinCount));
+	if (gPs2SfxCacheLastUse != NULL)
+		memset(gPs2SfxCacheLastUse, 0, TOTAL_AUDIO_SAMPLES * sizeof(*gPs2SfxCacheLastUse));
+	if (gPs2SfxCacheQueuedAtMs != NULL)
+		memset(gPs2SfxCacheQueuedAtMs, 0, TOTAL_AUDIO_SAMPLES * sizeof(*gPs2SfxCacheQueuedAtMs));
+	if (gPs2SfxCacheAllocatedBytes != NULL)
+		memset(gPs2SfxCacheAllocatedBytes, 0, TOTAL_AUDIO_SAMPLES * sizeof(*gPs2SfxCacheAllocatedBytes));
+	if (gPs2SfxLengthBytes != NULL)
+		memset(gPs2SfxLengthBytes, 0, TOTAL_AUDIO_SAMPLES * sizeof(*gPs2SfxLengthBytes));
+	memset(gPs2SfxCacheDataFiles, 0, sizeof(gPs2SfxCacheDataFiles));
+	if (gPs2SfxLoopStartBytes != NULL)
+		memset(gPs2SfxLoopStartBytes, 0, TOTAL_AUDIO_SAMPLES * sizeof(*gPs2SfxLoopStartBytes));
+	if (gPs2SfxLoopEndBytes != NULL) {
+		for (uint32 i = 0; i < TOTAL_AUDIO_SAMPLES; i++)
+			gPs2SfxLoopEndBytes[i] = -1;
+	}
 
 	for (uint32 i = 0; i < MAXCHANNELS + MAX2DCHANNELS; i++)
 		ResetSampleChannel(gSampleChannels[i]);
@@ -972,6 +1108,7 @@ static void ResetSampleBankState()
 
 static void CloseSampleBankFiles()
 {
+#if !defined(WII)
 	if (gSampleDescFile) {
 		fclose(gSampleDescFile);
 		gSampleDescFile = NULL;
@@ -980,15 +1117,22 @@ static void CloseSampleBankFiles()
 		fclose(gSampleDataFile);
 		gSampleDataFile = NULL;
 	}
+#endif
 }
 
 static void FreeSampleBankMemory()
 {
+	bool hadDecodedArena = gPs2SfxDecodedArena != NULL;
+#if WII_AUDIO_PCM_CACHE_ENABLE
+	bool hasDecodedTable = gPs2SfxDecoded != NULL && gPs2SfxDecodedBytes != NULL;
+#else
+	bool hasDecodedTable = true;
+#endif
 	for (uint32 i = 0; i < MAX_SFX_BANKS; i++) {
 		if (gSampleBankMemoryStartAddress[i] == NULL)
 			continue;
 #ifdef WII
-		MemoryMgrFreeMem2(gSampleBankMemoryStartAddress[i]);
+		FreeAlignedAudioBuffer(gSampleBankMemoryStartAddress[i]);
 #else
 		free(gSampleBankMemoryStartAddress[i]);
 #endif
@@ -996,16 +1140,49 @@ static void FreeSampleBankMemory()
 	}
 	if (gPs2SfxDecodedArena != NULL) {
 #ifdef WII
-		MemoryMgrFreeMem2(gPs2SfxDecodedArena);
+		FreeAlignedAudioBuffer(gPs2SfxDecodedArena);
 #else
 		free(gPs2SfxDecodedArena);
 #endif
 		gPs2SfxDecodedArena = NULL;
 		gPs2SfxDecodedArenaBytes = 0;
 	}
-	for (uint32 i = 0; i < TOTAL_AUDIO_SAMPLES; i++) {
-		gPs2SfxDecoded[i] = NULL;
-		gPs2SfxDecodedBytes[i] = 0;
+	if (!hadDecodedArena && hasDecodedTable) {
+		for (uint32 i = 0; i < TOTAL_AUDIO_SAMPLES; i++) {
+			if (gPs2SfxDecoded[i] != NULL)
+				FreeAlignedAudioBuffer(gPs2SfxDecoded[i]);
+		}
+	}
+	if (hasDecodedTable) {
+		for (uint32 i = 0; i < TOTAL_AUDIO_SAMPLES; i++) {
+			gPs2SfxDecoded[i] = NULL;
+			gPs2SfxDecodedBytes[i] = 0;
+			if (gPs2SfxCacheMetadataArena != NULL) {
+				gPs2SfxCacheState[i] = PS2_SFX_CACHE_EMPTY;
+				gPs2SfxCachePinCount[i] = 0;
+				gPs2SfxCacheLastUse[i] = 0;
+				gPs2SfxCacheQueuedAtMs[i] = 0;
+				gPs2SfxCacheAllocatedBytes[i] = 0;
+				gPs2SfxLoopStartBytes[i] = 0;
+				gPs2SfxLoopEndBytes[i] = -1;
+			}
+		}
+	}
+	if (gPs2SfxCacheMetadataArena != NULL) {
+		FreeAlignedAudioBuffer(gPs2SfxCacheMetadataArena);
+		gPs2SfxCacheMetadataArena = NULL;
+		gPs2SfxCacheState = NULL;
+		gPs2SfxCachePinCount = NULL;
+		gPs2SfxCacheLastUse = NULL;
+		gPs2SfxCacheQueuedAtMs = NULL;
+		gPs2SfxCacheAllocatedBytes = NULL;
+		gPs2SfxLengthBytes = NULL;
+		gPs2SfxLoopStartBytes = NULL;
+		gPs2SfxLoopEndBytes = NULL;
+#if WII_AUDIO_PCM_CACHE_ENABLE
+		gPs2SfxDecoded = NULL;
+		gPs2SfxDecodedBytes = NULL;
+#endif
 	}
 
 	for (uint32 i = 0; i < MAXCHANNELS + MAX2DCHANNELS; i++)
@@ -1019,7 +1196,11 @@ static void FreeSampleBankMemory()
 static uint8 *AllocAlignedAudioBuffer(uint32 sizeBytes)
 {
 #ifdef WII
+#if WII_AUDIO_PCM_CACHE_ENABLE
+	return (uint8*)MemoryMgrMallocAudioMem2(sizeBytes, 32);
+#else
 	return (uint8*)MemoryMgrMallocMem2(sizeBytes, 32);
+#endif
 #else
 	return (uint8*)memalign(32, sizeBytes);
 #endif
@@ -1028,12 +1209,32 @@ static uint8 *AllocAlignedAudioBuffer(uint32 sizeBytes)
 static uint8 *AllocAlignedAudioBufferStrict(uint32 sizeBytes)
 {
 #ifdef WII
+#if WII_AUDIO_PCM_CACHE_ENABLE
+	return (uint8*)MemoryMgrMallocAudioMem2(sizeBytes, 32);
+#else
 	return (uint8*)MemoryMgrMallocMem2Strict(sizeBytes, 32);
+#endif
 #else
 	return (uint8*)memalign(32, sizeBytes);
 #endif
 }
 
+static void FreeAlignedAudioBuffer(void *buffer)
+{
+	if (buffer == NULL)
+		return;
+#ifdef WII
+#if WII_AUDIO_PCM_CACHE_ENABLE
+	MemoryMgrFreeAudioMem2(buffer);
+#else
+	MemoryMgrFreeMem2(buffer);
+#endif
+#else
+	free(buffer);
+#endif
+}
+
+#if !defined(WII)
 static bool8 OpenSampleBankDataPath(const char *path)
 {
 	if (path == NULL)
@@ -1134,6 +1335,7 @@ static bool8 BuildSampleBankOffsets(const tSample *samples)
 	gSampleBankSize[SFX_BANK_PED_COMMENTS] = gSampleDataEndOffset - gSampleBankDiscStartOffset[SFX_BANK_PED_COMMENTS];
 	return gSampleBankSize[SFX_BANK_0] != 0;
 }
+#endif
 
 static uint32 ComputeChannelStepFixed(uint32 frequency)
 {
@@ -1160,6 +1362,7 @@ static uint32 AlignUp32(uint32 value)
 	return (value + 31U) & ~31U;
 }
 
+#if !defined(WII)
 static void ByteSwapPcm16Buffer(void *buffer, uint32 sizeBytes)
 {
 #ifdef RW_BIG_ENDIAN
@@ -1177,6 +1380,7 @@ static void ByteSwapPcm16Buffer(void *buffer, uint32 sizeBytes)
 	(void)sizeBytes;
 #endif
 }
+#endif
 
 static bool8 IsPs2PedComment(uint32 nSample)
 {
@@ -1229,6 +1433,37 @@ static bool8 DecodePs2VagData(const uint8 *vagData, uint32 vagBytes, int16 *pcmD
 	return pcmBytes != 0;
 }
 
+static bool8 InspectPs2VagLayout(const uint8 *vagData, uint32 vagBytes,
+	uint32 &pcmBytes, uint32 &loopStartBytes, int32 &loopEndBytes)
+{
+	pcmBytes = 0;
+	loopStartBytes = 0;
+	loopEndBytes = -1;
+	if (vagData == NULL || vagBytes == 0 || (vagBytes % PS2_SFX_VAG_FRAME_SIZE) != 0)
+		return FALSE;
+
+	uint32 frameCount = vagBytes / PS2_SFX_VAG_FRAME_SIZE;
+	bool8 loopStartFound = FALSE;
+	for (uint32 frameIndex = 0; frameIndex < frameCount; frameIndex++) {
+		const uint8 *frame = vagData + frameIndex * PS2_SFX_VAG_FRAME_SIZE;
+		if (!IsSupportedPs2MissionVagFlags(frame[1]) || !IsSupportedPs2VagPredictor(frame[0]))
+			return FALSE;
+		if ((frame[1] & 0x04U) != 0) {
+			loopStartFound = TRUE;
+			loopStartBytes = frameIndex * PS2_SFX_VAG_SAMPLES_PER_FRAME * sizeof(int16);
+		}
+		if (IsPs2VagEndFrame(frame[1])) {
+			pcmBytes = (frameIndex + 1U) * PS2_SFX_VAG_SAMPLES_PER_FRAME * sizeof(int16);
+			if (loopStartFound && (frame[1] & 0x02U) != 0)
+				loopEndBytes = int32(pcmBytes);
+			else
+				loopStartBytes = 0;
+			return TRUE;
+		}
+	}
+	return FALSE;
+}
+
 static bool8 ResolvePs2SampleAddress(uint32 nSfx, const int16 *&sampleData, uint32 &sampleCount, uint32 &sampleBytes)
 {
 	sampleData = NULL;
@@ -1259,8 +1494,10 @@ static bool8 InitialisePs2SampleBanks(tSample *samples)
 		return FALSE;
 	memset(gPs2SfxSdt, 0, sizeof(gPs2SfxSdt));
 	memset(gPs2SfxSdtValid, 0, sizeof(gPs2SfxSdtValid));
+#if !WII_AUDIO_PCM_CACHE_ENABLE
 	memset(gPs2SfxDecoded, 0, sizeof(gPs2SfxDecoded));
 	memset(gPs2SfxDecodedBytes, 0, sizeof(gPs2SfxDecodedBytes));
+#endif
 	gPs2SfxDecodedArena = NULL;
 	gPs2SfxDecodedArenaBytes = 0;
 
@@ -1367,6 +1604,72 @@ static bool8 InitialisePs2SampleBanks(tSample *samples)
 		memset(gPs2SfxSdt, 0, sizeof(gPs2SfxSdt));
 		memset(gPs2SfxSdtValid, 0, sizeof(gPs2SfxSdtValid));
 		return FALSE;
+	}
+
+	if (GC_PS2_SFX_PCM_CACHE_ENABLED) {
+		uint32 pointerBytes = AlignUp32(TOTAL_AUDIO_SAMPLES * sizeof(*gPs2SfxDecoded));
+		uint32 stateBytes = AlignUp32(TOTAL_AUDIO_SAMPLES * sizeof(*gPs2SfxCacheState));
+		uint32 pinBytes = AlignUp32(TOTAL_AUDIO_SAMPLES * sizeof(*gPs2SfxCachePinCount));
+		uint32 u32Bytes = AlignUp32(TOTAL_AUDIO_SAMPLES * sizeof(uint32));
+		uint32 metadataBytes = pointerBytes + stateBytes + pinBytes + u32Bytes * 7;
+		gPs2SfxCacheMetadataArena = AllocAlignedAudioBufferStrict(metadataBytes);
+		if (gPs2SfxCacheMetadataArena == NULL) {
+			printf("[GC-AUDIO] ERROR: independent audio pool cannot reserve cache metadata (%u bytes)\n",
+			       metadataBytes);
+			FreeSampleBankMemory();
+			memset(gPs2SfxSdt, 0, sizeof(gPs2SfxSdt));
+			memset(gPs2SfxSdtValid, 0, sizeof(gPs2SfxSdtValid));
+			return FALSE;
+		}
+		uint8 *metadata = gPs2SfxCacheMetadataArena;
+#if WII_AUDIO_PCM_CACHE_ENABLE
+		gPs2SfxDecoded = (int16**)metadata;
+#endif
+		metadata += pointerBytes;
+		gPs2SfxCacheState = metadata;
+		metadata += stateBytes;
+		gPs2SfxCachePinCount = (uint16*)metadata;
+		metadata += pinBytes;
+#if WII_AUDIO_PCM_CACHE_ENABLE
+		gPs2SfxDecodedBytes = (uint32*)metadata;
+#endif
+		metadata += u32Bytes;
+		gPs2SfxLengthBytes = (uint32*)metadata;
+		metadata += u32Bytes;
+		gPs2SfxCacheLastUse = (uint32*)metadata;
+		metadata += u32Bytes;
+		gPs2SfxCacheQueuedAtMs = (uint32*)metadata;
+		metadata += u32Bytes;
+		gPs2SfxCacheAllocatedBytes = (uint32*)metadata;
+		metadata += u32Bytes;
+		gPs2SfxLoopStartBytes = (uint32*)metadata;
+		metadata += u32Bytes;
+		gPs2SfxLoopEndBytes = (int32*)metadata;
+		memset(gPs2SfxCacheMetadataArena, 0, metadataBytes);
+		for (uint32 i = 0; i < TOTAL_AUDIO_SAMPLES; i++)
+			gPs2SfxLoopEndBytes[i] = -1;
+
+		gPs2SfxCacheMaxVagBytes = maxPredecodeVagBytes;
+		gPedSlotCapacityBytes = requiredPedSlotBytes;
+		gSampleBankMemoryStartAddress[SFX_BANK_PED_COMMENTS] =
+			AllocAlignedAudioBufferStrict(gPedSlotCapacityBytes * MAX_PEDSFX);
+		if (gSampleBankMemoryStartAddress[SFX_BANK_PED_COMMENTS] == NULL) {
+			printf("[GC-AUDIO] ERROR: independent audio pool cannot reserve ped slots (%u bytes)\n",
+			       gPedSlotCapacityBytes * MAX_PEDSFX);
+			FreeSampleBankMemory();
+			memset(gPs2SfxSdt, 0, sizeof(gPs2SfxSdt));
+			memset(gPs2SfxSdtValid, 0, sizeof(gPs2SfxSdtValid));
+			return FALSE;
+		}
+		memset(gSampleBankMemoryStartAddress[SFX_BANK_PED_COMMENTS], 0,
+		       gPedSlotCapacityBytes * MAX_PEDSFX);
+		gSampleBankLoaded[SFX_BANK_0] = TRUE;
+		gSampleBankLoaded[SFX_BANK_PED_COMMENTS] = TRUE;
+		SYS_Report("[GC-AUDIO] SFX backend: PS2 VAG bounded PCM cache "
+		           "(indexed=%u fullPcm=%u bytes maxVag=%u bytes pedSlot=%u bytes)\n",
+		           predecodedCount, (unsigned)predecodedArenaBytes,
+		           maxPredecodeVagBytes, gPedSlotCapacityBytes);
+		return TRUE;
 	}
 
 	uint32 decodedArenaBytes = uint32(predecodedArenaBytes);
@@ -1865,6 +2168,7 @@ static uint16 ReadBE16(FILE *file)
 	return uint16((bytes[0] << 8) | bytes[1]);
 }
 
+#if !defined(WII)
 static uint32 ReadLE32(FILE *file)
 {
 	uint8 bytes[4];
@@ -1872,6 +2176,7 @@ static uint32 ReadLE32(FILE *file)
 		return 0;
 	return (uint32(bytes[3]) << 24) | (uint32(bytes[2]) << 16) | (uint32(bytes[1]) << 8) | uint32(bytes[0]);
 }
+#endif
 
 static uint32 ReadBE32(FILE *file)
 {
@@ -2279,6 +2584,15 @@ class CIdspStreamDecoder : public CGcStreamDecoder
 				ResetDspPending();
 				break;
 			}
+			if (request.outputFramesWritten == 0 || request.outputFramesWritten > request.sampleCount) {
+				printf("[GC-AUDIO] WARN: IDSP DSP produced invalid frame count=%u sampleCount=%u; using CPU\n",
+				       request.outputFramesWritten, request.sampleCount);
+				gIdspDspOutputRejected = TRUE;
+				m_UseDsp = false;
+				m_bBlockRead = false;
+				ResetDspPending();
+				break;
+			}
 			if (!gIdspDspOutputValidated) {
 				uint32 badSample = 0;
 				uint32 badChannel = 0;
@@ -2387,7 +2701,7 @@ public:
 		uint32 cacheSize = Max(GC_IDSP_READ_CACHE_SIZE, m_CombinedBlockSize);
 		m_ReadCacheCapacityBlocks = cacheSize / m_CombinedBlockSize;
 		cacheSize = m_ReadCacheCapacityBlocks * m_CombinedBlockSize;
-		m_pReadCache = (uint8*)memalign(32, cacheSize);
+		m_pReadCache = AllocAlignedAudioBuffer(cacheSize);
 		if (m_pReadCache == NULL)
 			return;
 
@@ -2414,18 +2728,22 @@ public:
 			ReadBE16(m_pFile); // loop hist2
 		}
 
-		for (uint32 ch = 0; ch < m_ChannelCount; ch++)
-			m_pBlockData[ch] = new uint8[m_InterleaveSize];
+		for (uint32 ch = 0; ch < m_ChannelCount; ch++) {
+			m_pBlockData[ch] = AllocAlignedAudioBuffer(m_InterleaveSize);
+			if (m_pBlockData[ch] == NULL)
+				return;
+		}
 
 		if (GC_IDSP_DSP_ENABLED && CGcIdspDspTask::IsAvailable()) {
 			uint32 dspFrameBytes = CGcIdspDspTask::MAX_FRAME_COUNT * GC_ADPCM_FRAME_SIZE;
-			m_pDspFrames[0] = (uint8*)memalign(32, dspFrameBytes);
-			m_pDspFrames[1] = (uint8*)memalign(32, dspFrameBytes);
-			m_pDspPendingSamples = (int16*)memalign(32, CGcIdspDspTask::MAX_SAMPLE_COUNT * 2 * sizeof(int16));
+			m_pDspFrames[0] = AllocAlignedAudioBuffer(dspFrameBytes);
+			m_pDspFrames[1] = AllocAlignedAudioBuffer(dspFrameBytes);
+			m_pDspPendingSamples = (int16*)AllocAlignedAudioBuffer(
+				CGcIdspDspTask::MAX_SAMPLE_COUNT * 2 * sizeof(int16));
 			if (m_pDspFrames[0] == NULL || m_pDspFrames[1] == NULL || m_pDspPendingSamples == NULL) {
-				free(m_pDspFrames[0]);
-				free(m_pDspFrames[1]);
-				free(m_pDspPendingSamples);
+				FreeAlignedAudioBuffer(m_pDspFrames[0]);
+				FreeAlignedAudioBuffer(m_pDspFrames[1]);
+				FreeAlignedAudioBuffer(m_pDspPendingSamples);
 				m_pDspFrames[0] = NULL;
 				m_pDspFrames[1] = NULL;
 				m_pDspPendingSamples = NULL;
@@ -2441,12 +2759,12 @@ public:
 	{
 		if (m_pFile)
 			fclose(m_pFile);
-		free(m_pReadCache);
+		FreeAlignedAudioBuffer(m_pReadCache);
 		for (uint32 ch = 0; ch < 2; ch++)
-			delete[] m_pBlockData[ch];
-		free(m_pDspFrames[0]);
-		free(m_pDspFrames[1]);
-		free(m_pDspPendingSamples);
+			FreeAlignedAudioBuffer(m_pBlockData[ch]);
+		FreeAlignedAudioBuffer(m_pDspFrames[0]);
+		FreeAlignedAudioBuffer(m_pDspFrames[1]);
+		FreeAlignedAudioBuffer(m_pDspPendingSamples);
 	}
 
 	bool IsOpened() const
@@ -2631,8 +2949,11 @@ public:
 		if (m_BlockCount == 0)
 			return;
 
-		for (uint32 ch = 0; ch < m_ChannelCount; ch++)
-			m_pBlockData[ch] = new uint8[VB_BLOCK_SIZE];
+		for (uint32 ch = 0; ch < m_ChannelCount; ch++) {
+			m_pBlockData[ch] = AllocAlignedAudioBuffer(VB_BLOCK_SIZE);
+			if (m_pBlockData[ch] == NULL)
+				return;
+		}
 
 		m_bOpened = true;
 		SeekMS(0);
@@ -2642,8 +2963,8 @@ public:
 	{
 		if (m_pFile)
 			fclose(m_pFile);
-		delete[] m_pBlockData[0];
-		delete[] m_pBlockData[1];
+		FreeAlignedAudioBuffer(m_pBlockData[0]);
+		FreeAlignedAudioBuffer(m_pBlockData[1]);
 	}
 
 	bool IsOpened() const
@@ -2900,6 +3221,54 @@ public:
 	}
 };
 
+static uint32 AudioCacheNowMs()
+{
+	return uint32(ticks_to_millisecs(gettime()));
+}
+
+static void TouchPs2SfxCacheLocked(uint32 sample)
+{
+	if (gPs2SfxCacheLastUse == NULL || sample >= TOTAL_AUDIO_SAMPLES)
+		return;
+	gPs2SfxCacheUseClock++;
+	if (gPs2SfxCacheUseClock == 0)
+		gPs2SfxCacheUseClock = 1;
+	gPs2SfxCacheLastUse[sample] = gPs2SfxCacheUseClock;
+}
+
+static void ReleaseSampleCacheBindingLocked(tGcSampleChannel &channel)
+{
+	if (GC_PS2_SFX_PCM_CACHE_ENABLED && gPs2SfxCachePinCount != NULL &&
+	    channel.cacheSample < TOTAL_AUDIO_SAMPLES) {
+		uint32 sample = channel.cacheSample;
+		if (gPs2SfxCachePinCount[sample] != 0)
+			gPs2SfxCachePinCount[sample]--;
+		TouchPs2SfxCacheLocked(sample);
+	}
+	channel.cacheSample = NO_SAMPLE;
+}
+
+static bool QueuePs2SfxCacheLoadLocked(uint32 sample)
+{
+	if (!GC_PS2_SFX_PCM_CACHE_ENABLED || sample >= TOTAL_AUDIO_SAMPLES ||
+	    gPs2SfxCacheState == NULL || !gPs2SfxSdtValid[sample] || IsPs2PedComment(sample))
+		return false;
+
+	if (gPs2SfxCacheState[sample] == PS2_SFX_CACHE_READY) {
+		TouchPs2SfxCacheLocked(sample);
+		return true;
+	}
+	if (gPs2SfxCacheState[sample] == PS2_SFX_CACHE_QUEUED ||
+	    gPs2SfxCacheState[sample] == PS2_SFX_CACHE_LOADING)
+		return true;
+
+	gPs2SfxCacheState[sample] = PS2_SFX_CACHE_QUEUED;
+	gPs2SfxCacheQueuedAtMs[sample] = AudioCacheNowMs();
+	TouchPs2SfxCacheLocked(sample);
+	gPs2SfxCacheQueuedCount++;
+	return true;
+}
+
 static void ResetStreamPlaybackClock(uint32 streamIndex)
 {
 	u32 level;
@@ -3045,6 +3414,9 @@ static const char *GetTrackPath(tTrack track)
 {
 	if (!IsSupportedGcStreamTrack(track))
 		return NULL;
+
+	if (track == STREAMED_SOUND_RADIO_MODERN_TALKING)
+		return CanOpenTrackPath(GC_MODERN_TALKING_TRACK_PATH) ? GC_MODERN_TALKING_TRACK_PATH : NULL;
 
 #ifndef GTA_PS2
 	if (track == STREAMED_SOUND_RADIO_MP3_PLAYER)
@@ -3512,6 +3884,7 @@ static bool TryFillReadyBuffers()
 			gSampleChannels[i].active = snapshot.sampleChannels[i].active;
 			gSampleChannels[i].renderedOutputFrames = snapshot.sampleChannels[i].renderedOutputFrames;
 			if (channelFinished) {
+				ReleaseSampleCacheBindingLocked(gSampleChannels[i]);
 				gSampleChannels[i].initialised = FALSE;
 				gSampleChannels[i].sampleData = NULL;
 				gSampleChannels[i].sampleCount = 0;
@@ -3770,6 +4143,192 @@ static void StopStreamDecoder()
 	}
 }
 
+static bool TakePs2SfxCacheLoadRequest(uint32 &sample, uint32 &queuedAtMs, uint32 &serviceStartMs)
+{
+	cAudioStateLock stateLock;
+	if (!GC_PS2_SFX_PCM_CACHE_ENABLED || gPedCommentLoaderStop)
+		return false;
+
+	uint32 selected = NO_SAMPLE;
+	uint32 selectedQueuedAt = 0;
+	for (uint32 i = 0; i < TOTAL_AUDIO_SAMPLES; i++) {
+		if (gPs2SfxCacheState[i] != PS2_SFX_CACHE_QUEUED)
+			continue;
+		if (selected == NO_SAMPLE || gPs2SfxCacheQueuedAtMs[i] < selectedQueuedAt) {
+			selected = i;
+			selectedQueuedAt = gPs2SfxCacheQueuedAtMs[i];
+		}
+	}
+	if (selected == NO_SAMPLE)
+		return false;
+
+	gPs2SfxCacheState[selected] = PS2_SFX_CACHE_LOADING;
+	sample = selected;
+	queuedAtMs = selectedQueuedAt;
+	serviceStartMs = AudioCacheNowMs();
+	return true;
+}
+
+static int32 FindPs2SfxCacheVictimLocked(uint32 excludedSample)
+{
+	int32 victim = -1;
+	uint32 oldestUse = 0;
+	for (uint32 i = 0; i < TOTAL_AUDIO_SAMPLES; i++) {
+		if (i == excludedSample || gPs2SfxCacheState[i] != PS2_SFX_CACHE_READY ||
+		    gPs2SfxCachePinCount[i] != 0 || gPs2SfxDecoded[i] == NULL)
+			continue;
+		if (victim < 0 || gPs2SfxCacheLastUse[i] < oldestUse) {
+			victim = int32(i);
+			oldestUse = gPs2SfxCacheLastUse[i];
+		}
+	}
+	return victim;
+}
+
+static uint8 *AllocatePs2SfxCachePcm(uint32 sample, uint32 pcmCapacityBytes)
+{
+	const uint32 allocatorHeadroom = 128;
+	cAudioFillLock fillLock;
+	cAudioStateLock stateLock;
+
+	for (;;) {
+		RwUInt32 capacity = 0;
+		RwUInt32 used = 0;
+		RwUInt32 freeBytes = 0;
+		RwUInt32 largest = 0;
+		WiiMemoryGetAudioMem2Stats(&capacity, &used, &freeBytes, &largest,
+		                            NULL, NULL, NULL);
+		if (largest >= pcmCapacityBytes + allocatorHeadroom &&
+		    freeBytes >= pcmCapacityBytes + GC_PS2_SFX_CACHE_FREE_RESERVE_BYTES)
+			break;
+
+		int32 victim = FindPs2SfxCacheVictimLocked(sample);
+		if (victim < 0) {
+			gPs2SfxCacheDeniedCount++;
+			return NULL;
+		}
+
+		FreeAlignedAudioBuffer(gPs2SfxDecoded[victim]);
+		if (gPs2SfxCacheAllocatedBytes[victim] <= gPs2SfxCacheResidentBytes)
+			gPs2SfxCacheResidentBytes -= gPs2SfxCacheAllocatedBytes[victim];
+		else
+			gPs2SfxCacheResidentBytes = 0;
+		gPs2SfxDecoded[victim] = NULL;
+		gPs2SfxDecodedBytes[victim] = 0;
+		gPs2SfxCacheAllocatedBytes[victim] = 0;
+		gPs2SfxCacheState[victim] = PS2_SFX_CACHE_EMPTY;
+		gPs2SfxCacheLastUse[victim] = 0;
+		gPs2SfxCacheEvictions++;
+	}
+
+	uint8 *pcm = AllocAlignedAudioBufferStrict(pcmCapacityBytes);
+	if (pcm == NULL)
+		gPs2SfxCacheDeniedCount++;
+	return pcm;
+}
+
+static void CompletePs2SfxCacheLoad(uint32 sample, uint8 *pcmData,
+	uint32 decodedBytes, uint32 loopStartBytes, int32 loopEndBytes,
+	uint32 queuedAtMs, uint32 serviceStartMs, bool loaded)
+{
+	uint32 completedAtMs = AudioCacheNowMs();
+	uint32 queueMs = serviceStartMs - queuedAtMs;
+	uint32 serviceMs = completedAtMs - serviceStartMs;
+	uint32 totalMs = queueMs + serviceMs;
+	bool wakeProducer = false;
+	{
+		cAudioStateLock stateLock;
+		if (sample >= TOTAL_AUDIO_SAMPLES || gPs2SfxCacheState[sample] != PS2_SFX_CACHE_LOADING ||
+		    gPedCommentLoaderStop) {
+			loaded = false;
+		} else if (loaded && pcmData != NULL && decodedBytes != 0) {
+			uint32 allocatedBytes =
+				(gPs2SfxSdt[sample].allocatedBytes / PS2_SFX_VAG_FRAME_SIZE) *
+				PS2_SFX_VAG_SAMPLES_PER_FRAME * sizeof(int16);
+			gPs2SfxDecoded[sample] = (int16*)pcmData;
+			gPs2SfxDecodedBytes[sample] = decodedBytes;
+			gPs2SfxCacheAllocatedBytes[sample] = allocatedBytes;
+			gPs2SfxCacheResidentBytes += allocatedBytes;
+			gPs2SfxCachePeakBytes = Max(gPs2SfxCachePeakBytes, gPs2SfxCacheResidentBytes);
+			gPs2SfxLoopStartBytes[sample] = loopStartBytes;
+			gPs2SfxLoopEndBytes[sample] = loopEndBytes;
+			gPs2SfxCacheState[sample] = PS2_SFX_CACHE_READY;
+			TouchPs2SfxCacheLocked(sample);
+			gPs2SfxCacheDecodeCount++;
+			gPs2SfxCacheDecodeQueueTotalMs += queueMs;
+			gPs2SfxCacheDecodeServiceTotalMs += serviceMs;
+			gPs2SfxCacheDecodeTotalMs += totalMs;
+			gPs2SfxCacheDecodeQueueMaxMs = Max(gPs2SfxCacheDecodeQueueMaxMs, queueMs);
+			gPs2SfxCacheDecodeServiceMaxMs = Max(gPs2SfxCacheDecodeServiceMaxMs, serviceMs);
+			gPs2SfxCacheDecodeTotalMaxMs = Max(gPs2SfxCacheDecodeTotalMaxMs, totalMs);
+
+			for (uint32 i = 0; i < MAXCHANNELS + MAX2DCHANNELS; i++) {
+				tGcSampleChannel &channel = gSampleChannels[i];
+				if (!channel.initialised || channel.pendingSample != sample)
+					continue;
+				channel.pendingSample = NO_SAMPLE;
+				channel.cacheSample = sample;
+				channel.sampleData = (const int16*)pcmData;
+				channel.sampleCount = decodedBytes / sizeof(int16);
+				channel.loopStartBytes = loopStartBytes;
+				channel.loopEndBytes = loopEndBytes;
+				channel.edgeRampFrames = ComputeSampleEdgeRampFrames(channel.sampleCount, channel.stepFixed);
+				gPs2SfxCachePinCount[sample]++;
+				if (channel.startPending) {
+					channel.startPending = FALSE;
+					channel.active = TRUE;
+					channel.paused = FALSE;
+					wakeProducer = true;
+				}
+			}
+		} else {
+			gPs2SfxCacheState[sample] = PS2_SFX_CACHE_EMPTY;
+			gPs2SfxCacheQueuedAtMs[sample] = 0;
+			for (uint32 i = 0; i < MAXCHANNELS + MAX2DCHANNELS; i++) {
+				tGcSampleChannel &channel = gSampleChannels[i];
+				if (channel.pendingSample == sample)
+					ResetSampleChannel(channel);
+			}
+		}
+	}
+
+	if (!loaded && pcmData != NULL)
+		FreeAlignedAudioBuffer(pcmData);
+	if (wakeProducer)
+		SignalAudioProducer();
+}
+
+static bool ServicePs2SfxCacheLoad()
+{
+	uint32 sample = NO_SAMPLE;
+	uint32 queuedAtMs = 0;
+	uint32 serviceStartMs = 0;
+	if (!TakePs2SfxCacheLoadRequest(sample, queuedAtMs, serviceStartMs))
+		return false;
+
+	const tPs2SfxSdtEntry &entry = gPs2SfxSdt[sample];
+	uint32 pcmCapacityBytes = (entry.allocatedBytes / PS2_SFX_VAG_FRAME_SIZE) *
+	                         PS2_SFX_VAG_SAMPLES_PER_FRAME * sizeof(int16);
+	uint8 *pcmData = AllocatePs2SfxCachePcm(sample, pcmCapacityBytes);
+	uint32 decodedBytes = 0;
+	uint32 loopStartBytes = 0;
+	int32 loopEndBytes = -1;
+	bool loaded = pcmData != NULL && entry.bank < PS2_SFX_BANK_COUNT &&
+	              gPs2SfxCacheDataFiles[entry.bank] != NULL &&
+	              gPs2SfxCacheVagBuffer != NULL &&
+	              entry.allocatedBytes <= gPs2SfxCacheMaxVagBytes &&
+	              fseek(gPs2SfxCacheDataFiles[entry.bank], long(entry.rawOffset), SEEK_SET) == 0 &&
+	              fread(gPs2SfxCacheVagBuffer, 1, entry.allocatedBytes,
+	                    gPs2SfxCacheDataFiles[entry.bank]) == entry.allocatedBytes &&
+	              DecodePs2VagData(gPs2SfxCacheVagBuffer, entry.allocatedBytes,
+	                               (int16*)pcmData, pcmCapacityBytes, decodedBytes,
+	                               loopStartBytes, loopEndBytes) != FALSE;
+
+	CompletePs2SfxCacheLoad(sample, pcmData, decodedBytes, loopStartBytes,
+	                        loopEndBytes, queuedAtMs, serviceStartMs, loaded);
+	return true;
+}
+
 static bool PedCommentSlotIsReferencedLocked(uint32 slotIndex)
 {
 	uint8 *slotMemory = gSampleBankMemoryStartAddress[SFX_BANK_PED_COMMENTS];
@@ -3840,11 +4399,15 @@ static bool ReadPedComment(uint32 fileOffset, uint32 sourceBytes, uint32 &decode
 		return DecodePs2VagData(gPedCommentVagBuffer, sourceBytes, (int16*)gPedCommentLoadBuffer,
 		                        gPedSlotCapacityBytes, decodedBytes, loopStartBytes, loopEndBytes) != FALSE;
 	}
+#if !defined(WII)
 	if (fread(gPedCommentLoadBuffer, 1, sourceBytes, gPedCommentDataFile) != sourceBytes)
 		return false;
 	ByteSwapPcm16Buffer(gPedCommentLoadBuffer, sourceBytes);
 	decodedBytes = sourceBytes;
 	return true;
+#else
+	return false;
+#endif
 }
 
 static void CompletePedCommentLoad(uint32 sample, uint32 sizeBytes, uint32 slotIndex, bool loaded)
@@ -3875,6 +4438,8 @@ static void *PedCommentLoaderMain(void *)
 		if (gPedCommentLoaderStop)
 			break;
 
+		ServicePs2SfxCacheLoad();
+
 		uint32 sample = NO_SAMPLE;
 		uint32 fileOffset = 0;
 		uint32 sizeBytes = 0;
@@ -3899,7 +4464,7 @@ static void FreePedCommentScratchBuffers()
 {
 	if (gPedCommentLoadBuffer != NULL) {
 #ifdef WII
-		MemoryMgrFreeMem2(gPedCommentLoadBuffer);
+		FreeAlignedAudioBuffer(gPedCommentLoadBuffer);
 #else
 		free(gPedCommentLoadBuffer);
 #endif
@@ -3907,12 +4472,52 @@ static void FreePedCommentScratchBuffers()
 	}
 	if (gPedCommentVagBuffer != NULL) {
 #ifdef WII
-		MemoryMgrFreeMem2(gPedCommentVagBuffer);
+		FreeAlignedAudioBuffer(gPedCommentVagBuffer);
 #else
 		free(gPedCommentVagBuffer);
 #endif
 		gPedCommentVagBuffer = NULL;
 	}
+	if (gPs2SfxCacheVagBuffer != NULL) {
+		FreeAlignedAudioBuffer(gPs2SfxCacheVagBuffer);
+		gPs2SfxCacheVagBuffer = NULL;
+	}
+	for (uint32 bank = 0; bank < PS2_SFX_BANK_COUNT; bank++) {
+		if (gPs2SfxCacheDataFiles[bank] != NULL) {
+			fclose(gPs2SfxCacheDataFiles[bank]);
+			gPs2SfxCacheDataFiles[bank] = NULL;
+		}
+	}
+}
+
+static bool IndexPs2SfxCacheLayouts()
+{
+	if (!GC_PS2_SFX_PCM_CACHE_ENABLED)
+		return true;
+	if (gPs2SfxLengthBytes == NULL || gPs2SfxLoopStartBytes == NULL ||
+	    gPs2SfxLoopEndBytes == NULL || gPs2SfxCacheVagBuffer == NULL)
+		return false;
+
+	for (uint32 sample = 0; sample < TOTAL_AUDIO_SAMPLES; sample++) {
+		if (!gPs2SfxSdtValid[sample] || IsPs2PedComment(sample))
+			continue;
+		const tPs2SfxSdtEntry &entry = gPs2SfxSdt[sample];
+		if (entry.bank >= PS2_SFX_BANK_COUNT ||
+		    gPs2SfxCacheDataFiles[entry.bank] == NULL ||
+		    entry.allocatedBytes > gPs2SfxCacheMaxVagBytes ||
+		    fseek(gPs2SfxCacheDataFiles[entry.bank], long(entry.rawOffset), SEEK_SET) != 0 ||
+		    fread(gPs2SfxCacheVagBuffer, 1, entry.allocatedBytes,
+		          gPs2SfxCacheDataFiles[entry.bank]) != entry.allocatedBytes ||
+		    !InspectPs2VagLayout(gPs2SfxCacheVagBuffer, entry.allocatedBytes,
+		                         gPs2SfxLengthBytes[sample],
+		                         gPs2SfxLoopStartBytes[sample],
+		                         gPs2SfxLoopEndBytes[sample])) {
+			SYS_Report("[GC-AUDIO] ERROR: cannot index PS2 VAG layout sample=%u bank=%u entry=%u\n",
+			           sample, uint32(entry.bank), uint32(entry.localEntry));
+			return false;
+		}
+	}
+	return true;
 }
 
 static bool StartPedCommentLoader()
@@ -3925,15 +4530,54 @@ static bool StartPedCommentLoader()
 		return false;
 
 	char ps2PedPath[PS2_SFX_BANK_PATH_CAPACITY];
+#if defined(WII)
+	if (gSfxBackend != GC_SFX_BACKEND_PS2_VAG)
+		return false;
+	if (!BuildPs2SfxPath(2, "RAW", ps2PedPath, sizeof(ps2PedPath)))
+		return false;
+	const char *pedPath = ps2PedPath;
+#else
 	const char *pedPath = GC_SAMPLE_BANK_DATA_PATH;
 	if (gSfxBackend == GC_SFX_BACKEND_PS2_VAG) {
 		if (!BuildPs2SfxPath(2, "RAW", ps2PedPath, sizeof(ps2PedPath)))
 			return false;
 		pedPath = ps2PedPath;
 	}
+#endif
 	gPedCommentDataFile = fopen(pedPath, "rb");
 	if (gPedCommentDataFile == NULL)
 		return false;
+	if (GC_PS2_SFX_PCM_CACHE_ENABLED) {
+		for (uint32 bank = 0; bank < PS2_SFX_BANK_COUNT; bank++) {
+			char rawPath[PS2_SFX_BANK_PATH_CAPACITY];
+			if (!BuildPs2SfxPath(bank, "RAW", rawPath, sizeof(rawPath))) {
+				FreePedCommentScratchBuffers();
+				fclose(gPedCommentDataFile);
+				gPedCommentDataFile = NULL;
+				return false;
+			}
+			gPs2SfxCacheDataFiles[bank] = fopen(rawPath, "rb");
+			if (gPs2SfxCacheDataFiles[bank] == NULL) {
+				FreePedCommentScratchBuffers();
+				fclose(gPedCommentDataFile);
+				gPedCommentDataFile = NULL;
+				return false;
+			}
+		}
+		gPs2SfxCacheVagBuffer = AllocAlignedAudioBufferStrict(gPs2SfxCacheMaxVagBytes);
+		if (gPs2SfxCacheVagBuffer == NULL) {
+			FreePedCommentScratchBuffers();
+			fclose(gPedCommentDataFile);
+			gPedCommentDataFile = NULL;
+			return false;
+		}
+		if (!IndexPs2SfxCacheLayouts()) {
+			FreePedCommentScratchBuffers();
+			fclose(gPedCommentDataFile);
+			gPedCommentDataFile = NULL;
+			return false;
+		}
+	}
 	gPedCommentLoadBuffer = AllocAlignedAudioBuffer(gPedSlotCapacityBytes);
 	if (gPedCommentLoadBuffer == NULL) {
 		fclose(gPedCommentDataFile);
@@ -4178,6 +4822,86 @@ static void LogDmaDiagnostics()
 }
 #endif
 
+static void LogAudioCacheDiagnostics()
+{
+	if (!GC_PS2_SFX_PCM_CACHE_ENABLED)
+		return;
+	uint32 nowMs = AudioCacheNowMs();
+	if (gPs2SfxCacheLastReportMs != 0 && nowMs - gPs2SfxCacheLastReportMs < 5000)
+		return;
+	gPs2SfxCacheLastReportMs = nowMs;
+
+	RwUInt32 poolCapacity = 0;
+	RwUInt32 poolUsed = 0;
+	RwUInt32 poolFree = 0;
+	RwUInt32 poolLargest = 0;
+	RwUInt32 poolPeak = 0;
+	RwUInt32 poolDenied = 0;
+	WiiMemoryGetAudioMem2Stats(&poolCapacity, &poolUsed, &poolFree, &poolLargest,
+	                            &poolPeak, NULL, &poolDenied);
+
+	uint32 hits = 0;
+	uint32 misses = 0;
+	uint32 evictions = 0;
+	uint32 queued = 0;
+	uint32 decodeCount = 0;
+	uint32 pinCount = 0;
+	uint32 pinnedBytes = 0;
+	uint32 cachePeak = 0;
+	uint32 cacheDenied = 0;
+	uint32 queueTotal = 0;
+	uint32 queueMax = 0;
+	uint32 serviceTotal = 0;
+	uint32 serviceMax = 0;
+	uint32 totalTotal = 0;
+	uint32 totalMax = 0;
+	{
+		cAudioStateLock stateLock;
+		hits = gPs2SfxCacheHits;
+		misses = gPs2SfxCacheMisses;
+		evictions = gPs2SfxCacheEvictions;
+		queued = gPs2SfxCacheQueuedCount;
+		decodeCount = gPs2SfxCacheDecodeCount;
+		cachePeak = gPs2SfxCachePeakBytes;
+		cacheDenied = gPs2SfxCacheDeniedCount;
+		queueTotal = gPs2SfxCacheDecodeQueueTotalMs;
+		queueMax = gPs2SfxCacheDecodeQueueMaxMs;
+		serviceTotal = gPs2SfxCacheDecodeServiceTotalMs;
+		serviceMax = gPs2SfxCacheDecodeServiceMaxMs;
+		totalTotal = gPs2SfxCacheDecodeTotalMs;
+		totalMax = gPs2SfxCacheDecodeTotalMaxMs;
+		for (uint32 i = 0; i < TOTAL_AUDIO_SAMPLES; i++) {
+			pinCount += gPs2SfxCachePinCount[i];
+			if (gPs2SfxCachePinCount[i] != 0)
+				pinnedBytes += gPs2SfxCacheAllocatedBytes[i];
+		}
+	}
+
+	u32 level;
+	_CPU_ISR_Disable(level);
+	uint32 dmaCallbacks = gDmaOutputBufferCount;
+	uint32 dmaUnderruns = gDmaUnderrunCount;
+	uint32 dmaSilence = gDmaSilenceBufferCount;
+	_CPU_ISR_Restore(level);
+
+	uint32 queueAverage = decodeCount != 0 ? queueTotal / decodeCount : 0;
+	uint32 serviceAverage = decodeCount != 0 ? serviceTotal / decodeCount : 0;
+	uint32 totalAverage = decodeCount != 0 ? totalTotal / decodeCount : 0;
+	SYS_Report("[WII-AUDIO-POOL] cap=%uKB used=%uKB peak=%uKB free=%uKB largest=%uKB denied=%u\n",
+	           poolCapacity / 1024, poolUsed / 1024, poolPeak / 1024,
+	           poolFree / 1024, poolLargest / 1024, poolDenied);
+	SYS_Report("[WII-AUDIO-CACHE] hits=%u misses=%u evict=%u queued=%u decode=%u "
+	           "pin=%u pinned=%uKB peak=%uKB denied=%u\n",
+	           hits, misses, evictions, queued, decodeCount, pinCount,
+	           pinnedBytes / 1024, cachePeak / 1024, cacheDenied);
+	SYS_Report("[WII-AUDIO-DECODE] count=%u queue=avg%u/max%u "
+	           "service=avg%u/max%u total=avg%u/max%u\n",
+	           decodeCount, queueAverage, queueMax,
+	           serviceAverage, serviceMax, totalAverage, totalMax);
+	SYS_Report("[WII-AUDIO-DMA] callbacks=%u underrun=%u silence=%u\n",
+	           dmaCallbacks, dmaUnderruns, dmaSilence);
+}
+
 }
 #endif
 
@@ -4278,23 +5002,25 @@ cSampleManager::Initialise(void)
 	for (uint32 i = 0; i < TOTAL_STREAMED_SOUNDS; i++)
 		gStreamLength[i] = 1;
 
+	if (!GC_AUDIO_ENABLED) {
+		SYS_Report("[GC-AUDIO] decode disabled by memory profile; dynamic allocations skipped "
+		           "(recorded_active_requested=%u bytes, reclaimed_partition=%u bytes)\n",
+		           (unsigned)WII_AUDIO_BASELINE_REQUESTED_BYTES,
+		           (unsigned)WII_MEM2_RECLAIMED_BYTES);
+		_bSampmanInitialised = TRUE;
+		return TRUE;
+	}
+
 	for (uint32 i = 0; i < MAX_STREAMS; i++) {
 		gStreamLoopedFlag[i] = FALSE;
 		gStreamPlaybackGeneration[i] = 0;
 		gStreamPlayedOutputFrames[i] = 0;
 		gStreamSlots[i].decoder = NULL;
-		#ifdef WII
-		gStreamSlots[i].sourceBuffer = (int16*)MemoryMgrMallocMem2(sizeof(int16) * GC_SOURCE_BUFFER_FRAMES * 2, 32);
-		#else
-		gStreamSlots[i].sourceBuffer = (int16*)memalign(32, sizeof(int16) * GC_SOURCE_BUFFER_FRAMES * 2);
-		#endif
+		gStreamSlots[i].sourceBuffer = (int16*)AllocAlignedAudioBuffer(
+			sizeof(int16) * GC_SOURCE_BUFFER_FRAMES * 2);
 		if (gStreamSlots[i].sourceBuffer == NULL) {
 			for (uint32 j = 0; j < i; j++) {
-				#ifdef WII
-				MemoryMgrFreeMem2(gStreamSlots[j].sourceBuffer);
-				#else
-				free(gStreamSlots[j].sourceBuffer);
-				#endif
+				FreeAlignedAudioBuffer(gStreamSlots[j].sourceBuffer);
 				gStreamSlots[j].sourceBuffer = NULL;
 			}
 			return FALSE;
@@ -4307,11 +5033,6 @@ cSampleManager::Initialise(void)
 		gStreamSlots[i].effectFlag = FALSE;
 		gStreamSlots[i].lengthMs = 0;
 		gStreamSlots[i].ResetRuntime();
-	}
-
-	if (!GC_AUDIO_ENABLED) {
-		_bSampmanInitialised = TRUE;
-		return TRUE;
 	}
 
 	if (!InitialiseSampleBanks()) {
@@ -4343,8 +5064,15 @@ cSampleManager::Initialise(void)
 		printf("[GC-AUDIO] WARN: producer thread init failed; using synchronous refill\n");
 	if (!StartStreamDecoder())
 		printf("[GC-AUDIO] WARN: stream decoder thread init failed; using synchronous stream decode\n");
-	if (!StartPedCommentLoader())
+	if (!StartPedCommentLoader()) {
+		if (GC_PS2_SFX_PCM_CACHE_ENABLED) {
+			SYS_Report("[GC-AUDIO] ERROR: A0 cache loader init failed; aborting audio init\n");
+			_bSampmanInitialised = TRUE;
+			Terminate();
+			return FALSE;
+		}
 		printf("[GC-AUDIO] WARN: ped comment loader init failed; ped comments disabled\n");
+	}
 	StartAudioDmaIfNeeded();
 	_bSampmanInitialised = TRUE;
 	return TRUE;
@@ -4383,11 +5111,7 @@ cSampleManager::Terminate(void)
 		cAudioStateLock lock;
 		for (uint32 i = 0; i < MAX_STREAMS; i++) {
 			CloseStreamSlot(i);
-			#ifdef WII
-			MemoryMgrFreeMem2(gStreamSlots[i].sourceBuffer);
-			#else
-			free(gStreamSlots[i].sourceBuffer);
-			#endif
+			FreeAlignedAudioBuffer(gStreamSlots[i].sourceBuffer);
 			gStreamSlots[i].sourceBuffer = NULL;
 		}
 
@@ -4539,6 +5263,7 @@ cSampleManager::LoadSampleBank(uint8 nBank)
 		return FALSE;
 	if (gSfxBackend == GC_SFX_BACKEND_PS2_VAG)
 		return nBank == SFX_BANK_0 || nBank == SFX_BANK_PED_COMMENTS;
+#if !defined(WII)
 	if (nBank >= MAX_SFX_BANKS || gSampleDataFile == NULL || gSampleBankMemoryStartAddress[nBank] == NULL || gSampleBankSize[nBank] == 0)
 		return FALSE;
 	if (gSampleBankLoaded[nBank])
@@ -4554,6 +5279,9 @@ cSampleManager::LoadSampleBank(uint8 nBank)
 #else
 	return FALSE;
 #endif
+#else
+	return FALSE;
+#endif
 }
 
 void
@@ -4565,8 +5293,10 @@ cSampleManager::UnloadSampleBank(uint8 nBank)
 	cAudioStateLock lock;
 	if (gSfxBackend == GC_SFX_BACKEND_PS2_VAG)
 		return;
+#if !defined(WII)
 	if (nBank < MAX_SFX_BANKS)
 		gSampleBankLoaded[nBank] = FALSE;
+#endif
 #endif
 }
 
@@ -4578,7 +5308,11 @@ cSampleManager::IsSampleBankLoaded(uint8 nBank)
 #ifdef GAMECUBE
 	if (gSfxBackend == GC_SFX_BACKEND_PS2_VAG)
 		return (nBank == SFX_BANK_0 || nBank == SFX_BANK_PED_COMMENTS) ? LOADING_STATUS_LOADED : LOADING_STATUS_NOT_LOADED;
+#if !defined(WII)
 	return gSampleBankLoaded[nBank] ? LOADING_STATUS_LOADED : LOADING_STATUS_NOT_LOADED;
+#else
+	return LOADING_STATUS_NOT_LOADED;
+#endif
 #else
 	return LOADING_STATUS_NOT_LOADED;
 #endif
@@ -4710,6 +5444,10 @@ uint32
 cSampleManager::GetSampleLoopStartOffset(uint32 nSample)
 {
 	ASSERT(nSample < TOTAL_AUDIO_SAMPLES);
+	if (GC_PS2_SFX_PCM_CACHE_ENABLED && gPs2SfxCacheState != NULL &&
+	    nSample < TOTAL_AUDIO_SAMPLES &&
+	    gPs2SfxCacheState[nSample] == PS2_SFX_CACHE_READY)
+		return gPs2SfxLoopStartBytes[nSample];
 	return nSample < TOTAL_AUDIO_SAMPLES ? m_aSamples[nSample].nLoopStart : 0;
 }
 
@@ -4717,6 +5455,10 @@ int32
 cSampleManager::GetSampleLoopEndOffset(uint32 nSample)
 {
 	ASSERT(nSample < TOTAL_AUDIO_SAMPLES);
+	if (GC_PS2_SFX_PCM_CACHE_ENABLED && gPs2SfxCacheState != NULL &&
+	    nSample < TOTAL_AUDIO_SAMPLES &&
+	    gPs2SfxCacheState[nSample] == PS2_SFX_CACHE_READY)
+		return gPs2SfxLoopEndBytes[nSample];
 	return nSample < TOTAL_AUDIO_SAMPLES ? m_aSamples[nSample].nLoopEnd : 0;
 }
 
@@ -4724,6 +5466,9 @@ uint32
 cSampleManager::GetSampleLength(uint32 nSample)
 {
 	ASSERT(nSample < TOTAL_AUDIO_SAMPLES);
+	if (GC_PS2_SFX_PCM_CACHE_ENABLED && gPs2SfxLengthBytes != NULL &&
+	    nSample < TOTAL_AUDIO_SAMPLES && gPs2SfxLengthBytes[nSample] != 0)
+		return gPs2SfxLengthBytes[nSample] / sizeof(uint16);
 	return nSample < TOTAL_AUDIO_SAMPLES ? m_aSamples[nSample].nSize / sizeof(uint16) : 0;
 }
 
@@ -4742,6 +5487,25 @@ cSampleManager::SetChannelReverbFlag(uint32 nChannel, bool8 nReverbFlag)
 	gSampleChannels[nChannel].reverbFlag = nReverbFlag != FALSE;
 #else
 	(void)nReverbFlag;
+#endif
+}
+
+void
+cSampleManager::PreloadSample(uint32 nSfx)
+{
+#ifdef GAMECUBE
+	bool queued = false;
+	{
+		cAudioStateLock lock;
+		if (GC_AUDIO_ENABLED && gSfxBackend == GC_SFX_BACKEND_PS2_VAG &&
+		    GC_PS2_SFX_PCM_CACHE_ENABLED && nSfx < TOTAL_AUDIO_SAMPLES &&
+		    !IsPs2PedComment(nSfx))
+			queued = QueuePs2SfxCacheLoadLocked(nSfx);
+	}
+	if (queued)
+		SignalPedCommentLoader();
+#else
+	(void)nSfx;
 #endif
 }
 
@@ -4783,17 +5547,33 @@ cSampleManager::InitialiseChannel(uint32 nChannel, uint32 nSfx, uint8 nBank)
 
 	const int16 *sampleData = NULL;
 	uint32 sampleCount = 0;
+	bool cachePending = false;
 	if (gSfxBackend == GC_SFX_BACKEND_PS2_VAG) {
 		uint32 sampleBytes = 0;
-		if (!ResolvePs2SampleAddress(nSfx, sampleData, sampleCount, sampleBytes))
-			return FALSE;
-		m_aSamples[nSfx].nSize = sampleBytes;
+		if (GC_PS2_SFX_PCM_CACHE_ENABLED && !IsPs2PedComment(nSfx)) {
+			if (gPs2SfxCacheState[nSfx] == PS2_SFX_CACHE_READY &&
+			    ResolvePs2SampleAddress(nSfx, sampleData, sampleCount, sampleBytes)) {
+				gPs2SfxCacheHits++;
+				TouchPs2SfxCacheLocked(nSfx);
+			} else {
+				if (!QueuePs2SfxCacheLoadLocked(nSfx))
+					return FALSE;
+				gPs2SfxCacheMisses++;
+				cachePending = true;
+			}
+		} else {
+			if (!ResolvePs2SampleAddress(nSfx, sampleData, sampleCount, sampleBytes))
+				return FALSE;
+		}
+		if (sampleBytes != 0)
+			m_aSamples[nSfx].nSize = sampleBytes;
 	} else if (!ResolveSampleAddress(m_aSamples, nSfx, nBank, sampleData, sampleCount)) {
 		return FALSE;
 	}
 
 	tGcSampleChannel &channel = gSampleChannels[nChannel];
 	ResetSamplePlaybackClock(nChannel);
+	ReleaseSampleCacheBindingLocked(channel);
 	ResetSampleChannel(channel);
 	UpdateSampleChannelVolume(channel, m_nEffectsVolume, m_nEffectsFadeVolume);
 	channel.initialised = TRUE;
@@ -4807,6 +5587,14 @@ cSampleManager::InitialiseChannel(uint32 nChannel, uint32 nSfx, uint8 nBank)
 	channel.loopCount = 1;
 	channel.sampleData = sampleData;
 	channel.sampleCount = sampleCount;
+	if (cachePending) {
+		channel.pendingSample = nSfx;
+		SignalPedCommentLoader();
+	} else if (GC_PS2_SFX_PCM_CACHE_ENABLED && gSfxBackend == GC_SFX_BACKEND_PS2_VAG &&
+	           !IsPs2PedComment(nSfx)) {
+		channel.cacheSample = nSfx;
+		gPs2SfxCachePinCount[nSfx]++;
+	}
 	channel.cursorFixed = 0;
 	channel.stepFixed = ComputeChannelStepFixed(channel.frequency);
 	if (channel.stepFixed == 0)
@@ -4959,7 +5747,10 @@ cSampleManager::GetChannelUsedFlag(uint32 nChannel)
 	_CPU_ISR_Disable(level);
 	bool8 hasPendingOutput = gSamplePendingOutputFrames[nChannel] != 0;
 	_CPU_ISR_Restore(level);
-	return gSampleChannels[nChannel].active || hasPendingOutput;
+	return gSampleChannels[nChannel].active ||
+	       (gSampleChannels[nChannel].initialised &&
+	        gSampleChannels[nChannel].pendingSample < TOTAL_AUDIO_SAMPLES) ||
+	       hasPendingOutput;
 #else
 	return FALSE;
 #endif
@@ -4975,6 +5766,13 @@ cSampleManager::StartChannel(uint32 nChannel)
 	tGcSampleChannel &channel = gSampleChannels[nChannel];
 	/* Invalidate any producer snapshot taken before this start. */
 	ResetSamplePlaybackClock(nChannel);
+	if (channel.initialised && channel.pendingSample < TOTAL_AUDIO_SAMPLES) {
+		channel.startPending = TRUE;
+		channel.active = FALSE;
+		channel.paused = FALSE;
+		SignalPedCommentLoader();
+		return;
+	}
 	if (!GC_AUDIO_ENABLED || !channel.initialised || channel.sampleData == NULL || channel.sampleCount == 0 || channel.stepFixed == 0) {
 		channel.active = FALSE;
 		return;
@@ -4995,6 +5793,7 @@ cSampleManager::StopChannel(uint32 nChannel)
 	cAudioStateLock lock;
 	/* The DMA mixer may still contain this channel after rendering stops. */
 	ResetSamplePlaybackClock(nChannel);
+	ReleaseSampleCacheBindingLocked(gSampleChannels[nChannel]);
 	ResetSampleChannel(gSampleChannels[nChannel]);
 #endif
 }
@@ -5291,6 +6090,7 @@ cSampleManager::Service(void)
 		}
 	}
 	SignalPedCommentLoader();
+	LogAudioCacheDiagnostics();
 #if GC_AUDIO_DEBUG_LOG
 	LogDmaDiagnostics();
 #endif
@@ -5320,6 +6120,19 @@ cSampleManager::InitialiseSampleBanks(void)
 	ResetSampleBankState();
 	gSfxBackend = GC_SFX_BACKEND_UNSELECTED;
 
+#if defined(WII)
+#if GC_PS2_SFX_BANK_ENABLE
+	gSfxBackend = GC_SFX_BACKEND_PS2_VAG;
+	if (!InitialisePs2SampleBanks(m_aSamples)) {
+		printf("[GC-AUDIO] ERROR: PS2 SFX backend initialisation failed\n");
+		return FALSE;
+	}
+	return TRUE;
+#else
+	printf("[GC-AUDIO] ERROR: Wii requires the PS2 VAG SFX backend\n");
+	return FALSE;
+#endif
+#else
 	/* Only a PC bank in the Audio root selects PC PCM. The normal VFS lookup
 	 * is recursive for legacy bare filenames, so use an exact FST probe here. */
 	bool pcLayoutPresent = GCM_VFS_FileExistsExact("audio/sfx.sdt");
@@ -5389,6 +6202,7 @@ cSampleManager::InitialiseSampleBanks(void)
 	}
 	printf("[GC-AUDIO] SFX backend: PC PCM (AUDIO\\SFX.SDT/SFX.RAW)\n");
 	return TRUE;
+#endif
 #else
 	return TRUE;
 #endif

@@ -348,6 +348,9 @@ struct TexDictionary;
 
 struct Texture
 {
+	typedef bool32 (*AliasDonorPinCallback)(TexDictionary *dict);
+	typedef void (*AliasDonorReleaseCallback)(TexDictionary *dict);
+
 	enum FilterMode {
 		NEAREST = 1,
 		LINEAR,
@@ -371,6 +374,9 @@ struct Texture
 	char mask[32];
 	uint32 filterAddressing; // VVVVUUUU FFFFFFFF
 	int32 refCount;
+	// A GX name/mask alias may borrow this texture from another dictionary.
+	// Keep the donor dictionary alive until all non-dictionary references leave.
+	TexDictionary *aliasDonorDict;
 
 	LLLink inGlobalList;	// actually not in RW
 
@@ -379,6 +385,10 @@ struct Texture
 	static Texture *create(Raster *raster);
 	void addRef(void) { this->refCount++; }
 	void destroy(void);
+	static void setAliasLifetimeCallbacks(AliasDonorPinCallback pin,
+	                                      AliasDonorReleaseCallback release);
+	bool32 pinAliasDonor(TexDictionary *dict);
+	void releaseAliasDonor(void);
 	static Texture *fromDict(LLLink *lnk){
 		return LLLinkGetData(lnk, Texture, inDict); }
 	FilterMode getFilter(void) { return (FilterMode)(filterAddressing & 0xFF); }
@@ -397,6 +407,8 @@ struct Texture
 
 	static Texture *(*findCB)(const char *name);
 	static Texture *(*readCB)(const char *name, const char *mask);
+	static AliasDonorPinCallback aliasPinCB;
+	static AliasDonorReleaseCallback aliasReleaseCB;
 	static void setLoadTextures(bool32);	// default: true
 	static void setCreateDummies(bool32);	// default: false
 	static void setMipmapping(bool32);	// default: false
@@ -444,6 +456,37 @@ struct Material
 	bool streamWrite(Stream *stream);
 	uint32 streamGetSize(void);
 };
+
+#ifdef RW_GX
+struct GxTextureResolveDiag
+{
+	const char *name;
+	const char *mask;
+	uint32 aliasCandidates;
+	const char *reason;
+};
+
+struct GxMissingMaterialDiag
+{
+	uint32 serial;
+	int32 modelId;
+	int32 txdSlot;
+	const char *modelName;
+	const char *txdName;
+	const char *textureName;
+	const char *maskName;
+	uint32 aliasCandidates;
+	const char *reason;
+};
+
+const GxTextureResolveDiag *gxGetLastTextureResolveDiag(void);
+void gxSetTextureStreamContext(int32 modelId, const char *modelName,
+	int32 txdSlot, const char *txdName);
+void gxClearTextureStreamContext(void);
+bool gxGetMissingMaterialDiag(const Material *mat, GxMissingMaterialDiag *diag);
+bool gxShouldSkipUnresolvedTexturedMesh(const Material *mat,
+	const char *pipeline, uint32 meshIndex, uint32 numIndices);
+#endif
 
 void registerMaterialRightsPlugin(void);
 

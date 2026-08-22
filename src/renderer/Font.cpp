@@ -13,6 +13,26 @@
 #include "Timer.h"
 #include "gxmemory.h"
 
+#ifndef WII_FONT_PERSISTENT_UPLOAD
+#define WII_FONT_PERSISTENT_UPLOAD 0
+#endif
+
+#if defined(WII) && WII_FONT_PERSISTENT_UPLOAD
+class CScopedFontTextureUpload {
+public:
+	CScopedFontTextureUpload()
+	{
+		rw::gx::pushPersistentUiTextureUploadContext("font-txd");
+	}
+	~CScopedFontTextureUpload()
+	{
+		rw::gx::popPersistentUiTextureUploadContext("font-txd");
+	}
+};
+#else
+class CScopedFontTextureUpload { };
+#endif
+
 #ifdef GAMECUBE
 #include <gccore.h>
 #include <malloc.h>
@@ -106,13 +126,25 @@ static int32 ChsAtlasHeight = 1024;
 static int32 ChsAtlasBytes = 1024 * 1024;
 static int32 ChsRowsPerPage = 46;
 static int32 ChsNumPages = 0;
+enum { CHS_SLANT_SUBSET_MAX_GLYPHS = 128 };
+struct ChsSlantSubsetGlyph {
+	uint16 codepoint;
+	uint8 row;
+	uint8 col;
+};
+static ChsSlantSubsetGlyph ChsSlantSubsetGlyphs[CHS_SLANT_SUBSET_MAX_GLYPHS];
+static int32 ChsSlantSubsetGlyphCount = 0;
+static int32 ChsSlantSubsetWidth = 0;
+static int32 ChsSlantSubsetHeight = 0;
+static bool ChsSlantSubsetActive = false;
+static bool ChsSlantSubsetMissReported = false;
 static const uint8 ZbAsciiWidthTable[96] = {
-	7, 4, 10, 10, 10, 18, 14, 3, 5, 5, 7, 10, 4, 5, 4, 4,
-	10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 6, 6, 10, 10, 10, 11,
-	20, 16, 16, 16, 16, 15, 13, 18, 16, 5, 12, 16, 13, 19, 16, 18,
-	15, 18, 16, 15, 13, 16, 15, 22, 15, 15, 13, 5, 4, 5, 10, 10,
-	5, 12, 13, 12, 13, 12, 7, 13, 13, 6, 6, 12, 6, 20, 13, 13,
-	13, 13, 9, 12, 7, 13, 12, 18, 12, 12, 12, 7, 4, 7, 13, 22
+	8, 8, 14, 16, 16, 26, 21, 7, 9, 9, 11, 17, 8, 9, 8, 8,
+	16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 10, 10, 17, 17, 17, 18,
+	28, 21, 21, 21, 21, 20, 18, 23, 21, 7, 16, 21, 18, 24, 21, 23,
+	20, 23, 21, 20, 18, 21, 20, 28, 20, 20, 18, 9, 8, 9, 17, 16,
+	9, 16, 18, 16, 18, 16, 9, 18, 18, 8, 8, 16, 8, 26, 18, 18,
+	18, 18, 11, 16, 9, 18, 16, 23, 16, 16, 14, 11, 8, 11, 20, 32
 };
 
 // Chinese character detection — covers all CJK ranges + fullwidth punctuation.
@@ -182,10 +214,16 @@ GetZbAsciiAdvanceFromIndex(int32 index, float scaleX)
 }
 
 static rw::Texture *
-LoadChineseFontAtlas(const char *fontBaseName, const char *poolTag, bool optional = false)
+LoadChineseFontAtlas(const char *fontBaseName, const char *poolTag, bool optional = false,
+	int32 requestedWidth = 0, int32 requestedHeight = 0)
 {
 	if (fontBaseName == nil || *fontBaseName == '\0')
 		return nil;
+	int32 atlasWidth = requestedWidth > 0 ? requestedWidth : ChsAtlasWidth;
+	int32 atlasHeight = requestedHeight > 0 ? requestedHeight : ChsAtlasHeight;
+	if (atlasWidth <= 0 || atlasHeight <= 0 || atlasWidth % 8 != 0 || atlasHeight % 4 != 0)
+		return nil;
+	int32 atlasBytes = atlasWidth * atlasHeight;
 
 	char texDvdPath[64], texLocalPath[64], texLegacyDvdPath[64], texLegacyLocalPath[64], texBarePath[32], texLegacyBarePath[32];
 	snprintf(texDvdPath, sizeof(texDvdPath), "dvd:/models/%s.i8", fontBaseName);
@@ -207,7 +245,7 @@ LoadChineseFontAtlas(const char *fontBaseName, const char *poolTag, bool optiona
 		return nil;
 	}
 
-	rw::Raster *ras = rw::Raster::create(ChsAtlasWidth, ChsAtlasHeight, 8,
+	rw::Raster *ras = rw::Raster::create(atlasWidth, atlasHeight, 8,
 	                                     rw::Raster::C8888 | rw::Raster::TEXTURE,
 	                                     rw::PLATFORM_GX);
 	if (!ras) {
@@ -219,8 +257,8 @@ LoadChineseFontAtlas(const char *fontBaseName, const char *poolTag, bool optiona
 	rw::gx::GxRaster *natras = PLUGINOFFSET(rw::gx::GxRaster, ras,
 	                                        rw::gx::nativeRasterOffset);
 	natras->gxFmt    = GX_TF_I8;
-	natras->dataSize = ChsAtlasBytes;
-	natras->gxData   = (uint8*)rw::gx::gxMemAlloc(ChsAtlasBytes, 32);
+	natras->dataSize = atlasBytes;
+	natras->gxData   = (uint8*)rw::gx::gxMemAlloc(atlasBytes, 32);
 	if (!natras->gxData) {
 		fclose(texFile);
 		ras->destroy();
@@ -228,9 +266,9 @@ LoadChineseFontAtlas(const char *fontBaseName, const char *poolTag, bool optiona
 		return nil;
 	}
 
-	size_t rd = fread(natras->gxData, 1, ChsAtlasBytes, texFile);
+	size_t rd = fread(natras->gxData, 1, atlasBytes, texFile);
 	fclose(texFile);
-	if (rd != (size_t)ChsAtlasBytes) {
+	if (rd != (size_t)atlasBytes) {
 		rw::gx::gxMemFree(natras->gxData);
 		natras->gxData = nil;
 		ras->destroy();
@@ -238,20 +276,149 @@ LoadChineseFontAtlas(const char *fontBaseName, const char *poolTag, bool optiona
 		return nil;
 	}
 
-	DCFlushRange(natras->gxData, ChsAtlasBytes);
+	DCFlushRange(natras->gxData, atlasBytes);
 	GX_InvalidateTexAll();
 
-	GX_InitTexObj(&natras->texObj, natras->gxData, ChsAtlasWidth, ChsAtlasHeight,
+	GX_InitTexObj(&natras->texObj, natras->gxData, atlasWidth, atlasHeight,
 	              GX_TF_I8, GX_CLAMP, GX_CLAMP, GX_FALSE);
 	GX_InitTexObjFilterMode(&natras->texObj, GX_NEAR, GX_NEAR);
 	natras->texObjValid = true;
-	rw::gx::texPoolRegister(ras, natras->gxData, natras->dataSize,
-	                        ChsAtlasWidth, ChsAtlasHeight, natras->gxFmt, poolTag);
+	if (!rw::gx::texPoolRegister(ras, natras->gxData, natras->dataSize,
+	                             atlasWidth, atlasHeight,
+	                             natras->gxFmt, poolTag)) {
+		rw::gx::gxMemFree(natras->gxData);
+		natras->gxData = nil;
+		natras->dataSize = 0;
+		natras->texObjValid = false;
+		ras->destroy();
+		printf("[CHS-FONT] texture pool registration failed for %s atlas\n",
+		       fontBaseName);
+		return nil;
+	}
+	// The atlas is an active UI owner, not a disposable world texture. Keep
+	// this ownership explicit so emergency GX reclamation cannot degrade it.
+	rw::gx::markPersistentUiTexture(ras);
 
 	rw::Texture *tex = rw::Texture::create(ras);
+	if (!tex) {
+		ras->destroy();
+		printf("[CHS-FONT] texture create failed for %s atlas\n", fontBaseName);
+		return nil;
+	}
 	printf("[CHS-FONT] atlas %s ready raster=%p tex=%p\n",
 	       fontBaseName, (void*)ras, (void*)tex);
 	return tex;
+}
+
+static void
+ResetChineseSlantSubset(void)
+{
+	ChsSlantSubsetGlyphCount = 0;
+	ChsSlantSubsetWidth = 0;
+	ChsSlantSubsetHeight = 0;
+	ChsSlantSubsetActive = false;
+	ChsSlantSubsetMissReported = false;
+}
+
+static uint16
+ReadBigEndian16(const uint8 *bytes)
+{
+	return (uint16(bytes[0]) << 8) | uint16(bytes[1]);
+}
+
+static FILE *
+OpenChineseSlantSubsetMap(void)
+{
+	static const char *paths[] = {
+		"dvd:/models/chinese_wm_slant.map",
+		"models/chinese_wm_slant.map",
+		"dvd:/MODELS/CHINESE_WM_SLANT.MAP",
+		"MODELS/CHINESE_WM_SLANT.MAP",
+		"chinese_wm_slant.map",
+		"CHINESE_WM_SLANT.MAP",
+	};
+	for (int32 i = 0; i < (int32)ARRAY_SIZE(paths); i++) {
+		FILE *file = fopen(paths[i], "rb");
+		if (file != nil)
+			return file;
+	}
+	return nil;
+}
+
+static bool
+LoadChineseSlantSubsetMap(void)
+{
+	ResetChineseSlantSubset();
+	FILE *file = OpenChineseSlantSubsetMap();
+	if (file == nil)
+		return false;
+
+	uint8 header[16];
+	bool valid = fread(header, sizeof(header), 1, file) == 1 &&
+		header[0] == 'C' && header[1] == 'S' && header[2] == 'L' && header[3] == '1';
+	int32 glyphCount = valid ? ReadBigEndian16(&header[4]) : 0;
+	int32 columns = valid ? header[6] : 0;
+	int32 rows = valid ? header[7] : 0;
+	int32 atlasWidth = valid ? ReadBigEndian16(&header[8]) : 0;
+	int32 atlasHeight = valid ? ReadBigEndian16(&header[10]) : 0;
+	int32 glyphWidth = valid ? header[12] : 0;
+	int32 glyphHeight = valid ? header[13] : 0;
+	valid = valid && glyphCount > 0 && glyphCount <= CHS_SLANT_SUBSET_MAX_GLYPHS &&
+		columns > 0 && rows > 0 && glyphCount <= columns * rows &&
+		glyphWidth == ChsCellWidth && glyphHeight == ChsCellHeight &&
+		atlasWidth == columns * glyphWidth && atlasHeight == rows * glyphHeight &&
+		atlasWidth <= ChsAtlasWidth && atlasHeight <= ChsAtlasHeight &&
+		(atlasWidth & (atlasWidth - 1)) == 0 && (atlasHeight & (atlasHeight - 1)) == 0;
+
+	uint16 previousCodepoint = 0;
+	for (int32 i = 0; valid && i < glyphCount; i++) {
+		uint8 entry[4];
+		if (fread(entry, sizeof(entry), 1, file) != 1) {
+			valid = false;
+			break;
+		}
+		uint16 codepoint = ReadBigEndian16(entry);
+		if ((i > 0 && codepoint <= previousCodepoint) || entry[2] >= rows || entry[3] >= columns) {
+			valid = false;
+			break;
+		}
+		ChsSlantSubsetGlyphs[i].codepoint = codepoint;
+		ChsSlantSubsetGlyphs[i].row = entry[2];
+		ChsSlantSubsetGlyphs[i].col = entry[3];
+		previousCodepoint = codepoint;
+	}
+	if (valid && fgetc(file) != EOF)
+		valid = false;
+	fclose(file);
+
+	if (!valid) {
+		ResetChineseSlantSubset();
+		printf("[CHS-FONT] invalid chinese_wm_slant.map\n");
+		return false;
+	}
+	ChsSlantSubsetGlyphCount = glyphCount;
+	ChsSlantSubsetWidth = atlasWidth;
+	ChsSlantSubsetHeight = atlasHeight;
+	return true;
+}
+
+static const ChsSlantSubsetGlyph *
+FindChineseSlantSubsetGlyph(wchar c)
+{
+	if (!ChsSlantSubsetActive)
+		return nil;
+	int32 low = 0;
+	int32 high = ChsSlantSubsetGlyphCount;
+	while (low < high) {
+		int32 middle = low + (high - low) / 2;
+		if (ChsSlantSubsetGlyphs[middle].codepoint < (uint16)c)
+			low = middle + 1;
+		else
+			high = middle;
+	}
+	if (low < ChsSlantSubsetGlyphCount && ChsSlantSubsetGlyphs[low].codepoint == (uint16)c)
+		return &ChsSlantSubsetGlyphs[low];
+	return nil;
 }
 
 static void
@@ -284,20 +451,20 @@ ConfigureChineseFontProfile(const char *fontBaseName)
 	}
 
 	if (fontBaseName != nil && strcmp(fontBaseName, "chinese_zb") == 0) {
-		ChsCellWidth = 42;
-		ChsCellHeight = 42;
-		ChsAsciiSampleWidth = 29;
-		ChsAsciiSampleHeight = 32;
-		ChsCjkSampleWidth = 40;
-		ChsCjkSampleHeight = 40;
-		ChsAsciiCols = 32;
-		ChsAsciiPitchX = 32;
-		ChsAsciiPitchY = 32;
-		ChsCjkPitchX = 42;
-		ChsCjkPitchY = 42;
-		ChsCjkBaseRowOffset = 3;
-		ChsRenderGlyphSize = 24.5f;
-		ChsAdvanceSize = 25.0f;
+		ChsCellWidth = 31;
+		ChsCellHeight = 31;
+		ChsAsciiSampleWidth = 20;
+		ChsAsciiSampleHeight = 22;
+		ChsCjkSampleWidth = 30;
+		ChsCjkSampleHeight = 30;
+		ChsAsciiCols = 51;
+		ChsAsciiPitchX = 20;
+		ChsAsciiPitchY = 22;
+		ChsCjkPitchX = 31;
+		ChsCjkPitchY = 31;
+		ChsCjkBaseRowOffset = 2;
+		ChsRenderGlyphSize = 32.0f;
+		ChsAdvanceSize = 32.0f;
 		ChsRowsPerPage = ChsAtlasHeight / ChsCjkPitchY - ChsCjkBaseRowOffset;
 	}
 
@@ -312,6 +479,9 @@ ConfigureChineseFontProfile(const char *fontBaseName)
 static float
 GetChineseLineStep(void)
 {
+	if (gChineseLanguageVariant == CHINESE_VARIANT_ZB)
+		return 18.0f * CFont::Details.scaleY;
+
 	float legacyStep = 32.0f * CFont::Details.scaleY * 0.5f + 2.0f * CFont::Details.scaleY;
 	float glyphAwareStep = (ChsRenderGlyphSize - 2.0f) * CFont::Details.scaleY;
 	return legacyStep > glyphAwareStep ? legacyStep : glyphAwareStep;
@@ -327,6 +497,7 @@ DeleteChineseAtlasSet(void)
 		ChsSlantExtraPages[i].Delete();
 	}
 	ChsNumPages = 0;
+	ResetChineseSlantSubset();
 }
 
 static CSprite2d *
@@ -350,6 +521,24 @@ GetChineseCharPage(wchar c)
 	if (pos.row == 254 && pos.col == 254)
 		return 0;
 	return pos.row / ChsRowsPerPage;
+}
+
+static CSprite2d *
+GetChineseSpriteForChar(wchar c, bool slant)
+{
+	int32 page = GetChineseCharPage(c);
+	if (!slant)
+		return GetChinesePageSprite(page, false);
+	if (ChsSlantSubsetActive) {
+		if (FindChineseSlantSubsetGlyph(c) != nil)
+			return &CFont::ChsSlantSprite;
+		if (!ChsSlantSubsetMissReported) {
+			printf("[CHS-FONT] compact slant atlas missing U+%04X; using base atlas\n", (uint16)c);
+			ChsSlantSubsetMissReported = true;
+		}
+		return GetChinesePageSprite(page, false);
+	}
+	return GetChinesePageSprite(page, true);
 }
 
 static void
@@ -766,6 +955,8 @@ CFont::Initialise(void)
 	int slot;
 
 	slot = CTxdStore::AddTxdSlot("fonts");
+	{
+		CScopedFontTextureUpload fontUpload;
 #ifdef MORE_LANGUAGES
 	Slot = slot;
 	switch (LanguageSet)
@@ -787,6 +978,7 @@ CFont::Initialise(void)
 #else
 	CTxdStore::LoadTxd(slot, "MODELS/FONTS.TXD");
 #endif
+	} // font texture upload context
 	CTxdStore::AddRef(slot);
 	CTxdStore::PushCurrentTxd();
 	CTxdStore::SetCurrentTxd(slot);
@@ -830,14 +1022,20 @@ CFont::LoadButtons(const char *txdPath)
 {
 	if (int file = CFileMgr::OpenFile(txdPath)) {
 		CFileMgr::CloseFile(file);
+		if (ButtonsSlot != -1 && CTxdStore::IsTxdAliasPinned(ButtonsSlot)) {
+			debug("Button TXD reload deferred while an alias donor is pinned.\n");
+			return;
+		}
 		if (ButtonsSlot == -1)
 			ButtonsSlot = CTxdStore::AddTxdSlot("buttons");
 		else {
 			for (int i = 0; i < MAX_BUTTON_ICONS; i++)
 				ButtonSprite[i].Delete();
-			CTxdStore::RemoveTxd(ButtonsSlot);
+			if(!CTxdStore::RemoveTxd(ButtonsSlot))
+				return;
 		}
-		CTxdStore::LoadTxd(ButtonsSlot, txdPath);
+		if(!CTxdStore::LoadTxd(ButtonsSlot, txdPath))
+			return;
 		CTxdStore::AddRef(ButtonsSlot);
 		CTxdStore::PushCurrentTxd();
 		CTxdStore::SetCurrentTxd(ButtonsSlot);
@@ -877,6 +1075,10 @@ void
 CFont::ReloadFonts(uint8 set, bool force)
 {
 	if (Slot != -1 && (LanguageSet != set || force)) {
+		if (CTxdStore::IsTxdAliasPinned(Slot)) {
+			debug("Font TXD reload deferred while an alias donor is pinned.\n");
+			return;
+		}
 		Sprite[0].Delete();
 		Sprite[1].Delete();
 
@@ -892,12 +1094,20 @@ CFont::ReloadFonts(uint8 set, bool force)
 #endif
 
 		CTxdStore::PushCurrentTxd();
-		CTxdStore::RemoveTxd(Slot);
+		if(!CTxdStore::RemoveTxd(Slot)){
+			CTxdStore::PopCurrentTxd();
+			return;
+		}
+		{
+			CScopedFontTextureUpload fontUpload;
 
 		// Always load base English font TXD first.
 		// Every language needs "font2"/"font1" for UI digits, ASCII text,
 		// and HUD. Without this Sprite[0..5] → null → pink garbage.
-		CTxdStore::LoadTxd(Slot, "MODELS/FONTS.TXD");
+		if(!CTxdStore::LoadTxd(Slot, "MODELS/FONTS.TXD")){
+			CTxdStore::PopCurrentTxd();
+			return;
+		}
 
 		// Language-specific TXDs replace the base when needed
 		switch (set)
@@ -906,19 +1116,29 @@ CFont::ReloadFonts(uint8 set, bool force)
 		default:
 			break;  // base FONTS.TXD already loaded
 		case FONT_LANGSET_POLISH:
-			CTxdStore::LoadTxd(Slot, "MODELS/FONTS_P.TXD");
+			if(!CTxdStore::LoadTxd(Slot, "MODELS/FONTS_P.TXD")){
+				CTxdStore::PopCurrentTxd();
+				return;
+			}
 			break;
 		case FONT_LANGSET_RUSSIAN:
-			CTxdStore::LoadTxd(Slot, "MODELS/FONTS_R.TXD");
+			if(!CTxdStore::LoadTxd(Slot, "MODELS/FONTS_R.TXD")){
+				CTxdStore::PopCurrentTxd();
+				return;
+			}
 			break;
 		case FONT_LANGSET_JAPANESE:
-			CTxdStore::LoadTxd(Slot, "MODELS/FONTS_J.TXD");
+			if(!CTxdStore::LoadTxd(Slot, "MODELS/FONTS_J.TXD")){
+				CTxdStore::PopCurrentTxd();
+				return;
+			}
 			break;
 #ifdef CHINESE_FONT
 		case FONT_LANGSET_CHINESE:
 			break;  // reuses base FONTS.TXD for ASCII; CJK via ChsSprite
 #endif
 		}
+		} // font texture upload context
 
 		CTxdStore::SetCurrentTxd(Slot);
 		Sprite[0].SetTexture("font2", "font2_mask");
@@ -1214,13 +1434,12 @@ CFont::RenderFontBuffer()
 		// otherwise Chinese UVs get sampled against the English font atlas
 		// -> pink/garbled blocks.
 		if (IsChineseAtlasCharacterForState(c, RenderState.bFontHalfTexture, RenderState.bUseOriginalAscii)) {
-			int32 page = GetChineseCharPage(c);
 			bool wantSlant = RenderState.slant != 0.0f;
 			RwTextureFilterMode desiredChineseFilter =
 				GetChineseTextureFilterForChar(c, RenderState.bFontHalfTexture, RenderState.bUseOriginalAscii);
-			CSprite2d *desiredChineseSprite = GetChinesePageSprite(page, wantSlant);
+			CSprite2d *desiredChineseSprite = GetChineseSpriteForChar(c, wantSlant);
 			if ((desiredChineseSprite == nil || desiredChineseSprite->m_pTexture == nil) && wantSlant)
-				desiredChineseSprite = GetChinesePageSprite(page, false);
+				desiredChineseSprite = GetChineseSpriteForChar(c, false);
 			if (activeChineseSprite != desiredChineseSprite || activeChineseFilter != desiredChineseFilter) {
 				CSprite2d::RenderVertexBuffer(activeChineseSprite != nil ? activeChineseFilter : GetBaseFontTextureFilter());
 				if (desiredChineseSprite != nil && desiredChineseSprite->m_pTexture) {
@@ -2970,21 +3189,30 @@ CFont::LoadChineseFont(void)
 		if (baseSprite->m_pTexture == nil) {
 			if (page == 0)
 				return;
+			if (fontBaseName != nil && strcmp(fontBaseName, "chinese_zb") == 0) {
+				printf("[CHS-FONT] required atlas page %d missing for %s\n", page, fontBaseName);
+				DeleteChineseAtlasSet();
+				return;
+			}
 			ChsNumPages = page;
 			break;
 		}
 
-		if (slantFontBaseName != nil) {
-			char slantPageBaseName[64];
-			BuildChineseAtlasBaseName(slantFontBaseName, page, slantPageBaseName, sizeof(slantPageBaseName));
-			CSprite2d *slantSprite = GetChinesePageSprite(page, true);
-			if (slantSprite != nil)
-				slantSprite->m_pTexture = LoadChineseFontAtlas(slantPageBaseName, "wm_vcchs_font_slant_i8", true);
+	}
+
+	if (slantFontBaseName != nil && strcmp(fontBaseName, "chinese_wm") == 0 && LoadChineseSlantSubsetMap()) {
+		ChsSlantSprite.m_pTexture = LoadChineseFontAtlas(
+			"chinese_wm_slant", "wm_vcchs_font_slant_i8", true,
+			ChsSlantSubsetWidth, ChsSlantSubsetHeight);
+		if (ChsSlantSprite.m_pTexture != nil) {
+			ChsSlantSubsetActive = true;
+			printf("[CHS-FONT] compact slant atlas enabled glyphs=%d size=%dx%d\n",
+			       ChsSlantSubsetGlyphCount, ChsSlantSubsetWidth, ChsSlantSubsetHeight);
+		} else {
+			ResetChineseSlantSubset();
 		}
 	}
 
-	if (ChsSlantSprite.m_pTexture != nil)
-		printf("[CHS-FONT] slant atlas enabled for %s\n", fontBaseName);
 	printf("[CHS-FONT] atlas ready rows=%d pages=%d base=%s\n", ChsNumRows, ChsNumPages, fontBaseName);
 }
 
@@ -2995,11 +3223,11 @@ void
 CFont::PrintChineseChar(float x, float y, wchar c)
 {
 	if (gChineseLanguageVariant == CHINESE_VARIANT_ZB) {
-		float glyph = ChsRenderGlyphSize;
+		bool useAscii = UseZbAsciiAtlas(c, RenderState.bFontHalfTexture, RenderState.bUseOriginalAscii);
 		float atlasW = (float)ChsAtlasWidth;
 		float atlasH = (float)ChsAtlasHeight;
-		float w = RenderState.scaleX * glyph;
-		float h = RenderState.scaleY * glyph;
+		float w = RenderState.scaleX * ChsRenderGlyphSize;
+		float h = RenderState.scaleY * (useAscii ? 17.0f : 16.0f);
 
 		CRect rect;
 		rect.left = x;
@@ -3008,7 +3236,7 @@ CFont::PrintChineseChar(float x, float y, wchar c)
 		rect.bottom = y + h;
 
 		float srcX, srcY, srcW, srcH;
-		if (UseZbAsciiAtlas(c, RenderState.bFontHalfTexture, RenderState.bUseOriginalAscii)) {
+		if (useAscii) {
 			int32 index = c - ' ';
 			int32 row = ChsAsciiCols > 0 ? index / ChsAsciiCols : 0;
 			int32 col = ChsAsciiCols > 0 ? index % ChsAsciiCols : 0;
@@ -3028,8 +3256,8 @@ CFont::PrintChineseChar(float x, float y, wchar c)
 		}
 
 		float leftInset = srcX > 0.0f ? 0.5f : 0.0f;
-		float rightInset = UseZbAsciiAtlas(c, RenderState.bFontHalfTexture, RenderState.bUseOriginalAscii) ? 0.5f : 0.5f;
-		float bottomInset = UseZbAsciiAtlas(c, RenderState.bFontHalfTexture, RenderState.bUseOriginalAscii) ? 0.5f : 0.5f;
+		float rightInset = 0.5f;
+		float bottomInset = 0.5f;
 		float u1 = (srcX + leftInset) / atlasW;
 		float v1 = (srcY + 0.5f) / atlasH;
 		float u2 = (srcX + srcW - rightInset) / atlasW;
@@ -3044,13 +3272,19 @@ CFont::PrintChineseChar(float x, float y, wchar c)
 		return;
 	}
 
+	const ChsSlantSubsetGlyph *subsetGlyph = RenderState.slant != 0.0f ? FindChineseSlantSubsetGlyph(c) : nil;
 	CharPos pos = ChsTable[c];
-	int32 pageRow = ChsRowsPerPage > 0 ? (pos.row % ChsRowsPerPage) : pos.row;
+	if (subsetGlyph != nil) {
+		pos.row = subsetGlyph->row;
+		pos.col = subsetGlyph->col;
+	}
+	int32 pageRow = subsetGlyph != nil ? pos.row :
+		(ChsRowsPerPage > 0 ? (pos.row % ChsRowsPerPage) : pos.row);
 	float glyph = ChsRenderGlyphSize;
 	float cellW = (float)ChsCellWidth;
 	float cellH = (float)ChsCellHeight;
-	float atlasW = (float)ChsAtlasWidth;
-	float atlasH = (float)ChsAtlasHeight;
+	float atlasW = (float)(subsetGlyph != nil ? ChsSlantSubsetWidth : ChsAtlasWidth);
+	float atlasH = (float)(subsetGlyph != nil ? ChsSlantSubsetHeight : ChsAtlasHeight);
 	float w = RenderState.scaleX * glyph;
 	float h = RenderState.scaleY * glyph;
 
@@ -3060,9 +3294,11 @@ CFont::PrintChineseChar(float x, float y, wchar c)
 	rect.right = x + w;
 	rect.bottom = y + h;
 
-	int32 page = GetChineseCharPage(c);
-	CSprite2d *slantSprite = GetChinesePageSprite(page, true);
-	bool useSlantAtlas = RenderState.slant != 0.0f && slantSprite != nil && slantSprite->m_pTexture != nil;
+	bool useSlantAtlas = subsetGlyph != nil && ChsSlantSprite.m_pTexture != nil;
+	if (!ChsSlantSubsetActive && RenderState.slant != 0.0f) {
+		CSprite2d *slantSprite = GetChinesePageSprite(GetChineseCharPage(c), true);
+		useSlantAtlas = slantSprite != nil && slantSprite->m_pTexture != nil;
+	}
 	float u1 = (float)(pos.col * cellW) / atlasW;
 	float v1 = (float)(pageRow * cellH) / atlasH;
 	float u2 = (float)((pos.col + 1) * cellW) / atlasW;
@@ -3078,9 +3314,9 @@ CFont::PrintChineseChar(float x, float y, wchar c)
 	float v4;
 
 	if (useSlantAtlas) {
-		float vfix1 = 0.00055f / 4.0f;
-		float vfix2 = 0.007f / 4.0f;
-		float vfix3 = 0.009f / 4.0f;
+		float vfix1 = 0.1408f / atlasH;
+		float vfix2 = 1.792f / atlasH;
+		float vfix3 = 2.304f / atlasH;
 		rect.top += 0.015f;
 		v1 += vfix1;
 		v2 = (float)(pageRow * cellH) / atlasH + vfix + vfix2;

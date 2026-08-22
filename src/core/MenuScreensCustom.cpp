@@ -153,8 +153,13 @@ void RestoreDefDisplay(int8 action) {
 	#endif
 	#ifdef GRAPHICS_MENU_OPTIONS // otherwise Frontend will handle those
 		FrontEndMenuManager.m_PrefsBrightness = 256;
+	#ifdef WII
+		FrontEndMenuManager.m_PrefsLOD = 1.10f;
+		CRenderer::ms_lodDistScale = 1.10f;
+	#else
 		FrontEndMenuManager.m_PrefsLOD = 1.2f;
 		CRenderer::ms_lodDistScale = 1.2f;
+	#endif
 		FrontEndMenuManager.m_PrefsShowSubtitles = false;
 		FrontEndMenuManager.m_PrefsShowLegends = true;
 		FrontEndMenuManager.m_PrefsRadarMode = 0;

@@ -42,7 +42,11 @@ const char *allocLocation;
 #if defined(RW_GX) && defined(GAMECUBE)
 static void *s_rwEmergencyReserve = nil;
 static size_t s_rwEmergencyReserveSize = 384 * 1024;
+#ifndef WII
 static const int s_rwRecoveryShrinkAttempts = 96;
+#else
+extern "C" void WiiMemoryDumpStats(const char *reason);
+#endif
 
 static void
 releaseRwEmergencyReserve(const char *reason)
@@ -67,6 +71,7 @@ ensureRwEmergencyReserve(void)
 	}
 }
 
+#ifndef WII
 static void
 tightenTextureBudgetAfterRwOom(const char *reason)
 {
@@ -96,6 +101,7 @@ tightenTextureBudgetAfterRwOom(const char *reason)
 	}
 	gx::texPoolEnforceBudget(reason);
 }
+#endif
 #endif
 
 void *malloc_h(size_t sz, uint32 hint) { if(sz == 0) return nil; return malloc(sz); }
@@ -216,6 +222,9 @@ void *mustmalloc_h(size_t sz, uint32 hint)
 		ensureRwEmergencyReserve();
 		return ret;
 	}
+#ifdef WII
+	WiiMemoryDumpStats("rwMalloc OOM");
+#else
 	tightenTextureBudgetAfterRwOom("rwMalloc OOM");
 	ret = Engine::memfuncs.rwmalloc(sz, hint);
 	if(ret){
@@ -243,6 +252,7 @@ void *mustmalloc_h(size_t sz, uint32 hint)
 			return ret;
 		}
 	}
+#endif
 	fprintf(stderr,
 		"Error: out of memory (rwMalloc size=%u hint=0x%08X at %s, gxTexPool=%uKB/%d tex)\n",
 		(unsigned)sz, (unsigned)hint,
@@ -275,6 +285,9 @@ void *mustrealloc_h(void *p, size_t sz, uint32 hint)
 		ensureRwEmergencyReserve();
 		return ret;
 	}
+#ifdef WII
+	WiiMemoryDumpStats("rwRealloc OOM");
+#else
 	tightenTextureBudgetAfterRwOom("rwRealloc OOM");
 	ret = Engine::memfuncs.rwrealloc(p, sz, hint);
 	if(ret){
@@ -302,6 +315,7 @@ void *mustrealloc_h(void *p, size_t sz, uint32 hint)
 			return ret;
 		}
 	}
+#endif
 	fprintf(stderr,
 		"Error: out of memory (rwRealloc ptr=%p size=%u hint=0x%08X at %s, gxTexPool=%uKB/%d tex)\n",
 		p, (unsigned)sz, (unsigned)hint,

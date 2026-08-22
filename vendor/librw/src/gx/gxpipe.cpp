@@ -24,6 +24,9 @@
 #include "../rwengine.h"
 #include "../rwrender.h"
 #include "rwgx.h"
+#ifdef GX_PIPELINE_DIAGNOSTICS
+#include "gxmemory.h"
+#endif
 
 // Define GX_PIPELINE_DIAGNOSTICS when targeted pipeline tracing is needed.
 #ifndef GX_PIPELINE_DIAGNOSTICS
@@ -274,7 +277,7 @@ setupLightingChannels(Material *mat, const GxAtomicLights &lights)
 }
 
 static void
-setupDefaultLitTev(GXColor matColor, bool textured)
+setupDefaultLitTev(GXColor matColor, bool textured, bool saveForMatFX)
 {
     GX_SetTevColor(GX_TEVREG1, matColor);
     GX_SetNumTevStages(textured ? 4 : 3);
@@ -291,44 +294,44 @@ setupDefaultLitTev(GXColor matColor, bool textured)
                      GX_CC_ONE, GX_CC_CPREV);
     GX_SetTevColorOp(GX_TEVSTAGE1,
                      GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
-                     GX_TRUE, GX_TEVPREV);
+                     GX_TRUE, saveForMatFX ? GX_TEVREG0 : GX_TEVPREV);
     GX_SetTevAlphaIn(GX_TEVSTAGE1,
                      GX_CA_ZERO, GX_CA_ZERO,
                      GX_CA_ZERO, GX_CA_APREV);
     GX_SetTevAlphaOp(GX_TEVSTAGE1,
                      GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
-                     GX_TRUE, GX_TEVPREV);
+                     GX_TRUE, saveForMatFX ? GX_TEVREG0 : GX_TEVPREV);
 
     GX_SetTevOrder(GX_TEVSTAGE2, GX_TEXCOORDNULL,
                    GX_TEXMAP_NULL, GX_COLORNULL);
     GX_SetTevColorIn(GX_TEVSTAGE2,
-                     GX_CC_ZERO, GX_CC_CPREV,
+                     GX_CC_ZERO, saveForMatFX ? GX_CC_C0 : GX_CC_CPREV,
                      GX_CC_C1, GX_CC_ZERO);
     GX_SetTevColorOp(GX_TEVSTAGE2,
                      GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
-                     GX_TRUE, GX_TEVPREV);
+                     GX_TRUE, saveForMatFX ? GX_TEVREG2 : GX_TEVPREV);
     GX_SetTevAlphaIn(GX_TEVSTAGE2,
-                     GX_CA_ZERO, GX_CA_APREV,
+                     GX_CA_ZERO, saveForMatFX ? GX_CA_A0 : GX_CA_APREV,
                      GX_CA_A1, GX_CA_ZERO);
     GX_SetTevAlphaOp(GX_TEVSTAGE2,
                      GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
-                     GX_TRUE, GX_TEVPREV);
+                     GX_TRUE, saveForMatFX ? GX_TEVREG2 : GX_TEVPREV);
 
     if(textured){
         GX_SetTevOrder(GX_TEVSTAGE3, GX_TEXCOORD0,
                        GX_TEXMAP0, GX_COLORNULL);
         GX_SetTevColorIn(GX_TEVSTAGE3,
-                         GX_CC_ZERO, GX_CC_CPREV,
+                         GX_CC_ZERO, saveForMatFX ? GX_CC_C2 : GX_CC_CPREV,
                          GX_CC_TEXC, GX_CC_ZERO);
         GX_SetTevColorOp(GX_TEVSTAGE3,
                          GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
-                         GX_TRUE, GX_TEVPREV);
+                         GX_TRUE, saveForMatFX ? GX_TEVREG2 : GX_TEVPREV);
         GX_SetTevAlphaIn(GX_TEVSTAGE3,
-                         GX_CA_ZERO, GX_CA_APREV,
+                         GX_CA_ZERO, saveForMatFX ? GX_CA_A2 : GX_CA_APREV,
                          GX_CA_TEXA, GX_CA_ZERO);
         GX_SetTevAlphaOp(GX_TEVSTAGE3,
                          GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
-                         GX_TRUE, GX_TEVPREV);
+                         GX_TRUE, saveForMatFX ? GX_TEVREG2 : GX_TEVPREV);
     }
 }
 
@@ -338,6 +341,205 @@ pipeNeedsTrace(Geometry *geo)
     (void)geo;
     return false;
 }
+
+#ifdef GX_PIPELINE_DIAGNOSTICS
+
+struct GxSolidDiagState
+{
+    const char *reason;
+    Texture *texture;
+    Raster *raster;
+    GxRaster *natras;
+    void *texObjData;
+    uint16 texObjWidth;
+    uint16 texObjHeight;
+    uint8 texObjFmt;
+    bool passClr;
+};
+
+static GxSolidDiagState
+classifySolidFallback(Material *mat)
+{
+    GxSolidDiagState state;
+    state.reason = "no-texture";
+    state.texture = nil;
+    state.raster = nil;
+    state.natras = nil;
+    state.texObjData = nil;
+    state.texObjWidth = 0;
+    state.texObjHeight = 0;
+    state.texObjFmt = 0xFF;
+    state.passClr = true;
+
+    if(mat == nil || mat->texture == nil)
+        return state;
+
+    state.texture = mat->texture;
+    state.raster = mat->texture->raster;
+    if(state.raster == nil) {
+        state.reason = "no-raster";
+        return state;
+    }
+
+    state.natras = PLUGINOFFSET(GxRaster, state.raster, nativeRasterOffset);
+    if(state.natras == nil) {
+        state.reason = "no-natras";
+        return state;
+    }
+
+    if(!state.natras->texObjValid) {
+        state.reason = "texobj-invalid";
+        return state;
+    }
+
+    state.passClr = false;
+
+    state.texObjData = GX_GetTexObjData(&state.natras->texObj);
+    state.texObjWidth = GX_GetTexObjWidth(&state.natras->texObj);
+    state.texObjHeight = GX_GetTexObjHeight(&state.natras->texObj);
+    state.texObjFmt = (uint8)GX_GetTexObjFmt(&state.natras->texObj);
+    if(state.natras->gxData == nil || state.natras->dataSize == 0) {
+        state.reason = "no-gxdata";
+        return state;
+    }
+    if((uintptr_t)state.texObjData !=
+       (uintptr_t)MEM_VIRTUAL_TO_PHYSICAL(state.natras->gxData)) {
+        state.reason = "texobj-data-mismatch";
+        return state;
+    }
+    if(state.texObjWidth != state.natras->w ||
+       state.texObjHeight != state.natras->h) {
+        state.reason = "texobj-size-mismatch";
+        return state;
+    }
+    if(state.texObjFmt != state.natras->gxFmt) {
+        state.reason = "texobj-format-mismatch";
+        return state;
+    }
+
+    state.reason = nil;
+    return state;
+}
+
+static void
+logSolidFallback(const char *pipeline, Atomic *atomic, Geometry *geo,
+                 uint32 meshIndex, uint32 passIndex, Material *mat,
+                 const GxSolidDiagState &diag, GXColor matColor,
+                 bool vertexAlpha, bool hasVertexColors,
+                 bool modulateMaterialColor, uint32 numIndices)
+{
+    // Missing-material meshes are handled by gxShouldSkipUnresolvedTexturedMesh.
+    // Keep this diagnostic reserved for actual GX texture-object faults.
+    if(mat != nil && gxGetMissingMaterialDiag(mat, nil))
+        return;
+    const bool ordinaryUntextured = mat == nil || mat->texture == nil;
+    if(ordinaryUntextured)
+        return;
+
+    struct SeenKey {
+        const void *geo;
+        const void *mat;
+        const void *tex;
+        const char *reason;
+        uint32 shrink;
+        uint32 compaction;
+    };
+    static SeenKey seen[96];
+    static uint32 seenCount = 0;
+    static uint32 seenNext = 0;
+    static uint32 windowStartFrame = 0;
+    static uint32 windowPassClrCount = 0;
+    static uint32 windowFaultCount = 0;
+
+    const void *texKey = diag.texture;
+    const uint32 shrink = gxMemGetShrinkTotalCount();
+    const uint32 compaction = gxMemGetCompactionGeneration();
+    for(uint32 i = 0; i < seenCount; i++) {
+        if(seen[i].geo == geo &&
+           seen[i].mat == mat &&
+           seen[i].tex == texKey &&
+           seen[i].reason == diag.reason &&
+           seen[i].shrink == shrink &&
+           seen[i].compaction == compaction)
+            return;
+    }
+
+    if(windowStartFrame == 0 ||
+       (uint32)(gxFrameNum - windowStartFrame) >= 150u) {
+        windowStartFrame = gxFrameNum;
+        windowPassClrCount = 0;
+        windowFaultCount = 0;
+    }
+    uint32 *windowCount = diag.passClr ? &windowPassClrCount : &windowFaultCount;
+    const uint32 windowLimit = diag.passClr ? 6u : 16u;
+    if(*windowCount >= windowLimit)
+        return;
+    (*windowCount)++;
+
+    uint32 seenIndex;
+    if(seenCount < (sizeof(seen) / sizeof(seen[0]))) {
+        seenIndex = seenCount++;
+    } else {
+        seenIndex = seenNext++ % (sizeof(seen) / sizeof(seen[0]));
+    }
+    seen[seenIndex].geo = geo;
+    seen[seenIndex].mat = mat;
+    seen[seenIndex].tex = texKey;
+    seen[seenIndex].reason = diag.reason;
+    seen[seenIndex].shrink = shrink;
+    seen[seenIndex].compaction = compaction;
+
+    const Matrix *ltm = (atomic && atomic->getFrame()) ? atomic->getFrame()->getLTM() : nil;
+    const char *texName = diag.texture ? diag.texture->name : nil;
+    const char *maskName = diag.texture ? diag.texture->mask : nil;
+    const uintptr_t expectedTexObjData = diag.natras && diag.natras->gxData ?
+        (uintptr_t)MEM_VIRTUAL_TO_PHYSICAL(diag.natras->gxData) : 0u;
+    fprintf(stdout,
+           "%s pipe=%s path=%s reason=%s serial=%u modelId=%d model=%s txdSlot=%d txd=%s reqTex='%s' reqMask='%s' aliases=%u frame=%u gen=%u shrink=%u atomic=%p geo=%p mesh=%u pass=%u mat=%p tex=%p raster=%p natras=%p gx=%p objGx=%p objMatch=%d texObj=%d texRef=%d texName=%s mask=%s idx=%u rgba=%u,%u,%u,%u vtxA=%d prelit=%d mod=%d pos=%.3f,%.3f,%.3f fmt=0x%02X objFmt=0x%02X size=%u wh=%ux%u objWh=%ux%u hasA=%u aKind=%u\n",
+           "[GX-TEXOBJ-FAULT]",
+           pipeline,
+           diag.passClr ? "passclr" : "textured",
+           diag.reason,
+           0u, -1, "<unknown>", -1, "<unknown>", "", "", 0u,
+           gxFrameNum,
+           compaction,
+           shrink,
+           (void*)atomic,
+           (void*)geo,
+           (unsigned)meshIndex,
+           (unsigned)passIndex,
+           (void*)mat,
+           (void*)diag.texture,
+           (void*)diag.raster,
+           (void*)diag.natras,
+           diag.natras ? diag.natras->gxData : nil,
+           diag.texObjData,
+           ((uintptr_t)diag.texObjData == expectedTexObjData) ? 1 : 0,
+           (diag.natras && diag.natras->texObjValid) ? 1 : 0,
+           diag.texture ? diag.texture->refCount : 0,
+           texName ? texName : "none",
+           maskName ? maskName : "none",
+           (unsigned)numIndices,
+           (unsigned)matColor.r, (unsigned)matColor.g,
+           (unsigned)matColor.b, (unsigned)matColor.a,
+           vertexAlpha ? 1 : 0,
+           hasVertexColors ? 1 : 0,
+           modulateMaterialColor ? 1 : 0,
+           ltm ? (double)ltm->pos.x : 0.0,
+           ltm ? (double)ltm->pos.y : 0.0,
+           ltm ? (double)ltm->pos.z : 0.0,
+           diag.natras ? (unsigned)diag.natras->gxFmt : 0xFFu,
+           (unsigned)diag.texObjFmt,
+           diag.natras ? (unsigned)diag.natras->dataSize : 0u,
+           diag.natras ? (unsigned)diag.natras->w : 0u,
+           diag.natras ? (unsigned)diag.natras->h : 0u,
+           (unsigned)diag.texObjWidth,
+           (unsigned)diag.texObjHeight,
+           diag.natras ? (unsigned)diag.natras->hasAlpha : 0u,
+           diag.natras ? (unsigned)diag.natras->alphaKind : 0u);
+}
+
+#endif // GX_PIPELINE_DIAGNOSTICS
 
 // ── Per-geometry instance data ──────────────────────────────
 
@@ -873,7 +1075,8 @@ uninstance(rw::ObjPipeline * /*rwpipe*/, Atomic * /*atomic*/)
 static uint32
 setMaterial(Material *mat, bool32 vertexAlpha, bool hasVertexColors,
             bool modulateMaterialColor, const GxAtomicLights &lights,
-            uint32 passIndex)
+            uint32 passIndex, bool matFXPipeline,
+            bool *matFXEnvUsed, bool *blendEnabled)
 {
     static int s_alphaDiagCount = 0;
     static int s_cullDiagCount = 0;
@@ -930,22 +1133,10 @@ setMaterial(Material *mat, bool32 vertexAlpha, bool hasVertexColors,
         }else
             hasTexAlpha = Raster::formatHasAlpha(ras->format);
     }
+    (void)hasVertexColors;
 
     if(pipeFocusTexture(texName) && s_texStateDiagCount < 160){
-        printf("[PIPE-TEXSTATE] tex=%s raster=%p fmt=0x%02X texObj=%d matA=%u texA=%d aKind=%u vtxA=%d prelit=%d modRGB=%d zTest=%d zWrite=%d colSrc=%s\n",
-               texName ? texName : "none",
-               (mat && mat->texture) ? (void*)mat->texture->raster : nil,
-               (unsigned)texFmt,
-               texObjValid ? 1 : 0,
-               (unsigned)matColor.a,
-               hasTexAlpha ? 1 : 0,
-               (unsigned)texAlphaKind,
-               vertexAlpha ? 1 : 0,
-               hasVertexColors ? 1 : 0,
-               modulateMaterialColor ? 1 : 0,
-               gxState.zTest ? 1 : 0,
-               gxState.zWrite ? 1 : 0,
-               "PRELIT+LIGHT");
+        /* noisy focused alpha/mesh trace disabled in favor of missing-texture diagnostics */
         s_texStateDiagCount++;
     }
 
@@ -960,6 +1151,10 @@ setMaterial(Material *mat, bool32 vertexAlpha, bool hasVertexColors,
     bool dualPass = gxState.gsAlpha && usesAlpha && gxState.zWrite;
     bool zWriteEnable = dualPass ? (passIndex == 0) : gxState.zWrite;
     bool zAfterTexturing = usesAlpha;
+    if(matFXEnvUsed)
+        *matFXEnvUsed = false;
+    if(blendEnabled)
+        *blendEnabled = doBlend;
     bool twoSided = isLikelyRoomShellDoubleSided(texName) ||
                     isLikelyThinTwoSidedTexture(texName) ||
                     isLikelyVegetationTwoSidedTexture(texName) ||
@@ -968,29 +1163,13 @@ setMaterial(Material *mat, bool32 vertexAlpha, bool hasVertexColors,
     // cull convention in this pipe. Thin alpha planes stay double-sided.
     u8 cullMode = twoSided ? GX_CULL_NONE : flipCullMode(gxCullFromState());
     if(twoSided && s_cullDiagCount < 24){
-        printf("[PIPE-CULL] tex=%s two-sided (rw=%u gx=%u texA=%d blend=%d cutout=%d)\n",
-               texName ? texName : "none",
-               (unsigned)gxState.cullMode,
-               (unsigned)cullMode,
-               hasTexAlpha ? 1 : 0,
-               doBlend ? 1 : 0,
-               preferTexCutout ? 1 : 0);
+        /* noisy focused alpha/mesh trace disabled in favor of missing-texture diagnostics */
         s_cullDiagCount++;
     }
     if(s_roomAlphaDiagCount < 96 &&
        isLikelyRoomShellDoubleSided(texName) &&
        (hasTexAlpha || hasMatAlpha || vertexAlpha || doBlend || doAlphaTest)){
-        printf("[PIPE-ROOMALPHA] tex=%s fmt=0x%02X texObj=%d matA=%u texA=%d vtxA=%d blend=%d cutout=%d zWrite=%d twoSided=%d\n",
-               texName ? texName : "none",
-               (unsigned)texFmt,
-               texObjValid ? 1 : 0,
-               (unsigned)matColor.a,
-               hasTexAlpha ? 1 : 0,
-               vertexAlpha ? 1 : 0,
-               doBlend ? 1 : 0,
-               doAlphaTest ? 1 : 0,
-               zWriteEnable ? 1 : 0,
-               twoSided ? 1 : 0);
+        /* noisy focused alpha/mesh trace disabled in favor of missing-texture diagnostics */
         s_roomAlphaDiagCount++;
     }
     GX_SetCullMode(cullMode);
@@ -1041,30 +1220,13 @@ setMaterial(Material *mat, bool32 vertexAlpha, bool hasVertexColors,
     if((doBlend || doAlphaTest || vertexAlpha) &&
        (s_alphaDiagCount < 20 ||
         (alphaTraceTexture(texName) && s_alphaDiagCount < 80))){
-        printf("[PIPE-ALPHA] tex=%s fmt=0x%02X texObj=%d matA=%u texA=%d aKind=%u vtxA=%d blend=%d alphaTest=%d edgeBlend=%d "
-               "aFn=%d aRef=%d effARef=%u srcB=%d dstB=%d zWrite=%d zAfterTex=%d cull=%u prelit=%d cutoutHint=%d\n",
-               texName ? texName : "none",
-               (unsigned)texFmt,
-               texObjValid ? 1 : 0,
-               (unsigned)matColor.a,
-               hasTexAlpha ? 1 : 0,
-               (unsigned)texAlphaKind,
-               vertexAlpha ? 1 : 0,
-               doBlend ? 1 : 0,
-               doAlphaTest ? 1 : 0,
-               preferEdgeBlendCutout ? 1 : 0,
-               (int)gxState.alphaTestFunc,
-               (int)gxState.alphaTestRef,
-               (unsigned)effectiveAlphaRef,
-               (int)gxState.srcBlend,
-               (int)gxState.dstBlend,
-               zWriteEnable ? 1 : 0,
-               zAfterTexturing ? 1 : 0,
-               (unsigned)cullMode,
-               hasVertexColors ? 1 : 0,
-               preferTexCutout ? 1 : 0);
+        /* noisy focused alpha/mesh trace disabled in favor of missing-texture diagnostics */
         s_alphaDiagCount++;
     }
+    (void)texFmt;
+    (void)texObjValid;
+    (void)preferEdgeBlendCutout;
+    (void)effectiveAlphaRef;
 
     // Try to use material texture
     if (mat && mat->texture && mat->texture->raster) {
@@ -1075,15 +1237,47 @@ setMaterial(Material *mat, bool32 vertexAlpha, bool hasVertexColors,
             GX_SetNumTexGens(1);
             GX_SetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4,
                               GX_TG_TEX0, GX_IDENTITY);
-            setupDefaultLitTev(matColor, true);
+            bool useMatFXEnv = matFXPipeline &&
+                               gxMatFXEnvReady(mat, lights.hasNormals);
+            setupDefaultLitTev(matColor, true, useMatFXEnv);
+            if(useMatFXEnv){
+                if(gxMatFXSetupEnv(mat, true)){
+                    if(matFXEnvUsed)
+                        *matFXEnvUsed = true;
+                }else{
+                    setupDefaultLitTev(matColor, true, false);
+                }
+            }
             return dualPass ? 2u : 1u;
         }
     }
 
     // No valid texture �?solid color via PASSCLR
     GX_SetNumTexGens(0);
-    setupDefaultLitTev(matColor, false);
+    bool useMatFXEnv = matFXPipeline &&
+                       gxMatFXEnvReady(mat, lights.hasNormals);
+    setupDefaultLitTev(matColor, false, useMatFXEnv);
+    if(useMatFXEnv){
+        if(gxMatFXSetupEnv(mat, false)){
+            if(matFXEnvUsed)
+                *matFXEnvUsed = true;
+        }else{
+            setupDefaultLitTev(matColor, false, false);
+        }
+    }
     return dualPass ? 2u : 1u;
+}
+
+static inline void
+restoreMatFXState(bool envUsed, bool blendEnabled)
+{
+    if(!envUsed)
+        return;
+    gxSetTexture(nil, 1);
+    GX_SetBlendMode(blendEnabled ? GX_BM_BLEND : GX_BM_NONE,
+                    (u8)gxState.srcBlend,
+                    (u8)gxState.dstBlend,
+                    GX_LO_CLEAR);
 }
 
 
@@ -1284,6 +1478,9 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
             effectiveVertexAlpha ||
             (md->material && md->material->color.alpha != 255) ||
             forceVertexAlphaForSoftVegetation;
+        if(gxShouldSkipUnresolvedTexturedMesh(md->material, "default", m,
+                                              mesh->numIndices))
+            continue;
         static int s_meshFocusDiagCount = 0;
         if(pipeFocusTexture(meshTexName) && s_meshFocusDiagCount < 160){
             printf("[PIPE-MESH] mesh=%u tex=%s vtxA=%d effVtxA=%d matA=%u numIdx=%u "
@@ -1306,20 +1503,48 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
                    (md->material && md->material->texture) ? md->material->texture->name : "none");
         SetRenderState(VERTEXALPHA, meshNeedsBlendAlphaState);
         setup3dVtxDesc(inst->hasNormals, inst->hasColors, inst->numTexCoords);
+        bool matFXEnvUsed = false;
+        bool matFXBlendEnabled = false;
+        const bool matFXPipeline = rwpipe->pluginID == ID_MATFX;
         uint32 passCount = setMaterial(md->material, effectiveVertexAlpha, inst->hasColors,
-                    (geo->flags & Geometry::MODULATE) != 0, lights, 0);
+                    (geo->flags & Geometry::MODULATE) != 0, lights, 0,
+                    matFXPipeline, &matFXEnvUsed, &matFXBlendEnabled);
+#ifdef GX_PIPELINE_DIAGNOSTICS
+        GxSolidDiagState solidDiag = classifySolidFallback(md->material);
+        if(solidDiag.reason != nil) {
+            GXColor solidMatColor = {255, 255, 255, 255};
+            if(md->material) {
+                if((geo->flags & Geometry::MODULATE) != 0) {
+                    solidMatColor.r = md->material->color.red;
+                    solidMatColor.g = md->material->color.green;
+                    solidMatColor.b = md->material->color.blue;
+                }
+                solidMatColor.a = md->material->color.alpha;
+            }
+            logSolidFallback("default", atomic, geo, m, 0, md->material,
+                             solidDiag, solidMatColor, effectiveVertexAlpha,
+                             inst->hasColors,
+                             (geo->flags & Geometry::MODULATE) != 0,
+                             mesh->numIndices);
+        }
+#endif
 
         uint16 *meshIdx = mesh->indices;
         uint32  numIdx  = mesh->numIndices;
-        if (numIdx == 0) continue;
+        if (numIdx == 0) {
+            restoreMatFXState(matFXEnvUsed, matFXBlendEnabled);
+            continue;
+        }
         if (meshIdx == nil) {
             printf("[PIPE-SKIP] geo=%p mesh=%u indices=NULL numIdx=%u\n",
                    (void*)geo, (unsigned)m, (unsigned)numIdx);
+            restoreMatFXState(matFXEnvUsed, matFXBlendEnabled);
             continue;
         }
         if (numIdx > 65535) {
             printf("[PIPE-SKIP] geo=%p mesh=%u numIdx=%u exceeds GX_Begin u16 count\n",
                    (void*)geo, (unsigned)m, (unsigned)numIdx);
+            restoreMatFXState(matFXEnvUsed, matFXBlendEnabled);
             continue;
         }
         if(md->vertexAlpha && md->material && md->material->color.alpha == 255){
@@ -1338,18 +1563,25 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
             printf("[PIPE-SKIP] geo=%p mesh=%u badIndexAt=%u vi=%u totalVerts=%u numIdx=%u\n",
                    (void*)geo, (unsigned)m, (unsigned)badAt, (unsigned)badVi,
                    (unsigned)geo->numVertices, (unsigned)numIdx);
+            restoreMatFXState(matFXEnvUsed, matFXBlendEnabled);
             continue;
         }
 
         drawPipeMesh(geo, meshIdx, numIdx,
                      inst->hasNormals, inst->hasColors,
                      inst->numTexCoords, prim, trace, m, 0);
+        restoreMatFXState(matFXEnvUsed, matFXBlendEnabled);
         if(passCount > 1) {
+            bool matFXEnvUsedSecond = false;
+            bool matFXBlendEnabledSecond = false;
             setMaterial(md->material, effectiveVertexAlpha, inst->hasColors,
-                        (geo->flags & Geometry::MODULATE) != 0, lights, 1);
+                        (geo->flags & Geometry::MODULATE) != 0, lights, 1,
+                        matFXPipeline, &matFXEnvUsedSecond,
+                        &matFXBlendEnabledSecond);
             drawPipeMesh(geo, meshIdx, numIdx,
                          inst->hasNormals, inst->hasColors,
                          inst->numTexCoords, prim, trace, m, 1);
+            restoreMatFXState(matFXEnvUsedSecond, matFXBlendEnabledSecond);
         }
     }
     // GS alpha emulation changes the hardware compare/depth state for the

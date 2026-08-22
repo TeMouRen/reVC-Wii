@@ -6,6 +6,7 @@
 struct TxdDef {
 	RwTexDictionary *texDict;
 	int refCount;
+	int aliasPinCount;
 	char name[20];
 };
 
@@ -18,22 +19,26 @@ public:
 	static void Shutdown(void);
 	static void GameShutdown(void);
 	static int AddTxdSlot(const char *name);
-	static void RemoveTxdSlot(int slot);
+	static bool RemoveTxdSlot(int slot);
 	static int FindTxdSlot(const char *name);
 	static char *GetTxdName(int slot);
 	static void PushCurrentTxd(void);
 	static void PopCurrentTxd(void);
 	static void SetCurrentTxd(int slot);
-	static void Create(int slot);
+	static bool Create(int slot);
 	static int GetNumRefs(int slot);
 	static void AddRef(int slot);
 	static void RemoveRef(int slot);
 	static void RemoveRefWithoutDelete(int slot);
+	static int FindTxdSlotByDictionary(RwTexDictionary *dict);
+	static rw::bool32 PinAliasTexture(RwTexDictionary *dict);
+	static void ReleaseAliasTexture(RwTexDictionary *dict);
+	static bool IsTxdAliasPinned(int slot);
 	static bool LoadTxd(int slot, RwStream *stream);
 	static bool LoadTxd(int slot, const char *filename);
 	static bool StartLoadTxd(int slot, RwStream *stream);
 	static bool FinishLoadTxd(int slot, RwStream *stream);
-	static void RemoveTxd(int slot);
+	static bool RemoveTxd(int slot);
 	static void SetLoadingTxdContext(int slot, const char *name);
 	static void ClearLoadingTxdContext(void);
 	static int GetLoadingTxdSlot(void);

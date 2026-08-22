@@ -9,6 +9,10 @@
 #include "MemoryHeap.h"
 #include <climits>
 
+#ifdef WII
+#include <ogc/lwp_watchdog.h>
+#endif
+
 // TODO(MIAMI)
 
 #ifdef USE_CUSTOM_ALLOCATOR
@@ -161,6 +165,10 @@ CMemoryHeap::Malloc(uint32 size)
 	static bool removeCollision = false;
 	static bool removeIslands = false;
 	static bool removeBigBuildings = false;
+#ifdef WII
+	uint64 wiiRecoveryStartTicks = gettime();
+	int32 wiiRecoveryDepth = recursion;
+#endif
 	size_t initialMemoryUsed = CStreaming::ms_memoryUsed;
 	CStreaming::MakeSpaceFor(0xCFE800 - CStreaming::ms_memoryUsed);
 	if (recursion > 10)
@@ -211,6 +219,17 @@ CMemoryHeap::Malloc(uint32 size)
 		removeIslands = false;
 		CTimer::Update();
 	}
+#ifdef WII
+	if(wiiRecoveryDepth == 1){
+		uint32 recoveryMs = (uint32)ticks_to_millisecs(
+			gettime() - wiiRecoveryStartTicks);
+		if(recoveryMs >= 20u)
+			SYS_Report("[WII-HEAP-RECOVERY] total=%ums size=%u result=%p stream=%uKB largest=%uKB recursion=%d\n",
+			           (unsigned)recoveryMs, (unsigned)size, mem,
+			           (unsigned)(CStreaming::ms_memoryUsed / 1024u),
+			           (unsigned)(GetLargestFreeBlock() / 1024u), recursion);
+	}
+#endif
 	recursion--;
 	return mem;
 }

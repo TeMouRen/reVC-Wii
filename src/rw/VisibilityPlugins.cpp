@@ -51,6 +51,7 @@ float CVisibilityPlugins::ms_pedLod1Dist;
 float CVisibilityPlugins::ms_pedFadeDist;
 
 #ifdef WII
+#if 0 // [GX-DARKMESH] geometry scan disabled; enable only for targeted diagnosis.
 static bool
 WiiMarkDarkMeshGeometryInspected(RpGeometry *geometry)
 {
@@ -181,6 +182,9 @@ WiiAtomicDefaultRenderCallBack(RpAtomic *atomic)
 }
 
 #define RENDERCALLBACK WiiAtomicDefaultRenderCallBack
+#endif
+
+#define RENDERCALLBACK AtomicDefaultRenderCallBack
 #else
 #define RENDERCALLBACK AtomicDefaultRenderCallBack
 #endif
@@ -216,40 +220,6 @@ WiiShouldCullAlphaEntity(CEntity *e, float dist)
 		preserveDist = 24.0f;
 
 	return dist > preserveDist;
-}
-
-static bool
-WiiShouldCullVehicleAlphaAtomic(RpAtomic *atomic)
-{
-	if(atomic == nil)
-		return false;
-
-	RpClump *clump = RpAtomicGetClump(atomic);
-	if(clump == nil)
-		return false;
-
-	CVehicle *playerVeh = FindPlayerVehicle();
-	if(playerVeh == nil || playerVeh->m_rwObject == nil)
-		return false;
-
-	if((void*)clump == playerVeh->m_rwObject)
-		return false;
-
-	const float speed2D = playerVeh->m_vecMoveSpeed.Magnitude2D();
-	const bool aggressive = WiiUseAggressiveAlphaCull();
-	if(!aggressive && speed2D < 0.05f)
-		return false;
-
-	const float lodMul = TheCamera.GenerationDistMultiplier;
-	float cullDistSq = sq((aggressive ? 36.0f : 48.0f) * lodMul);
-	if(speed2D > 0.09f)
-		cullDistSq = sq((aggressive ? 32.0f : 44.0f) * lodMul);
-	if(speed2D > 0.14f)
-		cullDistSq = sq((aggressive ? 28.0f : 40.0f) * lodMul);
-
-	const float distSq = CVisibilityPlugins::GetDistanceSquaredFromCamera(RpClumpGetFrame(clump));
-
-	return distSq > cullDistSq;
 }
 #endif
 
@@ -657,10 +627,6 @@ CVisibilityPlugins::RenderVehicleHiDetailAlphaCB(RpAtomic *atomic)
 
 	clumpframe = RpClumpGetFrame(RpAtomicGetClump(atomic));
 	if(DistToCameraSq < ms_vehicleLod0Dist){
-#ifdef WII
-		if(WiiShouldCullVehicleAlphaAtomic(atomic))
-			return atomic;
-#endif
 		flags = GetAtomicId(atomic);
 		dot = GetDotProductWithCameraVector(RwFrameGetLTM(RpAtomicGetFrame(atomic)),
 			RwFrameGetLTM(clumpframe), flags);
@@ -710,10 +676,6 @@ CVisibilityPlugins::RenderVehicleHiDetailAlphaCB_BigVehicle(RpAtomic *atomic)
 
 	clumpframe = RpClumpGetFrame(RpAtomicGetClump(atomic));
 	if(DistToCameraSq < ms_bigVehicleLod0Dist){
-#ifdef WII
-		if(WiiShouldCullVehicleAlphaAtomic(atomic))
-			return atomic;
-#endif
 		flags = GetAtomicId(atomic);
 		dot = GetDotProductWithCameraVector(RwFrameGetLTM(RpAtomicGetFrame(atomic)),
 			RwFrameGetLTM(clumpframe), flags);
@@ -739,10 +701,6 @@ RpAtomic*
 CVisibilityPlugins::RenderVehicleHiDetailAlphaCB_Boat(RpAtomic *atomic)
 {
 	if(DistToCameraSq < ms_vehicleLod0Dist){
-#ifdef WII
-		if(WiiShouldCullVehicleAlphaAtomic(atomic))
-			return atomic;
-#endif
 		if(GetAtomicId(atomic) & ATOMIC_FLAG_DRAWLAST){
 			if(!InsertAtomicIntoBoatSortedList(atomic, DistToCameraSq))
 				RENDERCALLBACK(atomic);
@@ -801,10 +759,6 @@ CVisibilityPlugins::RenderVehicleLowDetailAlphaCB_BigVehicle(RpAtomic *atomic)
 	clumpframe = RpClumpGetFrame(RpAtomicGetClump(atomic));
 	if(DistToCameraSq >= ms_bigVehicleLod0Dist &&
 	   DistToCameraSq < ms_bigVehicleLod1Dist){
-#ifdef WII
-		if(WiiShouldCullVehicleAlphaAtomic(atomic))
-			return atomic;
-#endif
 		flags = GetAtomicId(atomic);
 		dot = GetDotProductWithCameraVector(RwFrameGetLTM(RpAtomicGetFrame(atomic)),
 			RwFrameGetLTM(clumpframe), flags);
@@ -874,10 +828,6 @@ CVisibilityPlugins::RenderTrainHiDetailAlphaCB(RpAtomic *atomic)
 
 	clumpframe = RpClumpGetFrame(RpAtomicGetClump(atomic));
 	if(DistToCameraSq < ms_bigVehicleLod1Dist){
-#ifdef WII
-		if(WiiShouldCullVehicleAlphaAtomic(atomic))
-			return atomic;
-#endif
 		flags = GetAtomicId(atomic);
 		dot = GetDotProductWithCameraVector(RwFrameGetLTM(RpAtomicGetFrame(atomic)),
 			RwFrameGetLTM(clumpframe), flags);
@@ -905,10 +855,6 @@ CVisibilityPlugins::RenderVehicleRotorAlphaCB(RpAtomic *atomic)
 
 	clumpframe = RpClumpGetFrame(RpAtomicGetClump(atomic));
 	if(DistToCameraSq < ms_bigVehicleLod1Dist){
-#ifdef WII
-		if(WiiShouldCullVehicleAlphaAtomic(atomic))
-			return atomic;
-#endif
 		RwV3dSub(&cam2atm, &RwFrameGetLTM(RpAtomicGetFrame(atomic))->pos, ms_pCameraPosn);
 		dot = RwV3dDotProduct(&cam2atm, &RwFrameGetLTM(clumpframe)->at);
 		if(!InsertAtomicIntoSortedList(atomic, DistToCameraSq + dot*20.0f))
@@ -925,10 +871,6 @@ CVisibilityPlugins::RenderVehicleTailRotorAlphaCB(RpAtomic *atomic)
 	RwV3d cam2atm;
 
 	if(DistToCameraSq < ms_bigVehicleLod0Dist){
-#ifdef WII
-		if(WiiShouldCullVehicleAlphaAtomic(atomic))
-			return atomic;
-#endif
 		atmMat = RwFrameGetLTM(RpAtomicGetFrame(atomic));
 		clumpMat = RwFrameGetLTM(RpClumpGetFrame(RpAtomicGetClump(atomic)));
 		RwV3dSub(&cam2atm, &atmMat->pos, ms_pCameraPosn);

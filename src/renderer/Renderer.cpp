@@ -58,6 +58,9 @@ WiiDisableDistanceFade(const CSimpleModelInfo *mi)
 		return false;
 	return mi->m_drawLast || mi->m_additive || mi->m_noZwrite;
 }
+
+static uint32 gWiiBigBuildingRequestFrame = UINT32_MAX;
+static int32 gWiiBigBuildingRequestsThisFrame;
 #endif
 
 // unused
@@ -933,6 +936,33 @@ CRenderer::SetupBigBuildingVisibility(CEntity *ent)
 	if(!IsAreaVisible(ent->m_area))
 		return VIS_INVISIBLE;
 
+#ifdef WII
+	// Island proxies live in LEVEL_GENERIC because of their 3000-unit draw
+	// distance. Keep the current island's proxy out of the render/request path;
+	// RequestIslands owns which opposite-island proxy should be resident.
+	if(CStreaming::ShouldSuppressIslandLOD(ent->GetModelIndex())){
+#ifdef WII_ISLAND_LOD_DIAGNOSTICS
+		static int32 lastSuppressedModel = -1;
+		static eLevelName lastSuppressedLevel = LEVEL_GENERIC;
+		static uint32 suppressLogCount = 0;
+		if(suppressLogCount < 8 &&
+		   (lastSuppressedModel != ent->GetModelIndex() ||
+		    lastSuppressedLevel != CGame::currLevel)){
+			printf("[WII-ISLAND-LOD] action=suppress model=%d level=%d state=%u instanced=%d\n",
+			       ent->GetModelIndex(), (int)CGame::currLevel,
+			       (unsigned)CStreaming::ms_aInfoForModel[ent->GetModelIndex()].m_loadState,
+			       ent->m_rwObject ? 1 : 0);
+			lastSuppressedModel = ent->GetModelIndex();
+			lastSuppressedLevel = CGame::currLevel;
+			suppressLogCount++;
+		}
+#endif
+		if(ent->m_rwObject && !ent->bImBeingRendered)
+			ent->DeleteRwObject();
+		return VIS_INVISIBLE;
+	}
+#endif
+
 	bool request = true;
 	if(mi->GetModelType() == MITYPE_TIME){
 		ti = (CTimeModelInfo*)mi;
@@ -1011,6 +1041,17 @@ CRenderer::SetupBigBuildingVisibility(CEntity *ent)
 		}
 		return VIS_VISIBLE;
 	}
+
+#ifdef WII
+	// Static island LODs are no longer permanently resident. Pull a missing
+	// model only when it becomes visible; the streaming lists may evict it
+	// again after it leaves the working set.
+	if(mi->GetRwObject() == nil &&
+	   CStreaming::ms_aInfoForModel[ent->GetModelIndex()].m_loadState ==
+	   STREAMSTATE_NOTLOADED &&
+	   dist-STREAM_DISTANCE < mi->GetLodDistance(0) && request)
+		return ent->GetIsOnScreen() ? VIS_STREAMME : VIS_INVISIBLE;
+#endif
 
 	if(mi->m_noFade){
 		ent->DeleteRwObject();
@@ -1575,6 +1616,13 @@ CRenderer::ScanBigBuildingList(CPtrList &list)
 	CPtrNode *node;
 	CEntity *ent;
 	int vis;
+#ifdef WII
+	uint32 frame = CTimer::GetFrameCounter();
+	if(gWiiBigBuildingRequestFrame != frame){
+		gWiiBigBuildingRequestFrame = frame;
+		gWiiBigBuildingRequestsThisFrame = 0;
+	}
+#endif
 
 	int f = CTimer::GetFrameCounter() & 3;
 	for(node = list.first; node; node = node->next){
@@ -1590,8 +1638,29 @@ CRenderer::ScanBigBuildingList(CPtrList &list)
 			ent->bOffscreen = false;
 			break;
 		case VIS_STREAMME:
-			if(!CStreaming::ms_disableStreaming)
-				CStreaming::RequestModel(ent->GetModelIndex(), 0);
+			if(!CStreaming::ms_disableStreaming){
+#ifdef WII
+				bool canPromote = !m_loadingPriority &&
+				                  CStreaming::ms_numPriorityRequests < 4;
+				if(gWiiBigBuildingRequestsThisFrame >= 2 ||
+				   (CStreaming::ms_numModelsRequested >= 24 && !canPromote))
+					break;
+#endif
+				int32 flags = 0;
+#ifdef WII
+				if(canPromote)
+					flags = STREAMFLAGS_PRIORITY;
+#else
+				if(!m_loadingPriority &&
+				   CStreaming::ms_numModelsRequested < 10 &&
+				   CStreaming::ms_numPriorityRequests < 4)
+					flags = STREAMFLAGS_PRIORITY;
+#endif
+				CStreaming::RequestModelFromWorldScan(ent->GetModelIndex(), flags);
+#ifdef WII
+				gWiiBigBuildingRequestsThisFrame++;
+#endif
+			}
 			break;
 		}
 	}
@@ -1635,7 +1704,7 @@ CRenderer::ScanSectorList(CPtrList *lists)
 			case VIS_STREAMME:
 				if(!CStreaming::ms_disableStreaming)
 					if(!m_loadingPriority || CStreaming::ms_numModelsRequested < 10)
-						CStreaming::RequestModel(ent->GetModelIndex(), 0);
+						CStreaming::RequestModelFromWorldScan(ent->GetModelIndex(), 0);
 				break;
 			}
 		}
@@ -1679,7 +1748,7 @@ CRenderer::ScanSectorList_Priority(CPtrList *lists)
 				break;
 			case VIS_STREAMME:
 				if(!CStreaming::ms_disableStreaming){
-					CStreaming::RequestModel(ent->GetModelIndex(), 0);
+					CStreaming::RequestModelFromWorldScan(ent->GetModelIndex(), STREAMFLAGS_PRIORITY);
 					if(CStreaming::ms_aInfoForModel[ent->GetModelIndex()].m_loadState != STREAMSTATE_LOADED)
 						m_loadingPriority = true;
 				}

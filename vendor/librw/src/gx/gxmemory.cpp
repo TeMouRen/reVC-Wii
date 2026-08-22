@@ -23,6 +23,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 
 #include "../rwbase.h"
 #include "../rwerror.h"
@@ -33,12 +34,22 @@
 #include "rwgx.h"
 #include "gxmemory.h"
 #ifdef WII
-void *MemoryMgrMallocMem2(size_t size, size_t align);
-void *MemoryMgrMallocMem2Strict(size_t size, size_t align);
 void MemoryMgrFreeMem2(void *mem);
-void *MemoryMgrMallocAlignMem2(size_t size, size_t align);
 void *MemoryMgrMallocAlignMem2Strict(size_t size, size_t align);
 void MemoryMgrFreeAlignMem2(void *mem);
+extern "C" int WiiMemoryOwnsGenericMem2(const void *ptr);
+extern "C" unsigned short WiiMemoryGetResourceAttributionOwner(void);
+extern "C" void WiiMemoryRecordResidentPool(unsigned int poolBit);
+extern "C" void WiiMemoryRecordResidentDelta(unsigned short ownerStreamId,
+                                               unsigned int poolBit,
+                                               int deltaBytes);
+extern "C" unsigned int WiiMemoryGetStreamingPressure(void);
+extern "C" void WiiMemoryDumpStats(const char *reason);
+#endif
+
+// Define GX_PIPELINE_DIAGNOSTICS when targeted texture-pool tracing is required.
+#ifndef GX_PIPELINE_DIAGNOSTICS
+#define printf(...) ((void)sizeof((::printf)(__VA_ARGS__)))
 #endif
 
 namespace rw {
@@ -51,10 +62,30 @@ static uint32          gTexPoolTotalSize = 0;
 static int             gShrinkTotalCount = 0;  // lifetime counter
 static bool            gBudgetShrinkPass = false;
 static bool            gPreferHostMemoryShrink = false;
+static Raster         *gActiveHudWeaponRaster = nullptr;
 #ifdef WII
-static const uint32    GX_TEXP_DEFAULT_SOFT_BUDGET_BYTES = 48u * 1024u * 1024u;
-static const uint32    GX_TEXP_MIN_SOFT_BUDGET_BYTES     = 40u * 1024u * 1024u;
-static const uint32    GX_TEXP_MAX_SOFT_BUDGET_BYTES     = 56u * 1024u * 1024u;
+#ifndef WII_GX_ARENA2_EXPANSION_BYTES
+#define WII_GX_ARENA2_EXPANSION_BYTES 0u
+#endif
+#endif
+#ifdef WII
+#if WII_GX_ARENA2_EXPANSION_BYTES == 8388608
+static const uint32    GX_TEXP_DEFAULT_SOFT_BUDGET_BYTES = 30u * 1024u * 1024u;
+static const uint32    GX_TEXP_MIN_SOFT_BUDGET_BYTES     = 18u * 1024u * 1024u;
+static const uint32    GX_TEXP_MAX_SOFT_BUDGET_BYTES     = 30u * 1024u * 1024u;
+#elif WII_GX_ARENA2_EXPANSION_BYTES == 6291456
+static const uint32    GX_TEXP_DEFAULT_SOFT_BUDGET_BYTES = 28u * 1024u * 1024u;
+static const uint32    GX_TEXP_MIN_SOFT_BUDGET_BYTES     = 18u * 1024u * 1024u;
+static const uint32    GX_TEXP_MAX_SOFT_BUDGET_BYTES     = 28u * 1024u * 1024u;
+#elif WII_GX_ARENA2_EXPANSION_BYTES == 2097152
+static const uint32    GX_TEXP_DEFAULT_SOFT_BUDGET_BYTES = 24u * 1024u * 1024u;
+static const uint32    GX_TEXP_MIN_SOFT_BUDGET_BYTES     = 18u * 1024u * 1024u;
+static const uint32    GX_TEXP_MAX_SOFT_BUDGET_BYTES     = 24u * 1024u * 1024u;
+#else
+static const uint32    GX_TEXP_DEFAULT_SOFT_BUDGET_BYTES = 22u * 1024u * 1024u;
+static const uint32    GX_TEXP_MIN_SOFT_BUDGET_BYTES     = 18u * 1024u * 1024u;
+static const uint32    GX_TEXP_MAX_SOFT_BUDGET_BYTES     = 22u * 1024u * 1024u;
+#endif
 #else
 static const uint32    GX_TEXP_DEFAULT_SOFT_BUDGET_BYTES = 28u * 1024u * 1024u;
 static const uint32    GX_TEXP_MIN_SOFT_BUDGET_BYTES     = 16u * 1024u * 1024u;
@@ -65,6 +96,31 @@ static const uint32    gSoftBudgetSlackBytes = 512u * 1024u;
 static void           *gShrinkEmergencyReserve = nullptr;
 static size_t          gShrinkEmergencyReserveSize = 1024u * 1024u;
 static int             gCriticalUiUploadDepth = 0;
+static int             gPersistentUiTextureUploadDepth = 0;
+static bool            gTexPoolResidencyReporting = false;
+
+#ifdef WII
+static const unsigned short WII_TEXPOOL_OWNER_UNKNOWN = 0xffffu;
+
+static unsigned int
+texPoolStoragePoolBit(const void *gxData)
+{
+    if(gxMemOwns(gxData))
+        return 4u;
+    if(WiiMemoryOwnsGenericMem2(gxData))
+        return 1u;
+    return 0u;
+}
+
+static void
+texPoolRecordOwnerDelta(unsigned short ownerStreamId, const void *gxData,
+                        int deltaBytes)
+{
+    unsigned int poolBit = texPoolStoragePoolBit(gxData);
+    if(poolBit != 0 && deltaBytes != 0)
+        WiiMemoryRecordResidentDelta(ownerStreamId, poolBit, deltaBytes);
+}
+#endif
 
 // Maximum shrink attempts per safeGxAlloc call before giving up
 #ifdef WII
@@ -76,14 +132,19 @@ static int             gCriticalUiUploadDepth = 0;
 #define MAX_TEXPOOL_SCAN_STEPS  16384
 #define MAX_ARENA2_FREE_STEPS   16384
 #endif
+#define MAX_SAFE_ALLOC_SHRINKS 32
 // Minimum texture dimension (won't shrink below this)
 #define MIN_TEX_DIM           4
 // Soft texture budget used while loading. Real GC target will need to be lower;
 // this keeps enough headroom for geometry before we optimize streaming further.
 #define GX_TEX_BUDGET_STEPS   256
 #ifdef WII
-#define GX_GXPOOL_MAX_BYTES        (64u * 1024u * 1024u)
-#define GX_GXPOOL_MIN_BYTES        (24u * 1024u * 1024u)
+#if WII_GX_ARENA2_EXPANSION_BYTES != 0 && WII_GX_ARENA2_EXPANSION_BYTES != 2097152 && WII_GX_ARENA2_EXPANSION_BYTES != 6291456 && WII_GX_ARENA2_EXPANSION_BYTES != 8388608
+#error "WII_GX_ARENA2_EXPANSION_BYTES must be 0, 2097152, 6291456, or 8388608"
+#endif
+#define GX_GXPOOL_BASE_BYTES       (24u * 1024u * 1024u)
+#define GX_GXPOOL_MAX_BYTES        (GX_GXPOOL_BASE_BYTES + WII_GX_ARENA2_EXPANSION_BYTES)
+#define GX_GXPOOL_MIN_BYTES        (GX_GXPOOL_BASE_BYTES + WII_GX_ARENA2_EXPANSION_BYTES)
 #define GX_GXPOOL_KEEP_FREE_BYTES  (8u * 1024u * 1024u)
 #else
 #define GX_GXPOOL_MAX_BYTES        (32u * 1024u * 1024u)
@@ -93,33 +154,76 @@ static int             gCriticalUiUploadDepth = 0;
 #define GX_GXPOOL_ALLOC_MAGIC      0x4758504Fu
 
 // ââ Forward declarations ââââââââââââââââââââââââââââââââââââââ
+struct Arena2AllocHeader;
+
 static void downsample2x(const uint8 *src, int sw, int sh,
                          uint8 *dst, int dw, int dh);
 static bool isShrinkableFormat(uint8 fmt);
 static bool isBudgetProtectedTexture(const GxTexPoolEntry *entry);
 static bool isUnnamedBudgetProtectedTexture(const GxTexPoolEntry *entry);
+static bool nameEqualsNoCase(const char *a, const char *b);
+#ifndef WII
 static bool allowLargeMemFallbackForTag(const char *tag);
+#endif
 static void logTextureShrink(const char *kind, const GxTexPoolEntry *entry,
                              int oldW, int oldH, uint32 oldSize,
                              int newW, int newH, uint32 newSize);
+static void logShrinkCheck(const char *kind, const GxTexPoolEntry *entry,
+                           Raster *raster, GxRaster *natras,
+                           void *oldGxData, uint32 oldSize,
+                           int oldW, int oldH, uint8 oldFmt,
+                           const uint8 *samplePixels, int sampleW, int sampleH);
 static void insertPoolEntrySorted(GxTexPoolEntry *entry);
 static uint32 cmprTiledSizePadded(int w, int h);
 static const uint8 *cmprBlockPtr(const uint8 *data, int w,
                                  int blockX, int blockY);
 static void shrinkCMPRByBlockDrop(uint8 *dst, const uint8 *src,
                                   int oldW, int newW, int newH);
+static uint32 rgb565TiledSizePadded(int w, int h);
+static void convertGX_RGBA8ToOpaqueRGB565(void *dst, const void *src,
+                                          int w, int h);
 static void ensureShrinkEmergencyReserve(void);
 static void releaseShrinkEmergencyReserve(const char *reason);
-static void tightenBudgetForSafeAlloc(size_t size);
+static int tightenBudgetForSafeAlloc(size_t size);
+static int texPoolEnforceBudgetImmediateSteps(const char *reason, int maxSteps);
+void texPoolEnforceBudgetImmediate(const char *reason, int maxSteps);
 static uint32 clampSoftBudgetToRuntimePool(uint32 bytes);
-static uint32 getPoolAwareBudgetWithHeadroom(uint32 headroomBytes);
 static uintptr_t alignUpPow2(uintptr_t value, size_t alignment);
 static uintptr_t alignDownPow2(uintptr_t value, size_t alignment);
+static size_t arena2RequiredBlockSize(size_t size, size_t alignment);
+static size_t arena2EmergencyReserveTotalSize(void);
 static void* allocCpuTemp(size_t size, size_t alignment);
 static void freeCpuTemp(void *ptr);
 static void initArena2Pool(void);
 static void* arena2Alloc(size_t size, size_t alignment);
 static void arena2Free(void *ptr);
+static bool arena2ShouldDeferCompaction(size_t requiredBlockBytes,
+                                        size_t totalFree, size_t largestFree);
+static void markArena2CompactionPending(size_t requiredBlockBytes,
+                                        size_t totalFree, size_t largestFree,
+                                        const char *reason);
+static bool arena2ValidateTrackedEntries(void);
+static GxTexPoolEntry* arena2FindTrackedEntryForHeader(const Arena2AllocHeader *header,
+                                                       int *matchCount);
+static bool rebuildRasterTexObjForEntry(GxTexPoolEntry *entry, bool flushPayload);
+static bool validateRasterTexObjForEntry(const GxTexPoolEntry *entry);
+static bool arena2CompactInternal(const char *reason, bool force,
+                                  bool gpuAlreadyIdle,
+                                  size_t requiredBlockBytes);
+static void texPoolReportLine(bool sysReport, const char *fmt, ...);
+static void texPoolFormatBytes(uint32 bytes, char *buffer, size_t bufferSize);
+static const char* texPoolFormatName(uint8 fmt);
+static void texPoolCollectDuplicateSummaries(struct DuplicateSummary *topDuplicates,
+                                             int *unnamedCount, uint32 *unnamedTotal);
+static void texPoolEmitSummaryLines(bool sysReport, const char *reason);
+
+struct DuplicateSummary
+{
+    char name[32];
+    int count;
+    uint32 totalSize;
+    uint32 maxSize;
+};
 
 struct Arena2FreeBlock
 {
@@ -131,7 +235,7 @@ struct Arena2FreeBlock
 struct Arena2AllocHeader
 {
     uint32 magic;
-    uint32 reserved;
+    GxTexPoolEntry *trackedEntry;
     size_t totalSize;
 };
 
@@ -141,7 +245,27 @@ static uint8           *gArena2Base = nullptr;
 static uint8           *gArena2End = nullptr;
 static size_t           gArena2Size = 0;
 static Arena2FreeBlock *gArena2FreeList = nullptr;
+static bool             gArena2CompactionPending = false;
+static size_t           gArena2PendingCompactBytes = 0;
 static uint32           gArena2FallbackCount = 0;
+static uint32           gArena2AllocFailCount = 0;
+static size_t           gArena2BytesUsed = 0;
+static size_t           gArena2PeakBytesUsed = 0;
+static uint32           gArena2CompactionRequestCount = 0;
+static uint32           gArena2CompactionSuccessCount = 0;
+static uint32           gArena2CompactionRejectCount = 0;
+static uint32           gArena2CompactionSkipCount = 0;
+static uint32           gArena2CompactionMoveCount = 0;
+static size_t           gArena2CompactionBytesMoved = 0;
+static uint32           gArena2CompactionGeneration = 0;
+static size_t           gArena2CompactionLastTotalFree = 0;
+static size_t           gArena2CompactionLastLargestBefore = 0;
+static size_t           gArena2CompactionLastLargestAfter = 0;
+#ifdef WII
+static uint32           gBudgetShrinkFrame = UINT32_MAX;
+static int              gBudgetShrinksThisFrame = 0;
+static uint8            gArena2FreesSinceFragmentCheck = 0;
+#endif
 
 static uintptr_t
 alignUpPow2(uintptr_t value, size_t alignment)
@@ -159,6 +283,42 @@ alignDownPow2(uintptr_t value, size_t alignment)
         return value;
     uintptr_t mask = (uintptr_t)alignment - 1u;
     return value & ~mask;
+}
+
+static size_t
+arena2RequiredBlockSize(size_t size, size_t alignment)
+{
+    if(size == 0)
+        size = 1;
+    if(alignment < 4)
+        alignment = 4;
+
+    size_t total = sizeof(Arena2AllocHeader) +
+                   sizeof(Arena2AllocHeader*) +
+                   (alignment - 1u) +
+                   size;
+    if(total < sizeof(Arena2FreeBlock))
+        total = sizeof(Arena2FreeBlock);
+    return (size_t)alignUpPow2((uintptr_t)total, 32);
+}
+
+static size_t
+arena2EmergencyReserveTotalSize(void)
+{
+    if(gShrinkEmergencyReserve == nil ||
+       !gxMemOwns(gShrinkEmergencyReserve) ||
+       (uint8*)gShrinkEmergencyReserve < gArena2Base + sizeof(Arena2AllocHeader*))
+        return 0;
+
+    Arena2AllocHeader *header = ((Arena2AllocHeader**)gShrinkEmergencyReserve)[-1];
+    if(header == nil ||
+       (uint8*)header < gArena2Base ||
+       (uint8*)header + sizeof(Arena2AllocHeader) > gArena2End ||
+       header->magic != GX_GXPOOL_ALLOC_MAGIC ||
+       (uint8*)header + header->totalSize > gArena2End)
+        return 0;
+
+    return header->totalSize;
 }
 
 static void*
@@ -239,6 +399,25 @@ arena2InsertFreeBlock(Arena2FreeBlock *block)
 }
 
 static void
+arena2GetFreeStats(size_t *totalFree, size_t *largestFree)
+{
+    size_t total = 0;
+    size_t largest = 0;
+    int steps = 0;
+    for(Arena2FreeBlock *block = gArena2FreeList;
+        block && steps < MAX_ARENA2_FREE_STEPS;
+        block = block->next, steps++) {
+        total += block->size;
+        if(block->size > largest)
+            largest = block->size;
+    }
+    if(totalFree)
+        *totalFree = total;
+    if(largestFree)
+        *largestFree = largest;
+}
+
+static void
 initArena2Pool(void)
 {
     if(gArena2InitAttempted)
@@ -260,9 +439,20 @@ initArena2Pool(void)
     // away from the general-purpose heap and lets us size the pool from the
     // real MEM2 budget rather than the remaining MEM1 window.
 #ifdef WII
-    // Wii has enough MEM2 to keep the GX texture pool near its intended cap.
-    // The old half-arena rule came from the GC pressure path and caused early
-    // texture shrink even while plenty of MEM2 was still available.
+    // Keep a deterministic high-end GX partition and leave the middle of
+    // Arena2 available to newlib rather than consuming every spare byte.
+    size_t maxPoolBytes = GX_GXPOOL_MAX_BYTES;
+    size_t minPoolBytes = GX_GXPOOL_MIN_BYTES;
+    if(WII_GX_ARENA2_EXPANSION_BYTES != 0 &&
+       available < GX_GXPOOL_MAX_BYTES + GX_GXPOOL_KEEP_FREE_BYTES) {
+        // An expanded profile must preserve the established raw/newlib startup
+        // headroom. If it cannot, retain the base GX boundary instead.
+        SYS_Report("[GX-POOL] GX expansion rejected (need=%u KB available=%u KB); using base boundary\n",
+                   (unsigned)((GX_GXPOOL_MAX_BYTES + GX_GXPOOL_KEEP_FREE_BYTES) / 1024u),
+                   (unsigned)(available / 1024u));
+        maxPoolBytes = GX_GXPOOL_BASE_BYTES;
+        minPoolBytes = GX_GXPOOL_BASE_BYTES;
+    }
     size_t poolSize = available;
     if(poolSize > GX_GXPOOL_KEEP_FREE_BYTES)
         poolSize -= GX_GXPOOL_KEEP_FREE_BYTES;
@@ -272,10 +462,10 @@ initArena2Pool(void)
     size_t poolSize = available / 2u;
 #endif
 
-    if(poolSize > GX_GXPOOL_MAX_BYTES)
-        poolSize = GX_GXPOOL_MAX_BYTES;
-    if(poolSize < GX_GXPOOL_MIN_BYTES)
-        poolSize = GX_GXPOOL_MIN_BYTES;
+    if(poolSize > maxPoolBytes)
+        poolSize = maxPoolBytes;
+    if(poolSize < minPoolBytes)
+        poolSize = minPoolBytes;
 
     if(available > GX_GXPOOL_KEEP_FREE_BYTES &&
        poolSize > available - GX_GXPOOL_KEEP_FREE_BYTES)
@@ -324,6 +514,12 @@ initArena2Pool(void)
     }
 }
 
+void
+gxMemInitArena2Pool(void)
+{
+    initArena2Pool();
+}
+
 static uint32
 clampSoftBudgetToRuntimePool(uint32 bytes)
 {
@@ -351,23 +547,6 @@ clampSoftBudgetToRuntimePool(uint32 bytes)
     return bytes;
 }
 
-static uint32
-getPoolAwareBudgetWithHeadroom(uint32 headroomBytes)
-{
-#ifdef WII
-    initArena2Pool();
-    if(gArena2Ready && gArena2Size > 0) {
-        uint32 poolBudget = (uint32)gArena2Size;
-        if(poolBudget > headroomBytes)
-            poolBudget -= headroomBytes;
-        else
-            poolBudget /= 2u;
-        return clampSoftBudgetToRuntimePool(poolBudget);
-    }
-#endif
-    return clampSoftBudgetToRuntimePool(GX_TEXP_DEFAULT_SOFT_BUDGET_BYTES);
-}
-
 bool
 gxMemOwns(const void *ptr)
 {
@@ -377,25 +556,69 @@ gxMemOwns(const void *ptr)
     return (const uint8*)ptr >= gArena2Base && (const uint8*)ptr < gArena2End;
 }
 
+static bool
+arena2BindTrackedEntry(void *gxData, GxTexPoolEntry *entry)
+{
+    if(!gxMemOwns(gxData))
+        return true;
+    if(gxData == nullptr || entry == nullptr ||
+       (uint8*)gxData < gArena2Base + sizeof(Arena2AllocHeader*))
+        return false;
+
+    Arena2AllocHeader *header = ((Arena2AllocHeader**)gxData)[-1];
+    if(header == nullptr ||
+       (uint8*)header < gArena2Base ||
+       (uint8*)header + sizeof(Arena2AllocHeader) > gArena2End ||
+       header->magic != GX_GXPOOL_ALLOC_MAGIC ||
+       (uint8*)header + header->totalSize > gArena2End)
+        return false;
+
+    header->trackedEntry = entry;
+    return true;
+}
+
+void*
+gxMemGetPoolBase(void)
+{
+    initArena2Pool();
+    return gArena2Base;
+}
+
+void*
+gxMemGetPoolEnd(void)
+{
+    initArena2Pool();
+    return gArena2End;
+}
+
+void
+gxMemGetPoolStats(uint32 *capacityBytes, uint32 *usedBytes,
+                  uint32 *peakBytes, uint32 *largestFreeBytes,
+                  uint32 *allocFailCount, uint32 *fallbackCount)
+{
+    initArena2Pool();
+    size_t largest = 0;
+    if(largestFreeBytes)
+        arena2GetFreeStats(nullptr, &largest);
+    if(capacityBytes)
+        *capacityBytes = (uint32)gArena2Size;
+    if(usedBytes)
+        *usedBytes = (uint32)gArena2BytesUsed;
+    if(peakBytes)
+        *peakBytes = (uint32)gArena2PeakBytesUsed;
+    if(largestFreeBytes)
+        *largestFreeBytes = (uint32)largest;
+    if(allocFailCount)
+        *allocFailCount = gArena2AllocFailCount;
+    if(fallbackCount)
+        *fallbackCount = gArena2FallbackCount;
+}
+
 static void*
 allocFallbackHostMemory(size_t size, size_t alignment)
 {
 #ifdef WII
-    if(alignment < 32)
-        alignment = 32;
-    return MemoryMgrMallocMem2(size, alignment);
-#else
-    return memalign(alignment, size);
-#endif
-}
-
-static void*
-allocFallbackHostMemoryStrict(size_t size, size_t alignment)
-{
-#ifdef WII
-    if(alignment < 32)
-        alignment = 32;
-    return MemoryMgrMallocMem2Strict(size, alignment);
+    return MemoryMgrMallocAlignMem2Strict(size, alignment > 1 ? alignment : 32);
 #else
     return memalign(alignment, size);
 #endif
@@ -464,12 +687,16 @@ arena2Alloc(size_t size, size_t alignment)
 
         Arena2AllocHeader *header = (Arena2AllocHeader*)blockStart;
         header->magic = GX_GXPOOL_ALLOC_MAGIC;
-        header->reserved = 0;
+        header->trackedEntry = nil;
         header->totalSize = totalUsed;
         ((Arena2AllocHeader**)userPtr)[-1] = header;
+        gArena2BytesUsed += totalUsed;
+        if(gArena2BytesUsed > gArena2PeakBytesUsed)
+            gArena2PeakBytesUsed = gArena2BytesUsed;
         return (void*)userPtr;
     }
 
+    gArena2AllocFailCount++;
     return nullptr;
 }
 
@@ -489,26 +716,763 @@ arena2Free(void *ptr)
         return;
     }
 
+    size_t totalSize = header->totalSize;
+    header->trackedEntry = nil;
     header->magic = 0;
 
     Arena2FreeBlock *block = (Arena2FreeBlock*)header;
-    block->size = header->totalSize;
+    block->size = totalSize;
+    if(totalSize <= gArena2BytesUsed)
+        gArena2BytesUsed -= totalSize;
+    else
+        gArena2BytesUsed = 0;
     arena2InsertFreeBlock(block);
+#ifdef WII
+    // Detect fragmentation while freeing, before the next large allocation
+    // is forced to block on GX_DrawDone. The pending request is serviced once
+    // by endUpdate(), where the GPU is already idle after the display copy.
+    if(!gArena2CompactionPending &&
+       (++gArena2FreesSinceFragmentCheck >= 8 || totalSize >= 256u * 1024u)) {
+        gArena2FreesSinceFragmentCheck = 0;
+        const size_t proactiveBlockBytes = 512u * 1024u;
+        size_t totalFree = 0;
+        size_t largestFree = 0;
+        arena2GetFreeStats(&totalFree, &largestFree);
+        if(totalFree >= 1u * 1024u * 1024u &&
+           arena2ShouldDeferCompaction(proactiveBlockBytes,
+                                       totalFree, largestFree))
+            markArena2CompactionPending(proactiveBlockBytes,
+                                        totalFree, largestFree,
+                                        "free-fragmentation");
+    }
+#endif
+}
+
+static bool
+arena2ShouldDeferCompaction(size_t requiredBlockBytes,
+                            size_t totalFree, size_t largestFree)
+{
+    if(requiredBlockBytes == 0 ||
+       totalFree < requiredBlockBytes ||
+       largestFree >= requiredBlockBytes)
+        return false;
+
+    size_t fragmentedBytes = totalFree - largestFree;
+    size_t threshold = 128u * 1024u;
+    if(threshold < requiredBlockBytes / 4u)
+        threshold = requiredBlockBytes / 4u;
+    return fragmentedBytes >= threshold;
+}
+
+static void
+markArena2CompactionPending(size_t requiredBlockBytes,
+                            size_t totalFree, size_t largestFree,
+                            const char *reason)
+{
+    bool firstPending = !gArena2CompactionPending;
+    size_t oldBytes = gArena2PendingCompactBytes;
+
+    gArena2CompactionPending = true;
+    if(requiredBlockBytes > gArena2PendingCompactBytes)
+        gArena2PendingCompactBytes = requiredBlockBytes;
+
+    if(firstPending || gArena2PendingCompactBytes != oldBytes) {
+        texPoolReportLine(true,
+                          "[GX-POOL] pending compaction reason=%s need=%uKB free=%uKB largest=%uKB pool=%uKB tex=%d\n",
+                          reason ? reason : "<none>",
+                          (unsigned)(gArena2PendingCompactBytes / 1024u),
+                          (unsigned)(totalFree / 1024u),
+                          (unsigned)(largestFree / 1024u),
+                          gTexPoolTotalSize / 1024u,
+                          gTexPoolCount);
+    }
+}
+
+static GxTexPoolEntry*
+arena2FindTrackedEntryForHeader(const Arena2AllocHeader *header, int *matchCount)
+{
+    if(matchCount)
+        *matchCount = 0;
+    if(header == nullptr || header->trackedEntry == nullptr)
+        return nil;
+
+    GxTexPoolEntry *entry = header->trackedEntry;
+    if(entry->gxData == nullptr || !gxMemOwns(entry->gxData) ||
+       (uint8*)entry->gxData < gArena2Base + sizeof(Arena2AllocHeader*) ||
+       ((Arena2AllocHeader**)entry->gxData)[-1] != header)
+        return nil;
+
+    if(matchCount)
+        *matchCount = 1;
+    return entry;
+}
+
+static bool
+arena2ValidateTrackedEntries(void)
+{
+    int steps = 0;
+    for(GxTexPoolEntry *entry = gTexPool; entry; entry = entry->next) {
+        if(++steps > MAX_TEXPOOL_SCAN_STEPS) {
+            texPoolReportLine(true,
+                              "[GX-POOL] reject compaction: texPool scan limit exceeded head=%p limit=%d\n",
+                              (void*)gTexPool, MAX_TEXPOOL_SCAN_STEPS);
+            return false;
+        }
+        if(entry->gxData == nullptr || !gxMemOwns(entry->gxData))
+            continue;
+        if(entry->raster == nil) {
+            texPoolReportLine(true,
+                              "[GX-POOL] reject compaction: tracked Arena2 entry missing raster gx=%p name='%s'\n",
+                              entry->gxData,
+                              entry->name[0] ? entry->name : "<unnamed>");
+            return false;
+        }
+
+        GxRaster *natras = PLUGINOFFSET(GxRaster, entry->raster, nativeRasterOffset);
+        if(natras == nil || natras->gxData != entry->gxData) {
+            texPoolReportLine(true,
+                              "[GX-POOL] reject compaction: raster mismatch gx=%p raster=%p natras=%p natras->gx=%p\n",
+                              entry->gxData,
+                              (void*)entry->raster,
+                              (void*)natras,
+                              natras ? natras->gxData : nil);
+            return false;
+        }
+        if((uint8*)entry->gxData < gArena2Base + sizeof(Arena2AllocHeader*)) {
+            texPoolReportLine(true,
+                              "[GX-POOL] reject compaction: gxData backlink underrun gx=%p base=%p\n",
+                              entry->gxData, (void*)gArena2Base);
+            return false;
+        }
+
+        Arena2AllocHeader *header = ((Arena2AllocHeader**)entry->gxData)[-1];
+        if(header == nil ||
+           (uint8*)header < gArena2Base ||
+           (uint8*)header + sizeof(Arena2AllocHeader) > gArena2End ||
+           header->magic != GX_GXPOOL_ALLOC_MAGIC ||
+           header->totalSize < sizeof(Arena2FreeBlock) ||
+           (uint8*)header + header->totalSize > gArena2End) {
+            texPoolReportLine(true,
+                              "[GX-POOL] reject compaction: invalid tracked header gx=%p header=%p size=%u\n",
+                              entry->gxData, (void*)header, entry->size);
+            return false;
+        }
+        if(header->trackedEntry != entry) {
+            texPoolReportLine(true,
+                              "[GX-POOL] reject compaction: header owner mismatch gx=%p header=%p tracked=%p expected=%p\n",
+                              entry->gxData, (void*)header,
+                              (void*)header->trackedEntry, (void*)entry);
+            return false;
+        }
+
+        size_t userOffset = (size_t)((uint8*)entry->gxData - (uint8*)header);
+        size_t requiredOffset = sizeof(Arena2AllocHeader) + sizeof(Arena2AllocHeader*);
+        if(userOffset < requiredOffset || userOffset >= header->totalSize) {
+            texPoolReportLine(true,
+                              "[GX-POOL] reject compaction: corrupt user offset gx=%p header=%p ofs=%u total=%u\n",
+                              entry->gxData, (void*)header,
+                              (unsigned)userOffset,
+                              (unsigned)header->totalSize);
+            return false;
+        }
+
+        if(entry->size == 0 || natras->dataSize != entry->size) {
+            texPoolReportLine(true,
+                              "[GX-POOL] reject compaction: size mismatch gx=%p entry=%u raster=%u\n",
+                              entry->gxData,
+                              entry->size,
+                              natras->dataSize);
+            return false;
+        }
+        if(userOffset + entry->size > header->totalSize) {
+            texPoolReportLine(true,
+                              "[GX-POOL] reject compaction: payload overrun gx=%p payload=%u total=%u ofs=%u\n",
+                              entry->gxData,
+                              entry->size,
+                              (unsigned)header->totalSize,
+                              (unsigned)userOffset);
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool
+rebuildRasterTexObjForEntry(GxTexPoolEntry *entry, bool flushPayload)
+{
+    if(entry == nil || entry->raster == nil || entry->gxData == nil)
+        return false;
+
+    GxRaster *natras = PLUGINOFFSET(GxRaster, entry->raster, nativeRasterOffset);
+    if(natras == nil || natras->gxData != entry->gxData)
+        return false;
+
+    natras->dataSize = entry->size;
+    natras->w = entry->width;
+    natras->h = entry->height;
+    natras->gxFmt = entry->gxFmt;
+
+    invalidateTextureBinding(entry->raster);
+    if(flushPayload && entry->size > 0)
+        DCFlushRange(entry->gxData, entry->size);
+    GX_InitTexObj(&natras->texObj, natras->gxData,
+                  (u16)natras->w, (u16)natras->h,
+                  natras->gxFmt,
+                  natras->wrapS, natras->wrapT,
+                  GX_FALSE);
+    GX_InitTexObjFilterMode(&natras->texObj, natras->minFilter, natras->magFilter);
+    natras->texObjValid = true;
+    return true;
+}
+
+static bool
+validateRasterTexObjForEntry(const GxTexPoolEntry *entry)
+{
+    if(entry == nil || entry->raster == nil || entry->gxData == nil)
+        return false;
+
+    GxRaster *natras = PLUGINOFFSET(GxRaster, entry->raster, nativeRasterOffset);
+    if(natras == nil || !natras->texObjValid ||
+       natras->gxData != entry->gxData || natras->dataSize != entry->size ||
+       natras->w != entry->width || natras->h != entry->height ||
+       natras->gxFmt != entry->gxFmt)
+        return false;
+
+    return (uintptr_t)GX_GetTexObjData(&natras->texObj) ==
+               (uintptr_t)MEM_VIRTUAL_TO_PHYSICAL(entry->gxData) &&
+           GX_GetTexObjWidth(&natras->texObj) == entry->width &&
+           GX_GetTexObjHeight(&natras->texObj) == entry->height &&
+           (uint8)GX_GetTexObjFmt(&natras->texObj) == entry->gxFmt;
+}
+
+static bool
+arena2CompactInternal(const char *reason, bool force,
+                      bool gpuAlreadyIdle, size_t requiredBlockBytes)
+{
+    initArena2Pool();
+    if(!gArena2Ready)
+        return false;
+
+    size_t totalFree = 0;
+    size_t largestFree = 0;
+    arena2GetFreeStats(&totalFree, &largestFree);
+
+    bool runBecausePending = gArena2CompactionPending;
+    bool runBecauseFragmented = arena2ShouldDeferCompaction(
+        requiredBlockBytes, totalFree, largestFree);
+    if(requiredBlockBytes == 0 && !runBecauseFragmented)
+        runBecauseFragmented = totalFree >= 256u * 1024u && largestFree * 2u < totalFree;
+
+    if(!force && !runBecausePending && !runBecauseFragmented) {
+        gArena2CompactionSkipCount++;
+        return false;
+    }
+
+    releaseShrinkEmergencyReserve("Arena2 compaction");
+    arena2GetFreeStats(&totalFree, &largestFree);
+    if(requiredBlockBytes > 0 && largestFree >= requiredBlockBytes && !force) {
+        gArena2CompactionPending = false;
+        gArena2PendingCompactBytes = 0;
+        return false;
+    }
+
+    gArena2CompactionRequestCount++;
+    gArena2CompactionLastTotalFree = totalFree;
+    gArena2CompactionLastLargestBefore = largestFree;
+
+    if(!arena2ValidateTrackedEntries()) {
+        gArena2CompactionRejectCount++;
+        gArena2CompactionPending = false;
+        gArena2PendingCompactBytes = 0;
+        return false;
+    }
+
+    uint8 *cursor = gArena2Base;
+    Arena2FreeBlock *freeBlock = gArena2FreeList;
+    int freeSteps = 0;
+    size_t usedBytes = 0;
+    size_t freeBytes = 0;
+    if(freeBlock && freeBlock->prev != nil) {
+        texPoolReportLine(true,
+                          "[GX-POOL] reject compaction: free-list head prev=%p expected=nil\n",
+                          (void*)freeBlock->prev);
+        gArena2CompactionRejectCount++;
+        gArena2CompactionPending = false;
+        gArena2PendingCompactBytes = 0;
+        return false;
+    }
+    while(cursor < gArena2End) {
+        if(freeBlock && cursor == (uint8*)freeBlock) {
+            if(++freeSteps > MAX_ARENA2_FREE_STEPS ||
+               freeBlock->size < sizeof(Arena2FreeBlock) ||
+               (freeBlock->size & 31u) != 0 ||
+               (uint8*)freeBlock < gArena2Base ||
+               (uint8*)freeBlock + freeBlock->size > gArena2End ||
+               (freeBlock->next && (uint8*)freeBlock->next <= (uint8*)freeBlock) ||
+               (freeBlock->next && freeBlock->next->prev != freeBlock)) {
+                texPoolReportLine(true,
+                                  "[GX-POOL] reject compaction: corrupt free list block=%p size=%u next=%p prev=%p\n",
+                                  (void*)freeBlock, (unsigned)freeBlock->size,
+                                  (void*)freeBlock->next, (void*)freeBlock->prev);
+                gArena2CompactionRejectCount++;
+                gArena2CompactionPending = false;
+                gArena2PendingCompactBytes = 0;
+                return false;
+            }
+            freeBytes += freeBlock->size;
+            cursor += freeBlock->size;
+            freeBlock = freeBlock->next;
+            continue;
+        }
+
+        Arena2AllocHeader *header = (Arena2AllocHeader*)cursor;
+        if(header->magic != GX_GXPOOL_ALLOC_MAGIC ||
+           header->totalSize < sizeof(Arena2FreeBlock) ||
+           (header->totalSize & 31u) != 0 ||
+           cursor + header->totalSize > gArena2End) {
+            texPoolReportLine(true,
+                              "[GX-POOL] reject compaction: corrupt alloc header=%p magic=%08X size=%u\n",
+                              (void*)header,
+                              (unsigned)header->magic,
+                              (unsigned)header->totalSize);
+            gArena2CompactionRejectCount++;
+            gArena2CompactionPending = false;
+            gArena2PendingCompactBytes = 0;
+            return false;
+        }
+
+        int matchCount = 0;
+        GxTexPoolEntry *entry = arena2FindTrackedEntryForHeader(header, &matchCount);
+        if(entry == nil || matchCount != 1) {
+            texPoolReportLine(true,
+                              "[GX-POOL] reject compaction: block=%p size=%u trackedMatches=%d\n",
+                              (void*)header,
+                              (unsigned)header->totalSize,
+                              matchCount);
+            gArena2CompactionRejectCount++;
+            gArena2CompactionPending = false;
+            gArena2PendingCompactBytes = 0;
+            return false;
+        }
+
+        usedBytes += header->totalSize;
+        cursor += header->totalSize;
+    }
+
+    if(freeBlock != nil ||
+       usedBytes != gArena2BytesUsed ||
+       usedBytes + freeBytes != gArena2Size) {
+        texPoolReportLine(true,
+                          "[GX-POOL] reject compaction: layout accounting mismatch used=%u tracked=%u free=%u pool=%u freeTail=%p\n",
+                          (unsigned)usedBytes,
+                          (unsigned)gArena2BytesUsed,
+                          (unsigned)freeBytes,
+                          (unsigned)gArena2Size,
+                          (void*)freeBlock);
+        gArena2CompactionRejectCount++;
+        gArena2CompactionPending = false;
+        gArena2PendingCompactBytes = 0;
+        return false;
+    }
+
+    if(!gpuAlreadyIdle)
+        GX_DrawDone();
+
+    cursor = gArena2Base;
+    freeBlock = gArena2FreeList;
+    uint8 *writeCursor = gArena2Base;
+    uint32 movedBlocks = 0;
+    size_t movedPayloadBytes = 0;
+    while(cursor < gArena2End) {
+        if(freeBlock && cursor == (uint8*)freeBlock) {
+            cursor += freeBlock->size;
+            freeBlock = freeBlock->next;
+            continue;
+        }
+
+        Arena2AllocHeader *oldHeader = (Arena2AllocHeader*)cursor;
+        int matchCount = 0;
+        GxTexPoolEntry *entry = arena2FindTrackedEntryForHeader(oldHeader, &matchCount);
+        GxRaster *natras = PLUGINOFFSET(GxRaster, entry->raster, nativeRasterOffset);
+        size_t oldTotalSize = oldHeader->totalSize;
+        size_t userOffset = (size_t)((uint8*)entry->gxData - (uint8*)oldHeader);
+        Arena2AllocHeader *newHeader = (Arena2AllocHeader*)writeCursor;
+        void *newGxData = writeCursor + userOffset;
+
+        if(writeCursor != cursor) {
+            memmove(writeCursor, cursor, oldTotalSize);
+            movedBlocks++;
+            movedPayloadBytes += entry->size;
+        }
+
+        ((Arena2AllocHeader**)newGxData)[-1] = newHeader;
+        entry->gxData = newGxData;
+        natras->gxData = newGxData;
+        if(writeCursor != cursor)
+            rebuildRasterTexObjForEntry(entry, true);
+
+        writeCursor += oldTotalSize;
+        cursor += oldTotalSize;
+    }
+
+    size_t tailFree = (size_t)(gArena2End - writeCursor);
+    if(tailFree > 0) {
+        Arena2FreeBlock *tail = (Arena2FreeBlock*)writeCursor;
+        tail->prev = nil;
+        tail->next = nil;
+        tail->size = tailFree;
+        gArena2FreeList = tail;
+    } else
+        gArena2FreeList = nil;
+
+    gArena2BytesUsed = usedBytes;
+    gArena2CompactionPending = false;
+    gArena2PendingCompactBytes = 0;
+    gArena2CompactionSuccessCount++;
+    gArena2CompactionGeneration++;
+    gArena2CompactionMoveCount += movedBlocks;
+    gArena2CompactionBytesMoved += movedPayloadBytes;
+
+    uint32 texObjMismatchCount = 0;
+    const GxTexPoolEntry *firstTexObjMismatch = nil;
+    for(GxTexPoolEntry *entry = gTexPool; entry; entry = entry->next) {
+        if(!gxMemOwns(entry->gxData))
+            continue;
+        if(!validateRasterTexObjForEntry(entry)) {
+            texObjMismatchCount++;
+            if(firstTexObjMismatch == nil)
+                firstTexObjMismatch = entry;
+        }
+    }
+
+    arena2GetFreeStats(&totalFree, &largestFree);
+    gArena2CompactionLastLargestAfter = largestFree;
+
+    GX_InvalidateTexAll();
+    texPoolReportLine(true,
+                      "[GX-POOL] compacted gen=%u reason=%s force=%d moved=%u payload=%uKB free=%uKB largest=%uKB->%uKB pending=%d texObjMismatch=%u firstMismatch=%s\n",
+                      gArena2CompactionGeneration,
+                      reason ? reason : "<none>",
+                      force ? 1 : 0,
+                      movedBlocks,
+                      (unsigned)(movedPayloadBytes / 1024u),
+                      (unsigned)(totalFree / 1024u),
+                      (unsigned)(gArena2CompactionLastLargestBefore / 1024u),
+                      (unsigned)(gArena2CompactionLastLargestAfter / 1024u),
+                      gArena2CompactionPending ? 1 : 0,
+                      texObjMismatchCount,
+                      firstTexObjMismatch && firstTexObjMismatch->name[0] ?
+                          firstTexObjMismatch->name : "<none>");
+    return true;
+}
+
+static void
+texPoolReportLine(bool sysReport, const char *fmt, ...)
+{
+    char buffer[256];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buffer, sizeof(buffer), fmt, args);
+    va_end(args);
+    buffer[sizeof(buffer) - 1] = '\0';
+#ifdef WII
+    if(sysReport)
+        SYS_Report("%s", buffer);
+    else
+#endif
+        printf("%s", buffer);
+}
+
+static void
+texPoolFormatBytes(uint32 bytes, char *buffer, size_t bufferSize)
+{
+    if(buffer == nil || bufferSize == 0)
+        return;
+
+    if(bytes >= 1024u * 1024u)
+        snprintf(buffer, bufferSize, "%uB (%.2f MiB)",
+                 (unsigned)bytes,
+                 (double)bytes / (1024.0 * 1024.0));
+    else if(bytes >= 1024u)
+        snprintf(buffer, bufferSize, "%uB (%.2f KiB)",
+                 (unsigned)bytes,
+                 (double)bytes / 1024.0);
+    else
+        snprintf(buffer, bufferSize, "%uB", (unsigned)bytes);
+
+    buffer[bufferSize - 1] = '\0';
+}
+
+static const char*
+texPoolFormatName(uint8 fmt)
+{
+    switch(fmt)
+    {
+    case GX_TF_I4:     return "I4";
+    case GX_TF_I8:     return "I8";
+    case GX_TF_IA4:    return "IA4";
+    case GX_TF_IA8:    return "IA8";
+    case GX_TF_RGB565: return "RGB565";
+    case GX_TF_RGB5A3: return "RGB5A3";
+    case GX_TF_RGBA8:  return "RGBA8";
+    case GX_TF_CI4:    return "CI4";
+    case GX_TF_CI8:    return "CI8";
+    case GX_TF_CI14:   return "CI14";
+    case GX_TF_CMPR:   return "CMPR";
+    default:           return "UNKNOWN";
+    }
+}
+
+static void
+texPoolCollectDuplicateSummaries(DuplicateSummary *topDuplicates,
+                                 int *unnamedCount, uint32 *unnamedTotal)
+{
+    if(topDuplicates == nil)
+        return;
+
+    memset(topDuplicates, 0, sizeof(DuplicateSummary) * 12);
+    if(unnamedCount)
+        *unnamedCount = 0;
+    if(unnamedTotal)
+        *unnamedTotal = 0;
+
+    for(GxTexPoolEntry *entry = gTexPool; entry; entry = entry->next) {
+        if(entry->name[0] == '\0') {
+            if(unnamedCount)
+                (*unnamedCount)++;
+            if(unnamedTotal)
+                *unnamedTotal += entry->size;
+            continue;
+        }
+
+        bool seenEarlier = false;
+        for(GxTexPoolEntry *prev = gTexPool; prev != entry; prev = prev->next) {
+            if(nameEqualsNoCase(prev->name, entry->name)) {
+                seenEarlier = true;
+                break;
+            }
+        }
+        if(seenEarlier)
+            continue;
+
+        int count = 0;
+        uint32 totalSize = 0;
+        uint32 maxSize = 0;
+        for(GxTexPoolEntry *scan = entry; scan; scan = scan->next) {
+            if(!nameEqualsNoCase(scan->name, entry->name))
+                continue;
+            count++;
+            totalSize += scan->size;
+            if(scan->size > maxSize)
+                maxSize = scan->size;
+        }
+
+        if(count <= 1)
+            continue;
+
+        DuplicateSummary candidate;
+        memset(&candidate, 0, sizeof(candidate));
+        memcpy(candidate.name, entry->name, sizeof(candidate.name) - 1);
+        candidate.name[sizeof(candidate.name) - 1] = '\0';
+        candidate.count = count;
+        candidate.totalSize = totalSize;
+        candidate.maxSize = maxSize;
+
+        for(int slot = 0; slot < 12; slot++) {
+            if(topDuplicates[slot].count == 0 ||
+               candidate.totalSize > topDuplicates[slot].totalSize ||
+               (candidate.totalSize == topDuplicates[slot].totalSize &&
+                candidate.count > topDuplicates[slot].count)) {
+                for(int move = 11; move > slot; move--)
+                    topDuplicates[move] = topDuplicates[move - 1];
+                topDuplicates[slot] = candidate;
+                break;
+            }
+        }
+    }
+}
+
+static void
+texPoolEmitSummaryLines(bool sysReport, const char *reason)
+{
+    struct FormatSummary
+    {
+        uint8 fmt;
+        int count;
+        uint32 bytes;
+    };
+
+    enum { MAX_FORMAT_SUMMARIES = 11 };
+    FormatSummary formatTotals[MAX_FORMAT_SUMMARIES];
+    memset(formatTotals, 0, sizeof(formatTotals));
+
+    DuplicateSummary topDuplicates[12];
+    int unnamedCount = 0;
+    uint32 unnamedTotal = 0;
+    texPoolCollectDuplicateSummaries(topDuplicates, &unnamedCount, &unnamedTotal);
+
+    for(GxTexPoolEntry *entry = gTexPool; entry; entry = entry->next) {
+        int slot = -1;
+        for(int i = 0; i < MAX_FORMAT_SUMMARIES; i++) {
+            if(formatTotals[i].count > 0 && formatTotals[i].fmt == entry->gxFmt) {
+                slot = i;
+                break;
+            }
+            if(slot < 0 && formatTotals[i].count == 0)
+                slot = i;
+        }
+        if(slot >= 0) {
+            formatTotals[slot].fmt = entry->gxFmt;
+            formatTotals[slot].count++;
+            formatTotals[slot].bytes += entry->size;
+        }
+    }
+
+    for(int i = 1; i < MAX_FORMAT_SUMMARIES; i++) {
+        FormatSummary current = formatTotals[i];
+        int j = i - 1;
+        while(j >= 0 && current.count > 0 &&
+              (formatTotals[j].count == 0 || current.bytes > formatTotals[j].bytes)) {
+            formatTotals[j + 1] = formatTotals[j];
+            j--;
+        }
+        formatTotals[j + 1] = current;
+    }
+
+    char totalBytes[32];
+    char softBudget[32];
+    texPoolFormatBytes(gTexPoolTotalSize, totalBytes, sizeof(totalBytes));
+    texPoolFormatBytes(gSoftBudgetBytes, softBudget, sizeof(softBudget));
+    texPoolReportLine(sysReport,
+                      "[GX-TEXP] residency %s: actual=%s count=%d lifetimeShrinks=%d softBudget=%s\n",
+                      reason ? reason : "snapshot",
+                      totalBytes, gTexPoolCount, gShrinkTotalCount, softBudget);
+    if(gArena2Ready) {
+        size_t totalFree = 0;
+        size_t largestFree = 0;
+        arena2GetFreeStats(&totalFree, &largestFree);
+        texPoolReportLine(sysReport,
+                          "[GX-POOL] arena2 used=%uKB free=%uKB largest=%uKB pending=%u compact=%u/%u reject=%u moved=%u payload=%uKB\n",
+                          (unsigned)(gArena2BytesUsed / 1024u),
+                          (unsigned)(totalFree / 1024u),
+                          (unsigned)(largestFree / 1024u),
+                          gArena2CompactionPending ? 1u : 0u,
+                          gArena2CompactionSuccessCount,
+                          gArena2CompactionRequestCount,
+                          gArena2CompactionRejectCount,
+                          gArena2CompactionMoveCount,
+                          (unsigned)(gArena2CompactionBytesMoved / 1024u));
+    }
+
+    bool printedFormatHeader = false;
+    for(int i = 0; i < MAX_FORMAT_SUMMARIES; i++) {
+        if(formatTotals[i].count <= 0)
+            continue;
+        if(!printedFormatHeader) {
+            texPoolReportLine(sysReport, "[GX-TEXP] format totals:\n");
+            printedFormatHeader = true;
+        }
+        char bytes[32];
+        texPoolFormatBytes(formatTotals[i].bytes, bytes, sizeof(bytes));
+        texPoolReportLine(sysReport, "  fmt=%s count=%d actual=%s\n",
+                          texPoolFormatName(formatTotals[i].fmt),
+                          formatTotals[i].count, bytes);
+    }
+
+    texPoolReportLine(sysReport, "[GX-TEXP] top 20 largest entries:\n");
+    int index = 0;
+    for(GxTexPoolEntry *cur = gTexPool; cur && index < 20; cur = cur->next, index++) {
+        char entryBytes[32];
+        texPoolFormatBytes(cur->size, entryBytes, sizeof(entryBytes));
+        texPoolReportLine(sysReport,
+                          "  #%02d name='%s' %ux%u fmt=%s actual=%s shrinks=%u\n",
+                          index + 1,
+                          cur->name[0] ? cur->name : "<unnamed>",
+                          (unsigned)cur->width,
+                          (unsigned)cur->height,
+                          texPoolFormatName(cur->gxFmt),
+                          entryBytes,
+                          (unsigned)cur->shrinkCount);
+    }
+    if(gTexPoolCount > 20)
+        texPoolReportLine(sysReport, "  ... %d more entries\n", gTexPoolCount - 20);
+
+    if(unnamedCount > 0) {
+        char unnamedBytes[32];
+        texPoolFormatBytes(unnamedTotal, unnamedBytes, sizeof(unnamedBytes));
+        texPoolReportLine(sysReport,
+                          "[GX-TEXP] unnamed entries: count=%d actual=%s\n",
+                          unnamedCount, unnamedBytes);
+    }
+
+    bool printedDuplicateHeader = false;
+    for(int slot = 0; slot < 12; slot++) {
+        if(topDuplicates[slot].count <= 1)
+            continue;
+        if(!printedDuplicateHeader) {
+            texPoolReportLine(sysReport, "[GX-TEXP] top duplicate-name groups:\n");
+            printedDuplicateHeader = true;
+        }
+        char totalBytesDup[32];
+        char maxBytesDup[32];
+        texPoolFormatBytes(topDuplicates[slot].totalSize, totalBytesDup, sizeof(totalBytesDup));
+        texPoolFormatBytes(topDuplicates[slot].maxSize, maxBytesDup, sizeof(maxBytesDup));
+        texPoolReportLine(sysReport,
+                          "  dup#%d name='%s' count=%d actual=%s largest=%s\n",
+                          slot + 1,
+                          topDuplicates[slot].name,
+                          topDuplicates[slot].count,
+                          totalBytesDup,
+                          maxBytesDup);
+    }
 }
 
 // ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 // Pool Management
 // ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
-
-void
+bool
 texPoolRegister(Raster *raster, void *gxData, uint32 size,
                 uint16 w, uint16 h, uint8 fmt, const char *name)
 {
-    if(!gxData || size == 0) return;
+    if(raster == nil || gxData == nil || size == 0) {
+        static int s_invalidRegisterLogCount = 0;
+        if(s_invalidRegisterLogCount < 32) {
+            fprintf(stdout,
+                    "[GX-POOL-FAULT] texPoolRegister reject invalid args raster=%p gx=%p size=%u\n",
+                    (void*)raster, gxData, (unsigned)size);
+            s_invalidRegisterLogCount++;
+        }
+        return false;
+    }
 
-    // Allocate entry
+    int scanSteps = 0;
+    for(GxTexPoolEntry *scan = gTexPool; scan; scan = scan->next) {
+        if(++scanSteps > MAX_TEXPOOL_SCAN_STEPS) {
+            fprintf(stdout,
+                    "[GX-POOL-FAULT] texPoolRegister reject corrupt pool chain head=%p\n",
+                    (void*)gTexPool);
+            return false;
+        }
+        if(scan->gxData == gxData || scan->raster == raster) {
+            static int s_duplicateRegisterLogCount = 0;
+            if(s_duplicateRegisterLogCount < 32) {
+                fprintf(stdout,
+                        "[GX-POOL-FAULT] texPoolRegister reject duplicate raster=%p gx=%p existingRaster=%p existingGx=%p name='%s'\n",
+                        (void*)raster, gxData,
+                        (void*)scan->raster, scan->gxData,
+                        scan->name[0] ? scan->name : "<unnamed>");
+                s_duplicateRegisterLogCount++;
+            }
+            return false;
+        }
+    }
     GxTexPoolEntry *entry = (GxTexPoolEntry*)malloc(sizeof(GxTexPoolEntry));
-    if(!entry) return;  // pool bookkeeping OOM â?skip tracking (texture still works)
+    if(entry == nil) {
+        fprintf(stdout,
+                "[GX-POOL-FAULT] texPoolRegister bookkeeping OOM raster=%p gx=%p size=%u\n",
+                (void*)raster, gxData, (unsigned)size);
+        return false;
+    }
 
     entry->raster      = raster;
     entry->gxData      = gxData;
@@ -517,14 +1481,17 @@ texPoolRegister(Raster *raster, void *gxData, uint32 size,
     entry->height      = h;
     entry->gxFmt       = fmt;
     entry->shrinkCount = 0;
-    entry->next        = nullptr;
+#ifdef WII
+    entry->ownerStreamId = WiiMemoryGetResourceAttributionOwner();
+#else
+    entry->ownerStreamId = 0xffffu;
+#endif
+    entry->next        = nil;
     if(name && name[0]) {
-        strncpy(entry->name, name, sizeof(entry->name)-1);
-        entry->name[sizeof(entry->name)-1] = '\0';
+        strncpy(entry->name, name, sizeof(entry->name) - 1);
+        entry->name[sizeof(entry->name) - 1] = '\0';
     } else {
         entry->name[0] = '\0';
-        // Diagnostics for the long-lived anonymous textures that tend to
-        // starve the pool later if they never receive a proper Texture name.
         static int s_unnamedLargeRegisterLogCount = 0;
         if(s_unnamedLargeRegisterLogCount < 48 && size >= 256u * 1024u) {
             printf("[GX-REGUNNAMED] %dx%d fmt=%u size=%u raster=%p gx=%p pool=%uKB tex=%d\n",
@@ -535,7 +1502,14 @@ texPoolRegister(Raster *raster, void *gxData, uint32 size,
         }
     }
 
-    // Insert sorted by size (descending â?largest first = easy shrink target)
+    if(!arena2BindTrackedEntry(gxData, entry)) {
+        fprintf(stdout,
+                "[GX-POOL-FAULT] texPoolRegister cannot bind Arena2 header raster=%p gx=%p size=%u\n",
+                (void*)raster, gxData, (unsigned)size);
+        free(entry);
+        return false;
+    }
+
     insertPoolEntrySorted(entry);
 
     gTexPoolCount++;
@@ -550,10 +1524,19 @@ texPoolRegister(Raster *raster, void *gxData, uint32 size,
             sameNameCount++;
             sameNameTotal += scan->size;
         }
-        if(sameNameCount >= 4 && size >= 32u * 1024u) {
+        if(sameNameCount >= 4 && size >= 32u * 1024u)
             (void)sameNameTotal;
-        }
     }
+
+#ifdef WII
+    if(gxMemOwns(gxData))
+        WiiMemoryRecordResidentPool(4u);
+    else if(WiiMemoryOwnsGenericMem2(gxData))
+        WiiMemoryRecordResidentPool(1u);
+    texPoolRecordOwnerDelta(entry->ownerStreamId, gxData, (int)size);
+#endif
+
+    return true;
 }
 
 void
@@ -569,6 +1552,15 @@ texPoolUnregister(void *gxData)
             *prev = cur->next;
             gTexPoolCount--;
             gTexPoolTotalSize -= cur->size;
+            if(gxMemOwns(cur->gxData)) {
+                Arena2AllocHeader *header = ((Arena2AllocHeader**)cur->gxData)[-1];
+                if(header && header->trackedEntry == cur)
+                    header->trackedEntry = nil;
+            }
+#ifdef WII
+            texPoolRecordOwnerDelta(cur->ownerStreamId, cur->gxData,
+                                    -(int)cur->size);
+#endif
             free(cur);
             return;
         }
@@ -634,6 +1626,10 @@ texPoolUpdateSize(void *gxData, uint32 newSize, uint16 newW, uint16 newH)
             // Simple approach for now: just leave in place (size changed but still sorted-ish)
             // Full re-sort would require removing and re-inserting in order
             gTexPoolTotalSize = gTexPoolTotalSize - oldSize + newSize;
+#ifdef WII
+            texPoolRecordOwnerDelta(cur->ownerStreamId, cur->gxData,
+                                    (int)newSize - (int)oldSize);
+#endif
             return;
         }
         cur = cur->next;
@@ -756,6 +1752,43 @@ downsample2x(const uint8 *src, int sw, int sh,
     }
 }
 
+void
+setActiveHudWeaponRaster(Raster *raster)
+{
+    if(gActiveHudWeaponRaster == raster)
+        return;
+
+    gActiveHudWeaponRaster = raster;
+#ifdef WII
+    if(raster) {
+        for(GxTexPoolEntry *entry = gTexPool; entry; entry = entry->next) {
+            if(entry->raster == raster) {
+                SYS_Report("[WII-HUD-TEX] pin raster=%p name='%s' wh=%ux%u fmt=%s size=%u shrink=%u\n",
+                           (void*)raster,
+                           entry->name[0] ? entry->name : "<unnamed>",
+                           (unsigned)entry->width, (unsigned)entry->height,
+                           texPoolFormatName(entry->gxFmt),
+                           (unsigned)entry->size,
+                           (unsigned)entry->shrinkCount);
+                return;
+            }
+        }
+        SYS_Report("[WII-HUD-TEX] pin raster=%p pool-entry=missing\n",
+                   (void*)raster);
+    } else {
+        SYS_Report("[WII-HUD-TEX] clear\n");
+    }
+#endif
+}
+
+void
+clearActiveHudWeaponRaster(Raster *raster)
+{
+    if(raster && gActiveHudWeaponRaster != raster)
+        return;
+    setActiveHudWeaponRaster(nullptr);
+}
+
 static void
 downsampleRGBA8Rows2x(const uint8 *srcRows, int srcRowBytes,
                       uint8 *dstRow, int dstWidth)
@@ -866,9 +1899,12 @@ shrinkRGBA8TextureRowStreaming(GxTexPoolEntry *scan, Raster *raster,
 
     freeCpuTemp(srcRows);
     convertRGBA8_to_GX(newData, halfLinear, newW, newH, newW * 4);
-    freeCpuTemp(halfLinear);
 
     gxMemFree(oldData);
+#ifdef WII
+    texPoolRecordOwnerDelta(scan->ownerStreamId, oldData, -(int)oldSize);
+    texPoolRecordOwnerDelta(scan->ownerStreamId, newData, (int)newSize);
+#endif
 
     natras->gxData   = newData;
     natras->dataSize = newSize;
@@ -894,6 +1930,9 @@ shrinkRGBA8TextureRowStreaming(GxTexPoolEntry *scan, Raster *raster,
 
     gTexPoolTotalSize -= oldSize;
     scan->gxData      = newData;
+    if(!arena2BindTrackedEntry(newData, scan))
+        texPoolReportLine(true, "[GX-POOL-FAULT] cannot bind streamed shrink replacement gx=%p entry=%p\n",
+                          newData, (void*)scan);
     scan->size        = newSize;
     scan->width       = (uint16)newW;
     scan->height      = (uint16)newH;
@@ -906,6 +1945,10 @@ shrinkRGBA8TextureRowStreaming(GxTexPoolEntry *scan, Raster *raster,
     gShrinkTotalCount++;
     logTextureShrink("RGBA8", scan, oldW, oldH, oldSize,
                      newW, newH, newSize);
+    logShrinkCheck("RGBA8-stream", scan, raster, natras,
+                   oldData, oldSize, oldW, oldH, GX_TF_RGBA8,
+                   halfLinear, newW, newH);
+    freeCpuTemp(halfLinear);
     return true;
 }
 
@@ -997,12 +2040,73 @@ hasWorldTextureNameHint(const char *name)
 }
 
 static bool
+hasCriticalWeaponTextureNameHint(const char *name)
+{
+    if(!name || !name[0])
+        return false;
+
+    // These are the HUD weapon-sprite names from Hud.cpp. Keep their masks and
+    // icons at native resolution; shrinking them fixes a world upload at the
+    // cost of a visibly degraded weapon selector.
+    char base[32];
+    const char *candidate = name;
+    size_t len = strlen(name);
+    if(len > 1 && len < sizeof(base) &&
+       (name[len - 1] == 'A' || name[len - 1] == 'a' ||
+        name[len - 1] == 'M' || name[len - 1] == 'm')) {
+        memcpy(base, name, len - 1);
+        base[len - 1] = '\0';
+        candidate = base;
+    }
+
+    return nameEqualsNoCase(candidate, "fist") ||
+           nameEqualsNoCase(candidate, "brassk") ||
+           nameEqualsNoCase(candidate, "screw") ||
+           nameEqualsNoCase(candidate, "golf") ||
+           nameEqualsNoCase(candidate, "nightstick") ||
+           nameEqualsNoCase(candidate, "knife") ||
+           nameEqualsNoCase(candidate, "bat") ||
+           nameEqualsNoCase(candidate, "hammer") ||
+           nameEqualsNoCase(candidate, "cleaver") ||
+           nameEqualsNoCase(candidate, "machete") ||
+           nameEqualsNoCase(candidate, "sword") ||
+           nameEqualsNoCase(candidate, "chainsaw") ||
+           nameEqualsNoCase(candidate, "grenade") ||
+           nameEqualsNoCase(candidate, "teargas") ||
+           nameEqualsNoCase(candidate, "molotov") ||
+           nameEqualsNoCase(candidate, "rocket") ||
+           nameEqualsNoCase(candidate, "handgun1") ||
+           nameEqualsNoCase(candidate, "python") ||
+           nameEqualsNoCase(candidate, "chromegun") ||
+           nameEqualsNoCase(candidate, "spasshotgun") ||
+           nameEqualsNoCase(candidate, "stubshotgun") ||
+           nameEqualsNoCase(candidate, "tec9") ||
+           nameEqualsNoCase(candidate, "uzi1") ||
+           nameEqualsNoCase(candidate, "uzi2") ||
+           nameEqualsNoCase(candidate, "mp5") ||
+           nameEqualsNoCase(candidate, "m4") ||
+           nameEqualsNoCase(candidate, "ruger") ||
+           nameEqualsNoCase(candidate, "sniper") ||
+           nameEqualsNoCase(candidate, "laserscope") ||
+           nameEqualsNoCase(candidate, "flamer") ||
+           nameEqualsNoCase(candidate, "m60") ||
+           nameEqualsNoCase(candidate, "minigun") ||
+           nameEqualsNoCase(candidate, "bomb") ||
+           nameEqualsNoCase(candidate, "camera");
+}
+
+static bool
 hasCriticalUiTextureNameHint(const char *name)
 {
     if(!name || !name[0])
         return false;
 
-    return nameContainsNoCase(name, "font") ||
+    // PLAYER.TXD through PLAYER9.TXD contain player, player2, ... player9.
+    // Treat each playable-character texture as persistent so emergency world
+    // reclamation never turns the character into the visibly degraded fallback.
+    return nameStartsWithNoCase(name, "player") ||
+           hasCriticalWeaponTextureNameHint(name) ||
+           nameContainsNoCase(name, "font") ||
            nameContainsNoCase(name, "fonts") ||
            nameContainsNoCase(name, "vcchs") ||
            nameContainsNoCase(name, "hud") ||
@@ -1128,6 +2232,7 @@ getFoliageShrinkFloorDim(const GxTexPoolEntry *entry)
     return hasDelicateFoliageTextureNameHint(entry->name) ? 256 : 128;
 }
 
+#ifndef WII
 static bool
 shouldLogTextureShrink(const GxTexPoolEntry *entry)
 {
@@ -1153,12 +2258,24 @@ shouldLogTextureShrink(const GxTexPoolEntry *entry)
            nameContainsNoCase(entry->name, "floor") ||
            nameContainsNoCase(entry->name, "wall");
 }
+#endif
 
 static void
 logTextureShrink(const char *kind, const GxTexPoolEntry *entry,
                  int oldW, int oldH, uint32 oldSize,
                  int newW, int newH, uint32 newSize)
 {
+#ifdef WII
+    (void)kind;
+    (void)entry;
+    (void)oldW;
+    (void)oldH;
+    (void)oldSize;
+    (void)newW;
+    (void)newH;
+    (void)newSize;
+    // The fault-only shrink validation below carries both mutation and validation state.
+#else
     static int s_texShrinkLogCount = 0;
     if(s_texShrinkLogCount >= 160 && !shouldLogTextureShrink(entry))
         return;
@@ -1174,6 +2291,130 @@ logTextureShrink(const char *kind, const GxTexPoolEntry *entry,
            gTexPoolTotalSize / 1024,
            gTexPoolCount);
     s_texShrinkLogCount++;
+#endif
+}
+
+struct GxShrinkPayloadStats
+{
+    uint32 payloadHash;
+    uint32 texelCount;
+    uint8 minR, minG, minB, minA;
+    uint8 maxR, maxG, maxB, maxA;
+    uint32 alphaZeroCount;
+    uint32 alphaMidCount;
+    uint32 alphaFullCount;
+};
+
+static GxShrinkPayloadStats
+sampleLinearRgbaStats(const uint8 *pixels, int width, int height)
+{
+    GxShrinkPayloadStats stats;
+    memset(&stats, 0, sizeof(stats));
+    stats.minR = stats.minG = stats.minB = stats.minA = 255;
+
+    if(pixels == nil || width <= 0 || height <= 0)
+        return stats;
+
+    const uint32 totalTexels = (uint32)width * (uint32)height;
+    const uint32 maxSamples = 4096u;
+    uint32 step = totalTexels > maxSamples ? (totalTexels / maxSamples) : 1u;
+    if(step == 0)
+        step = 1u;
+
+    uint32 hash = 2166136261u;
+    for(uint32 i = 0; i < totalTexels; i += step) {
+        const uint8 *p = pixels + (size_t)i * 4u;
+        uint8 r = p[0];
+        uint8 g = p[1];
+        uint8 b = p[2];
+        uint8 a = p[3];
+
+        if(r < stats.minR) stats.minR = r;
+        if(g < stats.minG) stats.minG = g;
+        if(b < stats.minB) stats.minB = b;
+        if(a < stats.minA) stats.minA = a;
+        if(r > stats.maxR) stats.maxR = r;
+        if(g > stats.maxG) stats.maxG = g;
+        if(b > stats.maxB) stats.maxB = b;
+        if(a > stats.maxA) stats.maxA = a;
+
+        if(a == 0)
+            stats.alphaZeroCount++;
+        else if(a == 255)
+            stats.alphaFullCount++;
+        else
+            stats.alphaMidCount++;
+
+        hash ^= r; hash *= 16777619u;
+        hash ^= g; hash *= 16777619u;
+        hash ^= b; hash *= 16777619u;
+        hash ^= a; hash *= 16777619u;
+        stats.texelCount++;
+    }
+    stats.payloadHash = hash;
+    return stats;
+}
+
+static void
+logShrinkCheck(const char *kind, const GxTexPoolEntry *entry,
+               Raster *raster, GxRaster *natras,
+               void *oldGxData, uint32 oldSize, int oldW, int oldH, uint8 oldFmt,
+               const uint8 *samplePixels, int sampleW, int sampleH)
+{
+    static int s_shrinkCheckCount = 0;
+    if(entry == nil || raster == nil || natras == nil)
+        return;
+    if(s_shrinkCheckCount >= 128)
+        return;
+
+    const void *texObjData = natras->texObjValid ?
+        GX_GetTexObjData(&natras->texObj) : nil;
+    const uintptr_t expectedTexObjData = natras->gxData ?
+        (uintptr_t)MEM_VIRTUAL_TO_PHYSICAL(natras->gxData) : 0u;
+    const bool valid = natras->texObjValid &&
+        (uintptr_t)texObjData == expectedTexObjData &&
+        natras->gxData == entry->gxData && natras->dataSize == entry->size &&
+        (unsigned)GX_GetTexObjWidth(&natras->texObj) == (unsigned)natras->w &&
+        (unsigned)GX_GetTexObjHeight(&natras->texObj) == (unsigned)natras->h &&
+        (unsigned)GX_GetTexObjFmt(&natras->texObj) == (unsigned)natras->gxFmt;
+    if(valid)
+        return;
+
+    const GxShrinkPayloadStats stats =
+        sampleLinearRgbaStats(samplePixels, sampleW, sampleH);
+    fprintf(stdout,
+           "[GX-SHRINK-FAULT] kind=%s gen=%u shrink=%u name=%s raster=%p entry=%p oldGx=%p newGx=%p objGx=%p objMatch=%d old=%dx%d/%u/%u new=%ux%u/%u/%u obj=%ux%u/%u hasA=%u aKind=%u texObj=%u link=%d sizeMatch=%d hash=%08X sample=%u rgba=[%u,%u,%u,%u]-[%u,%u,%u,%u] alpha(z/m/f)=%u/%u/%u\n",
+           kind ? kind : "<none>",
+           gArena2CompactionGeneration,
+           (unsigned)gShrinkTotalCount,
+           entry->name[0] ? entry->name : "<unknown>",
+           (void*)raster,
+           (void*)entry,
+           oldGxData,
+           natras->gxData,
+           texObjData,
+           ((uintptr_t)texObjData == expectedTexObjData) ? 1 : 0,
+           oldW, oldH, (unsigned)oldFmt, oldSize,
+           (unsigned)natras->w, (unsigned)natras->h,
+           (unsigned)natras->gxFmt, (unsigned)natras->dataSize,
+           natras->texObjValid ? (unsigned)GX_GetTexObjWidth(&natras->texObj) : 0u,
+           natras->texObjValid ? (unsigned)GX_GetTexObjHeight(&natras->texObj) : 0u,
+           natras->texObjValid ? (unsigned)GX_GetTexObjFmt(&natras->texObj) : 0xFFu,
+           (unsigned)natras->hasAlpha,
+           (unsigned)natras->alphaKind,
+           natras->texObjValid ? 1u : 0u,
+           (natras->gxData == entry->gxData) ? 1 : 0,
+           (natras->dataSize == entry->size) ? 1 : 0,
+           stats.payloadHash,
+           stats.texelCount,
+           (unsigned)stats.minR, (unsigned)stats.minG,
+           (unsigned)stats.minB, (unsigned)stats.minA,
+           (unsigned)stats.maxR, (unsigned)stats.maxG,
+           (unsigned)stats.maxB, (unsigned)stats.maxA,
+           stats.alphaZeroCount,
+           stats.alphaMidCount,
+           stats.alphaFullCount);
+    s_shrinkCheckCount++;
 }
 
 static bool
@@ -1275,9 +2516,27 @@ isUnnamedBudgetProtectedTexture(const GxTexPoolEntry *entry)
 }
 
 static bool
+hasPersistentUiTextureUsage(const GxTexPoolEntry *entry)
+{
+    if(!entry || !entry->raster)
+        return false;
+
+    const GxRaster *natras = PLUGINOFFSET(GxRaster, entry->raster,
+                                           nativeRasterOffset);
+    return natras != nil &&
+           natras->usageClass == GX_TEXTURE_USAGE_PERSISTENT_UI;
+}
+
+static bool
 isBudgetProtectedTexture(const GxTexPoolEntry *entry)
 {
     if(!entry)
+        return true;
+
+    // This comes from the owning subsystem's TXD-load scope, not from a
+    // texture-name heuristic. A weapon/HUD atlas must never become the
+    // allocator's last-resort quality sacrifice.
+    if(hasPersistentUiTextureUsage(entry))
         return true;
 
     // Many fallback/Image-created rasters are registered before a Texture name
@@ -1293,10 +2552,13 @@ isBudgetProtectedTexture(const GxTexPoolEntry *entry)
     // we still preserve HUD/radar/roads/glass, but allow ordinary building and
     // scenery CMPR textures to participate in emergency shrink.
 
-    bool transientUi = hasTransientUiTextureNameHint(entry->name);
-    bool persistentUi = hasCriticalUiTextureNameHint(entry->name) && !transientUi;
+	bool transientUi = hasTransientUiTextureNameHint(entry->name);
+	bool persistentUi = hasCriticalUiTextureNameHint(entry->name) && !transientUi;
+	bool fixedIslandSplash = nameEqualsNoCase(entry->name, "splash1") ||
+	                         nameEqualsNoCase(entry->name, "splash2");
 
-    return persistentUi ||
+	return fixedIslandSplash ||
+	       persistentUi ||
            (gCriticalUiUploadDepth > 0 && transientUi) ||
            hasCriticalWaterTextureNameHint(entry->name) ||
            hasCriticalRoadTextureNameHint(entry->name) ||
@@ -1313,6 +2575,20 @@ isBudgetProtectedTexture(const GxTexPoolEntry *entry)
 static bool
 allowLargeMemFallbackForTag(const char *tag)
 {
+#ifdef WII
+    if(tag == nullptr || tag[0] == '\0')
+        return false;
+
+    // Generic MEM2 is shared with geometry, audio, and streaming. Only let
+    // explicitly critical texture classes spill there, and only while the
+    // corresponding protected upload window is active.
+    if(gCriticalUiUploadDepth <= 0)
+        return false;
+
+    return hasCriticalUiTextureNameHint(tag) ||
+           hasCriticalWaterTextureNameHint(tag) ||
+           hasCriticalRoadTextureNameHint(tag);
+#else
     if(gCriticalUiUploadDepth > 0) {
         if(tag == nullptr || tag[0] == '\0')
             return false;
@@ -1328,6 +2604,7 @@ allowLargeMemFallbackForTag(const char *tag)
     return hasCriticalUiTextureNameHint(tag) ||
            hasCriticalWaterTextureNameHint(tag) ||
            hasCriticalRoadTextureNameHint(tag);
+#endif
 }
 
 static uint32
@@ -1404,25 +2681,75 @@ releaseShrinkEmergencyReserve(const char *reason)
     }
 }
 
+static uint32
+rgb565TiledSizePadded(int w, int h)
+{
+    int tilesWide = (w + 3) / 4;
+    int tilesHigh = (h + 3) / 4;
+    return (uint32)(tilesWide * tilesHigh * 32);
+}
+
 static void
+convertGX_RGBA8ToOpaqueRGB565(void *dst, const void *src, int w, int h)
+{
+    uint8 *out = (uint8*)dst;
+    const uint8 *in = (const uint8*)src;
+
+    for(int by = 0; by < h; by += 4) {
+        for(int bx = 0; bx < w; bx += 4) {
+            const uint8 *ar = in;
+            const uint8 *gb = in + 32;
+            for(int iy = 0; iy < 4; iy++) {
+                for(int ix = 0; ix < 4; ix++) {
+                    uint8 r = ar[iy * 8 + ix * 2 + 1];
+                    uint8 g = gb[iy * 8 + ix * 2 + 0];
+                    uint8 b = gb[iy * 8 + ix * 2 + 1];
+                    uint16 packed = (uint16)(((uint16)(r >> 3) << 11) |
+                                             ((uint16)(g >> 2) << 5) |
+                                             (uint16)(b >> 3));
+                    *out++ = (uint8)(packed >> 8);
+                    *out++ = (uint8)packed;
+                }
+            }
+            in += 64;
+        }
+    }
+}
+
+static uint32
+getSafeAllocTargetBudget(size_t size, uint32 safetyBytes)
+{
+    uint64 reclaimBytes = (uint64)size + (uint64)safetyBytes;
+    uint32 targetBudget = gTexPoolTotalSize;
+
+    // A direct allocation failure is a request-sized pressure event. Reclaim
+    // enough for this block plus a small fragmentation cushion; do not reuse
+    // the old multi-megabyte load headroom here, because that permanently
+    // downsamples unrelated resident textures.
+    if(reclaimBytes < (uint64)targetBudget)
+        targetBudget -= (uint32)reclaimBytes;
+    else
+        targetBudget = GX_TEXP_MIN_SOFT_BUDGET_BYTES;
+
+    return clampSoftBudgetToRuntimePool(targetBudget);
+}
+
+static int
 tightenBudgetForSafeAlloc(size_t size)
 {
     if(gCriticalUiUploadDepth > 0) {
         uint32 oldBudget = gSoftBudgetBytes;
-        uint32 newBudget = oldBudget;
+        uint32 newBudget;
 #ifdef WII
-        uint32 targetBudget = getPoolAwareBudgetWithHeadroom(
-            size >= 256u * 1024u ?
-                7u * 1024u * 1024u :
-                6u * 1024u * 1024u);
+        uint32 targetBudget = getSafeAllocTargetBudget(
+            size, 512u * 1024u);
 #else
         uint32 targetBudget = size >= 256u * 1024u ?
             18u * 1024u * 1024u :
             19u * 1024u * 1024u;
 #endif
 
-        if(newBudget > targetBudget)
-            newBudget = targetBudget;
+        newBudget = targetBudget;
 
         if(newBudget != oldBudget) {
 #ifndef WII
@@ -1436,25 +2763,26 @@ tightenBudgetForSafeAlloc(size_t size)
             gSoftBudgetBytes = newBudget;
         }
 
-        texPoolEnforceBudget("critical-ui-upload");
-        return;
+#ifdef WII
+        if(gTexPoolTotalSize > gSoftBudgetBytes)
+            GX_DrawDone();
+#endif
+        int shrinkCount = texPoolEnforceBudgetImmediateSteps(
+            "critical-ui-upload", MAX_SAFE_ALLOC_SHRINKS);
+        gSoftBudgetBytes = oldBudget;
+        return shrinkCount;
     }
 
     uint32 oldBudget = gSoftBudgetBytes;
 #ifdef WII
-    uint32 floorBytes = getPoolAwareBudgetWithHeadroom(
-        size >= 256u * 1024u ?
-            6u * 1024u * 1024u :
-            5u * 1024u * 1024u);
+    uint32 floorBytes = getSafeAllocTargetBudget(
+        size, 256u * 1024u);
 #else
     uint32 floorBytes = size >= 256u * 1024u ?
         24u * 1024u * 1024u :
         25u * 1024u * 1024u;
 #endif
-    uint32 newBudget = oldBudget;
-
-    if(newBudget > floorBytes)
-        newBudget = floorBytes;
+    uint32 newBudget = floorBytes;
 
     if(newBudget != oldBudget) {
 #ifndef WII
@@ -1468,7 +2796,19 @@ tightenBudgetForSafeAlloc(size_t size)
         gSoftBudgetBytes = newBudget;
     }
 
-    texPoolEnforceBudget("safeGxAlloc");
+    // A direct GX allocation failure is already a hard allocation boundary.
+    // The normal Wii budget path permits only one shrink per frame, which can
+    // leave a 256 KiB upload retrying while the pool remains fragmented.
+#ifdef WII
+    // Shrinking replaces live GX payloads; fence before the emergency pass so
+    // the allocator never frees storage still referenced by the command FIFO.
+    if(gTexPoolTotalSize > gSoftBudgetBytes)
+        GX_DrawDone();
+#endif
+    int shrinkCount = texPoolEnforceBudgetImmediateSteps(
+        "safeGxAlloc", MAX_SAFE_ALLOC_SHRINKS);
+    gSoftBudgetBytes = oldBudget;
+    return shrinkCount;
 }
 
 static void
@@ -1483,6 +2823,133 @@ insertPoolEntrySorted(GxTexPoolEntry *entry)
     }
     entry->next = cur;
     *prev       = entry;
+}
+
+static bool
+demoteOpaqueRGBA8ToRGB565(GxTexPoolEntry **entryLink,
+                          GxTexPoolEntry *entry,
+                          Raster *raster,
+                          GxRaster *natras)
+{
+#if defined(WII_GX_OPAQUE_RGBA8_RGB565_TIER) && WII_GX_OPAQUE_RGBA8_RGB565_TIER
+    if(entryLink == nil || entry == nil || raster == nil || natras == nil ||
+       raster->type != Raster::TEXTURE || natras->cpuData != nil ||
+       entry->gxFmt != GX_TF_RGBA8 || natras->gxFmt != GX_TF_RGBA8 ||
+       natras->hasAlpha != 0 || natras->alphaKind != GX_RASTER_ALPHA_NONE ||
+       natras->gxData != entry->gxData)
+        return false;
+
+    uint32 newSize = rgb565TiledSizePadded(entry->width, entry->height);
+    uint32 oldSize = entry->size;
+    if(newSize == 0 || newSize >= oldSize)
+        return false;
+
+#ifdef WII
+    static uint32 s_qualityTierFenceFrame = UINT32_MAX;
+    if(s_qualityTierFenceFrame != gxFrameNum) {
+        GX_DrawDone();
+        s_qualityTierFenceFrame = gxFrameNum;
+    }
+#endif
+
+    void *oldData = entry->gxData;
+#ifdef WII
+    unsigned int oldPoolBit = texPoolStoragePoolBit(oldData);
+#endif
+    void *newData = gxMemAlloc(newSize, 32);
+    bool oldDataReleased = false;
+    if(newData) {
+        convertGX_RGBA8ToOpaqueRGB565(newData, oldData,
+                                      entry->width, entry->height);
+    } else {
+        // A fragmented GX arena may have enough total free space but no
+        // contiguous block for the replacement. Stage the already-demoted
+        // payload in generic MEM2, release the old GX block, then retry. The
+        // staged block remains a valid GPU-visible fallback if the retry ever
+        // fails, so this replacement is transactional and cannot leave a
+        // dangling raster.
+        void *stagedData = allocCpuTemp(newSize, 32);
+        if(!stagedData)
+            return false;
+        convertGX_RGBA8ToOpaqueRGB565(stagedData, oldData,
+                                      entry->width, entry->height);
+        gxMemFree(oldData);
+        oldDataReleased = true;
+        newData = gxMemAlloc(newSize, 32);
+        if(newData) {
+            memcpy(newData, stagedData, newSize);
+            freeCpuTemp(stagedData);
+        } else {
+            newData = stagedData;
+        }
+    }
+
+    *entryLink = entry->next;
+    if(!oldDataReleased)
+        gxMemFree(oldData);
+#ifdef WII
+    if(oldPoolBit != 0)
+        WiiMemoryRecordResidentDelta(entry->ownerStreamId, oldPoolBit,
+                                     -(int)oldSize);
+    texPoolRecordOwnerDelta(entry->ownerStreamId, newData, (int)newSize);
+#endif
+
+    natras->gxData = newData;
+    natras->dataSize = newSize;
+    natras->gxFmt = GX_TF_RGB565;
+
+    invalidateTextureBinding(raster);
+    DCFlushRange(newData, newSize);
+    GX_InvalidateTexAll();
+    GX_InitTexObj(&natras->texObj, newData,
+                  (u16)entry->width, (u16)entry->height,
+                  GX_TF_RGB565,
+                  natras->wrapS, natras->wrapT,
+                  GX_FALSE);
+    GX_InitTexObjFilterMode(&natras->texObj,
+                            natras->minFilter, natras->magFilter);
+    natras->texObjValid = true;
+
+    gTexPoolTotalSize -= oldSize;
+    entry->gxData = newData;
+    if(!arena2BindTrackedEntry(newData, entry))
+        texPoolReportLine(true,
+                          "[GX-POOL-FAULT] cannot bind RGB565 quality-tier replacement gx=%p entry=%p\n",
+                          newData, (void*)entry);
+    entry->size = newSize;
+    entry->gxFmt = GX_TF_RGB565;
+    entry->shrinkCount++;
+    insertPoolEntrySorted(entry);
+    gTexPoolTotalSize += newSize;
+    gShrinkTotalCount++;
+
+    logTextureShrink("RGBA8->RGB565", entry,
+                     entry->width, entry->height, oldSize,
+                     entry->width, entry->height, newSize);
+    logShrinkCheck("RGBA8->RGB565", entry, raster, natras,
+                   oldData, oldSize,
+                   entry->width, entry->height, GX_TF_RGBA8,
+                   nil, 0, 0);
+#ifdef WII
+    static int s_qualityTierLogCount = 0;
+    if(s_qualityTierLogCount < 96) {
+        SYS_Report("[WII-GX-QUALITY] opaque-rgb565 name='%s' wh=%ux%u bytes=%u->%u freed=%u storage=%s\n",
+                   entry->name[0] ? entry->name : "<unnamed>",
+                   (unsigned)entry->width, (unsigned)entry->height,
+                   (unsigned)oldSize, (unsigned)newSize,
+                   (unsigned)(oldSize - newSize),
+                   gxMemOwns(newData) ? "gx" : "generic");
+        s_qualityTierLogCount++;
+    }
+#endif
+    return true;
+#else
+    (void)entryLink;
+    (void)entry;
+    (void)raster;
+    (void)natras;
+    return false;
+#endif
 }
 
 // ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
@@ -1540,7 +3007,12 @@ retry_scan:
                 continue;
             }
 
-            if(!allowProtected && isBudgetProtectedTexture(scan)) {
+            // Durable UI protection survives the final fallback scan. Name
+            // heuristics below remain soft compatibility protection, but a
+            // texture uploaded by a persistent UI owner is never shrunk.
+            if(scan->raster == gActiveHudWeaponRaster ||
+               hasPersistentUiTextureUsage(scan) ||
+               (!allowProtected && isBudgetProtectedTexture(scan))) {
                 scanPrev = &scan->next;
                 scan = scan->next;
                 continue;
@@ -1568,6 +3040,24 @@ retry_scan:
                 free(dead);
                 continue;
             }
+
+            GxRaster *natras = PLUGINOFFSET(GxRaster, raster, nativeRasterOffset);
+#if defined(WII_GX_OPAQUE_RGBA8_RGB565_TIER) && WII_GX_OPAQUE_RGBA8_RGB565_TIER
+            if(scan->gxFmt == GX_TF_RGBA8 && natras != nil &&
+               natras->hasAlpha == 0 &&
+               natras->alphaKind == GX_RASTER_ALPHA_NONE) {
+                if(demoteOpaqueRGBA8ToRGB565(scanPrev, scan, raster, natras))
+                    return true;
+
+                // This profile treats an opaque RGBA8 texture's full spatial
+                // resolution as the quality floor. If the same-size format
+                // tier cannot be allocated, try another resource instead of
+                // immediately dropping 75 percent of its texels.
+                scanPrev = &scan->next;
+                scan = scan->next;
+                continue;
+            }
+#endif
 
             int oldW = scan->width;
             int oldH = scan->height;
@@ -1628,7 +3118,6 @@ retry_scan:
                     continue;
                 }
 
-                GxRaster *natras = PLUGINOFFSET(GxRaster, raster, nativeRasterOffset);
                 void *oldData = scan->gxData;
                 uint32 oldSize = scan->size;
 
@@ -1637,6 +3126,10 @@ retry_scan:
 
                 *scanPrev = scan->next;
                 gxMemFree(oldData);
+#ifdef WII
+                texPoolRecordOwnerDelta(scan->ownerStreamId, oldData, -(int)oldSize);
+                texPoolRecordOwnerDelta(scan->ownerStreamId, newData, (int)newSize);
+#endif
 
                 natras->gxData   = newData;
                 natras->dataSize = newSize;
@@ -1662,6 +3155,9 @@ retry_scan:
 
                 gTexPoolTotalSize -= oldSize;
                 scan->gxData      = newData;
+                if(!arena2BindTrackedEntry(newData, scan))
+                    texPoolReportLine(true, "[GX-POOL-FAULT] cannot bind CMPR shrink replacement gx=%p entry=%p\n",
+                                      newData, (void*)scan);
                 scan->size        = newSize;
                 scan->width       = (uint16)newW;
                 scan->height      = (uint16)newH;
@@ -1674,6 +3170,9 @@ retry_scan:
                 gShrinkTotalCount++;
                 logTextureShrink("CMPR", scan, oldW, oldH, oldSize,
                                  newW, newH, newSize);
+                logShrinkCheck("CMPR", scan, raster, natras,
+                               oldData, oldSize, oldW, oldH, GX_TF_CMPR,
+                               nil, 0, 0);
 
                 if((gShrinkTotalCount & 63) == 0) {
 #ifndef WII
@@ -1730,7 +3229,6 @@ retry_scan:
                 continue;
             }
 
-            GxRaster *natras = PLUGINOFFSET(GxRaster, raster, nativeRasterOffset);
             void *oldData = scan->gxData;
             uint32 oldSize = scan->size;
 
@@ -1780,9 +3278,12 @@ retry_scan:
 
             *scanPrev = scan->next;
             gxMemFree(oldData);
+#ifdef WII
+            texPoolRecordOwnerDelta(scan->ownerStreamId, oldData, -(int)oldSize);
+            texPoolRecordOwnerDelta(scan->ownerStreamId, newData, (int)newSize);
+#endif
 
             convertRGBA8_to_GX(newData, halfLinear, newW, newH, newW * 4);
-            freeCpuTemp(halfLinear);
 
             natras->gxData   = newData;
             natras->dataSize = newSize;
@@ -1808,6 +3309,9 @@ retry_scan:
 
             gTexPoolTotalSize -= oldSize;
             scan->gxData      = newData;
+            if(!arena2BindTrackedEntry(newData, scan))
+                texPoolReportLine(true, "[GX-POOL-FAULT] cannot bind RGBA8 shrink replacement gx=%p entry=%p\n",
+                                  newData, (void*)scan);
             scan->size        = newSize;
             scan->width       = (uint16)newW;
             scan->height      = (uint16)newH;
@@ -1820,6 +3324,10 @@ retry_scan:
             gShrinkTotalCount++;
             logTextureShrink("RGBA8", scan, oldW, oldH, oldSize,
                              newW, newH, newSize);
+            logShrinkCheck("RGBA8", scan, raster, natras,
+                           oldData, oldSize, oldW, oldH, GX_TF_RGBA8,
+                           halfLinear, newW, newH);
+            freeCpuTemp(halfLinear);
 
             if((gShrinkTotalCount & 31) == 0) {
 #ifndef WII
@@ -1855,6 +3363,39 @@ shrinkLargestTexturePreferHostMemory(void)
     bool shrunk = shrinkLargestTexture();
     gPreferHostMemoryShrink = oldPreferHost;
     return shrunk;
+}
+
+void
+pushPersistentUiTextureUploadContext(const char *reason)
+{
+    (void)reason;
+    gPersistentUiTextureUploadDepth++;
+}
+
+void
+popPersistentUiTextureUploadContext(const char *reason)
+{
+    (void)reason;
+    if(gPersistentUiTextureUploadDepth > 0)
+        gPersistentUiTextureUploadDepth--;
+}
+
+uint8
+currentTextureUsageClass(void)
+{
+    return gPersistentUiTextureUploadDepth > 0 ?
+        GX_TEXTURE_USAGE_PERSISTENT_UI : GX_TEXTURE_USAGE_DEFAULT;
+}
+
+void
+markPersistentUiTexture(Raster *raster)
+{
+    if(!raster || raster->platform != PLATFORM_GX)
+        return;
+
+    GxRaster *natras = PLUGINOFFSET(GxRaster, raster, nativeRasterOffset);
+    if(natras)
+        natras->usageClass = GX_TEXTURE_USAGE_PERSISTENT_UI;
 }
 
 void
@@ -1938,7 +3479,7 @@ isCriticalUiUploadContextActive(void)
     uint8 oldFmt = entry->gxFmt;
 
     // Step 1: Untile gxData â?linear RGBA8
-    uint8 *linear = (uint8*)gxMemAlloc((size_t)oldW * oldH * 4, 32);
+    uint8 *linear = (uint8*)allocCpuTemp((size_t)oldW * oldH * 4, 32);
     if(!linear) {
         // Can't even allocate temp buffer â?put back, give up
         insertPoolEntrySorted(entry);
@@ -1951,27 +3492,27 @@ isCriticalUiUploadContextActive(void)
         convertGX_IA4_toLinear(linear, oldData, oldW, oldH);
     } else {
         // Unknown format â?skip
-        gxMemFree(linear);
+        freeCpuTemp(linear);
         insertPoolEntrySorted(entry);
         return false;
     }
 
     // Step 2: Downsample
-    uint8 *halfLinear = (uint8*)gxMemAlloc((size_t)newW * newH * 4, 32);
+    uint8 *halfLinear = (uint8*)allocCpuTemp((size_t)newW * newH * 4, 32);
     if(!halfLinear) {
-        gxMemFree(linear);
+        freeCpuTemp(linear);
         insertPoolEntrySorted(entry);
         return false;
     }
 
     downsample2x(linear, oldW, oldH, halfLinear, newW, newH);
-    gxMemFree(linear);
+    freeCpuTemp(linear);
 
     // Step 3: Allocate replacement before touching the live texture.
     uint32 newSize = rgba8TiledSize(newW, newH);
     void *newData = gxMemAlloc(newSize, 32);
     if(!newData) {
-        gxMemFree(halfLinear);
+        freeCpuTemp(halfLinear);
         insertPoolEntrySorted(entry);
         return false;
     }
@@ -1980,7 +3521,7 @@ isCriticalUiUploadContextActive(void)
     gxMemFree(oldData);
 
     convertRGBA8_to_GX(newData, halfLinear, newW, newH, newW * 4);
-    gxMemFree(halfLinear);
+    freeCpuTemp(halfLinear);
 
     // Step 5: Update GxRaster
     natras->gxData   = newData;
@@ -2008,6 +3549,9 @@ isCriticalUiUploadContextActive(void)
     // Step 6: Update pool entry and re-insert
     gTexPoolTotalSize -= oldSize;
     entry->gxData      = newData;
+    if(!arena2BindTrackedEntry(newData, entry))
+        texPoolReportLine(true, "[GX-POOL-FAULT] cannot bind host shrink replacement gx=%p entry=%p\n",
+                          newData, (void*)entry);
     entry->size        = newSize;
     entry->width       = (uint16)newW;
     entry->height      = (uint16)newH;
@@ -2030,8 +3574,8 @@ isCriticalUiUploadContextActive(void)
 
     return true;
 }
-#endif
 
+#endif
 uint32
 shrinkSomeTexture(void)
 {
@@ -2043,9 +3587,31 @@ shrinkSomeTexture(void)
     return 0;
 }
 
+static int
+shrinkTexturePoolToBudget(int maxSteps)
+{
+    int steps = 0;
+    while(steps < maxSteps && gTexPoolTotalSize > gSoftBudgetBytes) {
+        gBudgetShrinkPass = true;
+        bool shrunk = shrinkLargestTexture();
+        gBudgetShrinkPass = false;
+        if(!shrunk) {
+            printf("[GX-TEXP] budget: no more shrinkable textures, pool=%uKB target=%uKB\n",
+                   gTexPoolTotalSize / 1024, gSoftBudgetBytes / 1024);
+            texPoolDebug();
+            break;
+        }
+        steps++;
+    }
+    return steps;
+}
+
 void
 texPoolEnforceBudget(const char *reason)
 {
+#ifdef WII
+    (void)reason;
+#endif
     uint32 budgetLimit = gSoftBudgetBytes + gSoftBudgetSlackBytes;
     if(gTexPoolTotalSize <= budgetLimit)
         return;
@@ -2062,18 +3628,44 @@ texPoolEnforceBudget(const char *reason)
         s_lastReportKB = startKB;
     }
 
-    for(int i = 0; i < GX_TEX_BUDGET_STEPS &&
-                   gTexPoolTotalSize > gSoftBudgetBytes; i++) {
-        gBudgetShrinkPass = true;
-        bool shrunk = shrinkLargestTexture();
-        gBudgetShrinkPass = false;
-        if(!shrunk) {
-            printf("[GX-TEXP] budget: no more shrinkable textures, pool=%uKB target=%uKB\n",
-                   gTexPoolTotalSize / 1024, gSoftBudgetBytes / 1024);
-            texPoolDebug();
-            break;
-        }
+#ifdef WII
+    if(gxFrameNum == 0) {
+        shrinkTexturePoolToBudget(1);
+        return;
     }
+    if(gBudgetShrinkFrame != gxFrameNum) {
+        gBudgetShrinkFrame = gxFrameNum;
+        gBudgetShrinksThisFrame = 0;
+    }
+    if(gBudgetShrinksThisFrame >= 1)
+        return;
+    gBudgetShrinksThisFrame = 1;
+    shrinkTexturePoolToBudget(1);
+#else
+    shrinkTexturePoolToBudget(GX_TEX_BUDGET_STEPS);
+#endif
+}
+
+static int
+texPoolEnforceBudgetImmediateSteps(const char *reason, int maxSteps)
+{
+    (void)reason;
+    if(gTexPoolTotalSize <= gSoftBudgetBytes || maxSteps <= 0)
+        return 0;
+    if(maxSteps > GX_TEX_BUDGET_STEPS)
+        maxSteps = GX_TEX_BUDGET_STEPS;
+    int steps = shrinkTexturePoolToBudget(maxSteps);
+#ifdef WII
+    gBudgetShrinkFrame = gxFrameNum;
+    gBudgetShrinksThisFrame = 1;
+#endif
+    return steps;
+}
+
+void
+texPoolEnforceBudgetImmediate(const char *reason, int maxSteps)
+{
+    (void)texPoolEnforceBudgetImmediateSteps(reason, maxSteps);
 }
 
 // ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
@@ -2086,6 +3678,9 @@ gxMemAlloc(size_t size, size_t alignment)
     if(ptr)
         return ptr;
 
+#ifdef WII
+    return nullptr;
+#else
     ptr = allocFallbackHostMemory(size, alignment);
     if(ptr && gArena2Ready) {
         static int s_fallbackLogCount = 0;
@@ -2100,6 +3695,7 @@ gxMemAlloc(size_t size, size_t alignment)
         }
     }
     return ptr;
+#endif
 }
 
 void
@@ -2112,10 +3708,32 @@ gxMemFree(void *ptr)
         return;
     }
 #ifdef WII
-    MemoryMgrFreeMem2(ptr);
+    // safeGxAlloc's MEM2 fallback uses the aligned wrapper, not the raw
+    // allocator. Recover its original pointer before returning the block.
+    MemoryMgrFreeAlignMem2(ptr);
 #else
     free(ptr);
 #endif
+}
+
+bool
+gxMemHasPendingCompaction(void)
+{
+    return gArena2CompactionPending;
+}
+
+bool
+gxMemCompact(const char *reason, bool force)
+{
+    return arena2CompactInternal(reason, force, false, 0);
+}
+
+bool
+gxMemRunPendingCompactionAtGpuIdle(const char *reason)
+{
+    if(!gArena2CompactionPending)
+        return false;
+    return arena2CompactInternal(reason, false, true, gArena2PendingCompactBytes);
 }
 
 void*
@@ -2125,30 +3743,37 @@ safeGxAlloc(size_t size, size_t alignment, const char *tag)
     if(ptr)
         return ptr;
 
-#ifdef WII
-    bool allowEarlyHostFallback = size <= 256u * 1024u ||
-                                  allowLargeMemFallbackForTag(tag);
-    if(allowEarlyHostFallback) {
-        ptr = allocFallbackHostMemoryStrict(size, alignment);
-        if(ptr) {
-            static int s_earlyHostFallbackLogCount = 0;
-            gArena2FallbackCount++;
-            if(s_earlyHostFallbackLogCount < 64) {
-                printf("[GX-TEXP] safeGxAlloc(%u) early MEM2 fallback SUCCESS after GX pool direct FAIL (count=%u tag='%s')\n",
-                       (unsigned)size,
-                       (unsigned)gArena2FallbackCount,
-                       tag ? tag : "<none>");
-                s_earlyHostFallbackLogCount++;
-            }
-            return ptr;
-        }
-    }
-#endif
-
-    printf("[GX-TEXP] safeGxAlloc(%u) GX pool direct FAIL - triggering texture shrink (tag='%s')\n",
+    printf("[GX-TEXP] safeGxAlloc(%u) GX pool direct FAIL - evaluating compaction/shrink (tag='%s')\n",
            (unsigned)size, tag ? tag : "<none>");
 
-    tightenBudgetForSafeAlloc(size);
+    size_t requiredBlockBytes = arena2RequiredBlockSize(size, alignment);
+    size_t totalFree = 0;
+    size_t largestFree = 0;
+    arena2GetFreeStats(&totalFree, &largestFree);
+    size_t potentialTotalFree = totalFree + arena2EmergencyReserveTotalSize();
+    if(arena2ShouldDeferCompaction(requiredBlockBytes, potentialTotalFree, largestFree)) {
+        markArena2CompactionPending(requiredBlockBytes, potentialTotalFree, largestFree,
+                                    tag ? tag : "safeGxAlloc");
+#ifdef WII
+        // Fragmentation is recoverable without destroying texture quality.
+        // Draining GX here turns this allocation boundary into a safe move point.
+        arena2CompactInternal(tag ? tag : "safeGxAlloc", false, false,
+                              requiredBlockBytes);
+        ptr = arena2Alloc(size, alignment);
+        if(ptr) {
+            texPoolReportLine(true,
+                              "[GX-POOL] allocation recovered by compaction size=%uKB tag='%s'\n",
+                              (unsigned)(size / 1024u), tag ? tag : "<none>");
+            return ptr;
+        }
+#endif
+    }
+
+    // Only sacrifice texture resolution after proving that compaction cannot
+    // recover the request from existing free space plus the releasable shrink
+    // reserve. Fragmentation is a layout problem, not a capacity problem, and
+    // must not create permanent quality loss by itself.
+    int budgetShrinkCount = tightenBudgetForSafeAlloc(size);
 
     ptr = arena2Alloc(size, alignment);
     if(ptr) {
@@ -2161,10 +3786,19 @@ safeGxAlloc(size_t size, size_t alignment, const char *tag)
         return ptr;
     }
 
-    for(int attempt = 1; attempt <= MAX_SHRINK_ATTEMPTS; attempt++) {
-        if(attempt == 1 || attempt == 2 || attempt == 4 || attempt == MAX_SHRINK_ATTEMPTS) {
+    int remainingShrinkAttempts = MAX_SHRINK_ATTEMPTS;
+    if(budgetShrinkCount < MAX_SAFE_ALLOC_SHRINKS) {
+        int budgetRemaining = MAX_SAFE_ALLOC_SHRINKS - budgetShrinkCount;
+        if(remainingShrinkAttempts > budgetRemaining)
+            remainingShrinkAttempts = budgetRemaining;
+    } else {
+        remainingShrinkAttempts = 0;
+    }
+    for(int attempt = 1; attempt <= remainingShrinkAttempts; attempt++) {
+        if(attempt == 1 || attempt == 2 || attempt == 4 ||
+           attempt == remainingShrinkAttempts) {
             printf("[GX-TEXP] safeGxAlloc attempt=%d/%d tag='%s' pool=%uKB tex=%d fallback=%u\n",
-                   attempt, MAX_SHRINK_ATTEMPTS,
+                   attempt, remainingShrinkAttempts,
                    tag ? tag : "<none>",
                    gTexPoolTotalSize / 1024,
                    gTexPoolCount,
@@ -2186,11 +3820,20 @@ safeGxAlloc(size_t size, size_t alignment, const char *tag)
         }
     }
 
-    // Large texture uploads falling back into plain MEM1 can starve later
-    // rwMalloc/rwRealloc calls. Prefer a visible texture downgrade over
-    // letting gameplay/cutscene allocations die after the texture load.
     bool allowLargeFallback = allowLargeMemFallbackForTag(tag);
-    if(size <= 128u * 1024u || allowLargeFallback) {
+#ifdef WII
+    // Preserve a reserve for non-texture users of the generic MEM2 pool.
+    bool genericMem2Healthy = (WiiMemoryGetStreamingPressure() & 1u) == 0;
+#else
+    bool genericMem2Healthy = true;
+#endif
+    if(genericMem2Healthy && (size <= 320u * 1024u ||
+#ifdef WII
+       (allowLargeFallback && size <= 512u * 1024u)
+#else
+       allowLargeFallback
+#endif
+    )) {
         ptr = allocFallbackHostMemory(size, alignment);
         if(ptr) {
             gArena2FallbackCount++;
@@ -2206,7 +3849,14 @@ safeGxAlloc(size_t size, size_t alignment, const char *tag)
 
     printf("[GX-TEXP] safeGxAlloc(%u) FAILED after %d attempts - truly OOM (tag='%s')\n",
            (unsigned)size, MAX_SHRINK_ATTEMPTS, tag ? tag : "<none>");
+#ifdef WII
+    SYS_Report("[WII-MEM] GX allocation OOM size=%u tag='%s' pool=%uKB/%d tex\n",
+               (unsigned)size, tag ? tag : "<none>",
+               gTexPoolTotalSize / 1024u, gTexPoolCount);
+    WiiMemoryDumpStats("gx allocation OOM");
+#else
     texPoolDebug();
+#endif
     return nullptr;
 }
 
@@ -2217,112 +3867,87 @@ safeGxAlloc(size_t size, size_t alignment, const char *tag)
 void
 texPoolDebug(void)
 {
-    printf("[GX-TEXP] Pool: %d textures, %u KB total, %d lifetime shrinks\n",
-           gTexPoolCount, gTexPoolTotalSize / 1024, gShrinkTotalCount);
+    texPoolEmitSummaryLines(false, "debug");
+}
 
-    int i = 0;
-    GxTexPoolEntry *cur = gTexPool;
-    while(cur && i < 20) {
-        printf("  #%d: %dx%d fmt=%d size=%u shrinks=%d raster=%p name='%s'\n",
-               i, cur->width, cur->height, cur->gxFmt,
-               cur->size, cur->shrinkCount, (void*)cur->raster,
-               cur->name[0] ? cur->name : "<unknown>");
-        cur = cur->next;
-        i++;
-    }
-    if(cur) printf("  ... (%d more)\n", gTexPoolCount - i);
+void
+texPoolResidencyReport(const char *reason)
+{
+    if(gTexPoolResidencyReporting)
+        return;
 
-    struct DuplicateSummary
-    {
-        char name[32];
-        int count;
-        uint32 totalSize;
-        uint32 maxSize;
-    };
+    gTexPoolResidencyReporting = true;
+#ifdef WII
+    texPoolEmitSummaryLines(true, reason ? reason : "snapshot");
+#else
+    texPoolEmitSummaryLines(false, reason ? reason : "snapshot");
+#endif
+    gTexPoolResidencyReporting = false;
+}
 
-    DuplicateSummary topDuplicates[12];
-    memset(topDuplicates, 0, sizeof(topDuplicates));
-    int unnamedCount = 0;
-    uint32 unnamedTotal = 0;
+void
+texPoolGetOwnerStats(uint32 *ownedGenericBytes, uint32 *unknownGenericBytes,
+                     uint32 *ownedGxBytes, uint32 *unknownGxBytes)
+{
+    if(ownedGenericBytes) *ownedGenericBytes = 0;
+    if(unknownGenericBytes) *unknownGenericBytes = 0;
+    if(ownedGxBytes) *ownedGxBytes = 0;
+    if(unknownGxBytes) *unknownGxBytes = 0;
 
-    for(GxTexPoolEntry *entry = gTexPool; entry; entry = entry->next) {
-        if(entry->name[0] == '\0') {
-            unnamedCount++;
-            unnamedTotal += entry->size;
-            continue;
-        }
-
-        bool seenEarlier = false;
-        for(GxTexPoolEntry *prev = gTexPool; prev != entry; prev = prev->next) {
-            if(nameEqualsNoCase(prev->name, entry->name)) {
-                seenEarlier = true;
-                break;
-            }
-        }
-        if(seenEarlier)
-            continue;
-
-        int count = 0;
-        uint32 totalSize = 0;
-        uint32 maxSize = 0;
-        for(GxTexPoolEntry *scan = entry; scan; scan = scan->next) {
-            if(!nameEqualsNoCase(scan->name, entry->name))
-                continue;
-            count++;
-            totalSize += scan->size;
-            if(scan->size > maxSize)
-                maxSize = scan->size;
-        }
-
-        if(count <= 1)
-            continue;
-
-        DuplicateSummary candidate;
-        memset(&candidate, 0, sizeof(candidate));
-        strncpy(candidate.name, entry->name, sizeof(candidate.name) - 1);
-        candidate.count = count;
-        candidate.totalSize = totalSize;
-        candidate.maxSize = maxSize;
-
-        for(int slot = 0; slot < (int)(sizeof(topDuplicates) / sizeof(topDuplicates[0])); slot++) {
-            if(topDuplicates[slot].count == 0 ||
-               candidate.totalSize > topDuplicates[slot].totalSize ||
-               (candidate.totalSize == topDuplicates[slot].totalSize &&
-                candidate.count > topDuplicates[slot].count)) {
-                for(int move = (int)(sizeof(topDuplicates) / sizeof(topDuplicates[0])) - 1; move > slot; move--)
-                    topDuplicates[move] = topDuplicates[move - 1];
-                topDuplicates[slot] = candidate;
-                break;
-            }
+#ifdef WII
+    for(const GxTexPoolEntry *entry = gTexPool; entry; entry = entry->next) {
+        unsigned int poolBit = texPoolStoragePoolBit(entry->gxData);
+        bool unknownOwner = entry->ownerStreamId == WII_TEXPOOL_OWNER_UNKNOWN;
+        if(poolBit == 1u) {
+            if(unknownOwner && unknownGenericBytes)
+                *unknownGenericBytes += entry->size;
+            else if(!unknownOwner && ownedGenericBytes)
+                *ownedGenericBytes += entry->size;
+        } else if(poolBit == 4u) {
+            if(unknownOwner && unknownGxBytes)
+                *unknownGxBytes += entry->size;
+            else if(!unknownOwner && ownedGxBytes)
+                *ownedGxBytes += entry->size;
         }
     }
+#endif
+}
 
-    if(unnamedCount > 0) {
-        printf("[GX-TEXP] Unnamed rasters: count=%d total=%uKB\n",
-               unnamedCount, unnamedTotal / 1024);
-    }
+void
+texPoolVisitOwnerResidency(TexPoolOwnerResidencyCallback callback)
+{
+    if(!callback)
+        return;
 
-    bool printedDuplicateHeader = false;
-    for(int slot = 0; slot < (int)(sizeof(topDuplicates) / sizeof(topDuplicates[0])); slot++) {
-        if(topDuplicates[slot].count <= 1)
+#ifdef WII
+    for(const GxTexPoolEntry *entry = gTexPool; entry; entry = entry->next) {
+        if(entry->ownerStreamId == WII_TEXPOOL_OWNER_UNKNOWN)
             continue;
-        if(!printedDuplicateHeader) {
-            printf("[GX-TEXP] Duplicate names summary (duplicates are normal sometimes; repeated large world textures are worth checking):\n");
-            printedDuplicateHeader = true;
-        }
-        printf("  dup#%d: name='%s' count=%d total=%uKB max=%uKB\n",
-               slot,
-               topDuplicates[slot].name,
-               topDuplicates[slot].count,
-               topDuplicates[slot].totalSize / 1024,
-               topDuplicates[slot].maxSize / 1024);
+        unsigned int poolBit = texPoolStoragePoolBit(entry->gxData);
+        if(poolBit != 0)
+            callback(entry->ownerStreamId, poolBit, entry->size);
     }
+#else
+    (void)callback;
+#endif
 }
 
 uint32
 texPoolTotalBytes(void)
 {
     return gTexPoolTotalSize;
+}
+
+uint32
+gxMemGetShrinkTotalCount(void)
+{
+    return (uint32)gShrinkTotalCount;
+}
+
+uint32
+gxMemGetCompactionGeneration(void)
+{
+    return gArena2CompactionGeneration;
 }
 
 int
@@ -2344,6 +3969,12 @@ texPoolSetSoftBudget(uint32 bytes)
            gSoftBudgetBytes / 1024,
            gTexPoolTotalSize / 1024,
            gTexPoolCount);
+}
+
+void
+texPoolResetSoftBudget(void)
+{
+    texPoolSetSoftBudget(GX_TEXP_DEFAULT_SOFT_BUDGET_BYTES);
 }
 
 uint32

@@ -740,14 +740,19 @@ int8 CRunningScript::ProcessCommands500To599(int32 command)
 		strncpy(name, (char*)&CTheScripts::ScriptSpace[m_nIp], KEY_LENGTH_IN_SCRIPT);
 		for (int i = 0; i < KEY_LENGTH_IN_SCRIPT; i++)
 			name[i] = tolower(name[i]);
-#ifdef WII
+#if defined(WII) && WII_SPECIAL_STREAM_DIAGNOSTICS
 		printf("[SPEC-WII] load_special script=%.8s id=%d name=%.8s ip=%u\n",
 			m_abScriptName,
 			ScriptParams[0],
 			name,
 			m_nIp + KEY_LENGTH_IN_SCRIPT);
 #endif
-		CStreaming::RequestSpecialChar(ScriptParams[0] - 1, name, STREAMFLAGS_DEPENDENCY | STREAMFLAGS_SCRIPTOWNED);
+		int32 flags = STREAMFLAGS_DEPENDENCY | STREAMFLAGS_SCRIPTOWNED;
+#ifdef WII
+		if(m_bIsMissionScript)
+			flags |= STREAMFLAGS_PRIORITY;
+#endif
+		CStreaming::RequestSpecialChar(ScriptParams[0] - 1, name, flags);
 		m_nIp += KEY_LENGTH_IN_SCRIPT;
 		return 0;
 	}
@@ -835,7 +840,12 @@ int8 CRunningScript::ProcessCommands500To599(int32 command)
 		int model = ScriptParams[0];
 		if (model < 0)
 			model = CTheScripts::UsedObjectArray[-model].index;
-		CStreaming::RequestModel(model, STREAMFLAGS_DEPENDENCY | STREAMFLAGS_NOFADE | STREAMFLAGS_SCRIPTOWNED);
+		int32 flags = STREAMFLAGS_DEPENDENCY | STREAMFLAGS_NOFADE | STREAMFLAGS_SCRIPTOWNED;
+#ifdef WII
+		if(m_bIsMissionScript)
+			flags |= STREAMFLAGS_PRIORITY;
+#endif
+		CStreaming::RequestModel(model, flags);
 		return 0;
 	}
 	case COMMAND_HAS_MODEL_LOADED:
@@ -2202,7 +2212,12 @@ int8 CRunningScript::ProcessCommands700To799(int32 command)
 		strncpy(name, (const char*)&CTheScripts::ScriptSpace[m_nIp], KEY_LENGTH_IN_SCRIPT);
 		for (int i = 0; i < KEY_LENGTH_IN_SCRIPT; i++)
 			name[i] = tolower(name[i]);
-		CStreaming::RequestSpecialModel(ScriptParams[0], name, STREAMFLAGS_DEPENDENCY | STREAMFLAGS_SCRIPTOWNED);
+		int32 flags = STREAMFLAGS_DEPENDENCY | STREAMFLAGS_SCRIPTOWNED;
+#ifdef WII
+		if(m_bIsMissionScript)
+			flags |= STREAMFLAGS_PRIORITY;
+#endif
+		CStreaming::RequestSpecialModel(ScriptParams[0], name, flags);
 		m_nIp += KEY_LENGTH_IN_SCRIPT;
 		return 0;
 	}

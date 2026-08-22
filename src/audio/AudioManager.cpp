@@ -742,6 +742,7 @@ cAudioManager::AddSampleToRequestedQueue()
 #endif
 
 		m_aRequestedQueue[m_nActiveQueue][sampleIndex] = m_sQueueSample;
+		SampleManager.PreloadSample(m_sQueueSample.m_nSampleIndex);
 
 		AddDetailsToRequestedOrderList(sampleIndex);
 #ifdef AUDIO_REFLECTIONS
