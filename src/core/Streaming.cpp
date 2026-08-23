@@ -39,6 +39,50 @@
 #include "VarConsole.h"
 
 #ifdef WII
+#include "gxmemory.h"
+
+class WiiStreamResourceAttributionScope
+{
+public:
+	explicit WiiStreamResourceAttributionScope(int32 streamId)
+	{
+		RwUInt16 owner = streamId >= 0 && streamId < NUMSTREAMINFO ?
+		                 (RwUInt16)streamId : WII_MEMORY_RESOURCE_OWNER_UNKNOWN;
+		WiiMemoryBeginResourceAttribution(owner);
+	}
+
+	~WiiStreamResourceAttributionScope()
+	{
+		WiiMemoryEndResourceAttribution(nil);
+	}
+};
+
+static uint32 gWiiTxdGxResidency[TXDSTORESIZE];
+
+static void
+WiiAccumulateTxdGxResidency(uint16 ownerStreamId, uint32 poolBit, uint32 bytes)
+{
+	if(poolBit != WII_STREAM_PRESSURE_GX)
+		return;
+	int32 txdSlot = -1;
+	if(ownerStreamId >= STREAM_OFFSET_TXD && ownerStreamId < STREAM_OFFSET_COL)
+		txdSlot = ownerStreamId - STREAM_OFFSET_TXD;
+	else if(ownerStreamId < STREAM_OFFSET_TXD){
+		CBaseModelInfo *mi = CModelInfo::GetModelInfo(ownerStreamId);
+		if(mi)
+			txdSlot = mi->GetTxdSlot();
+	}
+	if(txdSlot >= 0 && txdSlot < TXDSTORESIZE)
+		gWiiTxdGxResidency[txdSlot] += bytes;
+}
+
+static void
+WiiSnapshotTxdGxResidency(void)
+{
+	memset(gWiiTxdGxResidency, 0, sizeof(gWiiTxdGxResidency));
+	rw::gx::texPoolVisitOwnerResidency(WiiAccumulateTxdGxResidency);
+}
+
 static const char *
 WiiStreamStateName(uint8 state)
 {
@@ -95,6 +139,39 @@ CEntity *pIslandLODmainlandEntity;
 CEntity *pIslandLODbeachEntity;
 int32 islandLODmainland;
 int32 islandLODbeach;
+
+static bool
+CanRemoveEntityDuringIslandHandoff(CEntity *entity)
+{
+	if(entity == nil || entity->bImBeingRendered)
+		return false;
+	CPed *player = FindPlayerPed();
+	if(player && player->m_pCurSurface == entity)
+		return false;
+	int32 modelId = entity->GetModelIndex();
+	return modelId < 0 || modelId >= STREAM_OFFSET_TXD ||
+	       (CStreaming::ms_aInfoForModel[modelId].m_flags &
+	        STREAMFLAGS_LOADSCENE_PROTECT) == 0;
+}
+
+static void
+ProtectCurrentSurfaceForLanding(void)
+{
+	CPed *player = FindPlayerPed();
+	CEntity *surface = player ? player->m_pCurSurface : nil;
+	if(surface == nil)
+		return;
+	int32 modelId = surface->GetModelIndex();
+	if(modelId >= 0 && modelId < STREAM_OFFSET_TXD)
+		CStreaming::RequestModel(modelId, STREAMFLAGS_LOADSCENE_PROTECT);
+}
+
+static void
+ClearLoadSceneProtection(void)
+{
+	for(int32 i = 0; i < NUMSTREAMINFO; i++)
+		CStreaming::ms_aInfoForModel[i].m_flags &= ~STREAMFLAGS_LOADSCENE_PROTECT;
+}
 
 #ifndef MASTER
 bool gbPrintStats;
@@ -560,6 +637,10 @@ CStreaming::ConvertBufferToObject(int8 *buf, int32 streamId)
 	CBaseModelInfo *mi;
 	bool success;
 
+#ifdef WII
+	WiiStreamResourceAttributionScope resourceAttribution(streamId);
+#endif
+
 	startTime = CTimer::GetCurrentTimeInCycles() / CTimer::GetCyclesPerMillisecond();
 
 	cdsize = ms_aInfoForModel[streamId].GetCdSize();
@@ -749,6 +830,10 @@ CStreaming::FinishLoadingLargeFile(int8 *buf, int32 streamId)
 	CBaseModelInfo *mi;
 	bool success;
 
+#ifdef WII
+	WiiStreamResourceAttributionScope resourceAttribution(streamId);
+#endif
+
 	startTime = CTimer::GetCurrentTimeInCycles() / CTimer::GetCyclesPerMillisecond();
 
 	if(ms_aInfoForModel[streamId].m_loadState != STREAMSTATE_STARTED){
@@ -821,6 +906,7 @@ void
 CStreaming::RequestModel(int32 id, int32 flags)
 {
 	CSimpleModelInfo *mi;
+	const int32 dependencyFlags = flags;
 
 	if(ms_aInfoForModel[id].m_loadState == STREAMSTATE_INQUEUE){
 		// updgrade to priority
@@ -832,6 +918,12 @@ CStreaming::RequestModel(int32 id, int32 flags)
 		flags &= ~STREAMFLAGS_PRIORITY;
 	}
 	ms_aInfoForModel[id].m_flags |= flags;
+	if(id < STREAM_OFFSET_TXD &&
+	   (dependencyFlags & STREAMFLAGS_LOADSCENE_PROTECT) != 0 &&
+	   ms_aInfoForModel[id].m_loadState != STREAMSTATE_NOTLOADED){
+		mi = (CSimpleModelInfo*)CModelInfo::GetModelInfo(id);
+		RequestTxd(mi->GetTxdSlot(), dependencyFlags);
+	}
 
 	if(ms_aInfoForModel[id].m_loadState == STREAMSTATE_LOADED){
 		// Already loaded, only check changed flags
@@ -1311,7 +1403,7 @@ CStreaming::RemoveBuildings(eLevelName level)
 		e = CPools::GetBuildingPool()->GetSlot(i);
 		if(e && e->m_level == level){
 			mi = CModelInfo::GetModelInfo(e->GetModelIndex());
-			if(!e->bImBeingRendered){
+			if(CanRemoveEntityDuringIslandHandoff(e)){
 				e->DeleteRwObject();
 				if (mi->GetNumRefs() == 0)
 					RemoveModel(e->GetModelIndex());
@@ -1324,7 +1416,7 @@ CStreaming::RemoveBuildings(eLevelName level)
 		e = CPools::GetTreadablePool()->GetSlot(i);
 		if(e && e->m_level == level){
 			mi = CModelInfo::GetModelInfo(e->GetModelIndex());
-			if(!e->bImBeingRendered){
+			if(CanRemoveEntityDuringIslandHandoff(e)){
 				e->DeleteRwObject();
 				if (mi->GetNumRefs() == 0)
 					RemoveModel(e->GetModelIndex());
@@ -1337,7 +1429,8 @@ CStreaming::RemoveBuildings(eLevelName level)
 		e = CPools::GetObjectPool()->GetSlot(i);
 		if(e && e->m_level == level){
 			mi = CModelInfo::GetModelInfo(e->GetModelIndex());
-			if(!e->bImBeingRendered && ((CObject*)e)->ObjectCreatedBy == GAME_OBJECT){
+			if(CanRemoveEntityDuringIslandHandoff(e) &&
+			   ((CObject*)e)->ObjectCreatedBy == GAME_OBJECT){
 				e->DeleteRwObject();
 				if (mi->GetNumRefs() == 0)
 					RemoveModel(e->GetModelIndex());
@@ -1350,7 +1443,7 @@ CStreaming::RemoveBuildings(eLevelName level)
 		e = CPools::GetDummyPool()->GetSlot(i);
 		if(e && e->m_level == level){
 			mi = CModelInfo::GetModelInfo(e->GetModelIndex());
-			if(!e->bImBeingRendered){
+			if(CanRemoveEntityDuringIslandHandoff(e)){
 				e->DeleteRwObject();
 				if (mi->GetNumRefs() == 0)
 					RemoveModel(e->GetModelIndex());
@@ -1483,7 +1576,7 @@ CStreaming::RemoveBigBuildings(eLevelName level)
 		e = CPools::GetBuildingPool()->GetSlot(i);
 		if(e && e->bIsBIGBuilding && e->m_level == level){
 			mi = CModelInfo::GetModelInfo(e->GetModelIndex());
-			if(!e->bImBeingRendered){
+			if(CanRemoveEntityDuringIslandHandoff(e)){
 				e->DeleteRwObject();
 				if (mi->GetNumRefs() == 0)
 					RemoveModel(e->GetModelIndex());
@@ -1549,6 +1642,79 @@ CStreaming::RemoveLeastUsedModel(uint32 excludeMask)
 	}
 	return (ms_numVehiclesLoaded > 7 || CGame::currArea != AREA_MAIN_MAP && ms_numVehiclesLoaded > 4) && RemoveLoadedVehicle();
 }
+
+#ifdef WII
+bool
+CStreaming::RetireLeastUsedGxTxd(uint32 excludeMask)
+{
+	WiiSnapshotTxdGxResidency();
+
+	int32 candidateTxd = -1;
+	for(CStreamingInfo *si = ms_endLoadedList.m_prev;
+	    si != &ms_startLoadedList; si = si->m_prev){
+		int32 streamId = si - ms_aInfoForModel;
+		if(streamId < STREAM_OFFSET_TXD || streamId >= STREAM_OFFSET_COL)
+			continue;
+		int32 txdId = streamId - STREAM_OFFSET_TXD;
+		if(gWiiTxdGxResidency[txdId] == 0 ||
+		   (si->m_flags & (excludeMask | STREAMFLAGS_CANT_REMOVE)) != 0 ||
+		   CTxdStore::GetSlot(txdId) == nil ||
+		   CTxdStore::GetSlot(txdId)->texDict == nil ||
+		   CTxdStore::GetNumRefs(txdId) != 0 ||
+		   CTxdStore::IsTxdAliasPinned(txdId) ||
+		   IsTxdUsedByRequestedModels(txdId))
+			continue;
+
+		bool dependencyClosed = true;
+		for(int32 modelId = 0; modelId < STREAM_OFFSET_TXD; modelId++){
+			CBaseModelInfo *mi = CModelInfo::GetModelInfo(modelId);
+			if(mi == nil || mi->GetTxdSlot() != txdId ||
+			   ms_aInfoForModel[modelId].m_loadState == STREAMSTATE_NOTLOADED)
+				continue;
+			if(ms_aInfoForModel[modelId].m_loadState != STREAMSTATE_LOADED ||
+			   CModelInfo::GetModelInfo(modelId)->GetNumRefs() != 0 ||
+			   (ms_aInfoForModel[modelId].m_flags &
+			    (excludeMask | STREAMFLAGS_CANT_REMOVE)) != 0 ||
+			   ms_aInfoForModel[modelId].m_next == nil){
+				dependencyClosed = false;
+				break;
+			}
+		}
+		if(dependencyClosed){
+			candidateTxd = txdId;
+			break;
+		}
+	}
+
+	if(candidateTxd < 0)
+		return false;
+
+	WiiMemoryPoolSnapshot before;
+	WiiMemoryGetPoolSnapshot(&before);
+	int32 removedModels = 0;
+	for(int32 modelId = 0; modelId < STREAM_OFFSET_TXD; modelId++){
+		CBaseModelInfo *mi = CModelInfo::GetModelInfo(modelId);
+		if(mi && mi->GetTxdSlot() == candidateTxd &&
+		   ms_aInfoForModel[modelId].m_loadState == STREAMSTATE_LOADED){
+			RemoveModel(modelId);
+			removedModels++;
+		}
+	}
+	const char *txdName = CTxdStore::GetTxdName(candidateTxd);
+	uint32 attributedBytes = gWiiTxdGxResidency[candidateTxd];
+	RemoveModel(candidateTxd + STREAM_OFFSET_TXD);
+
+	WiiMemoryPoolSnapshot after;
+	WiiMemoryGetPoolSnapshot(&after);
+	bool releasedGx = after.gxUsed < before.gxUsed;
+	printf("[WII-GX-RETIRE] txd='%s' models=%d attributed=%uKB released=%uKB effective=%d\n",
+	       txdName ? txdName : "<unnamed>", removedModels,
+	       (unsigned)(attributedBytes / 1024u),
+	       releasedGx ? (unsigned)((before.gxUsed - after.gxUsed) / 1024u) : 0u,
+	       releasedGx ? 1 : 0);
+	return releasedGx;
+}
+#endif
 
 void
 CStreaming::RemoveAllUnusedModels(void)
@@ -2081,6 +2247,7 @@ CStreaming::LoadBigBuildingsWhenNeeded(void)
 	   CTheZones::m_CurrLevel == CGame::currLevel)
 		return;
 
+	const CVector landingPosition = TheCamera.GetPosition();
 	CTimer::Suspend();
 	CGame::currLevel = CTheZones::m_CurrLevel;
 	ISLAND_LOADING_IS(LOW)
@@ -2090,6 +2257,8 @@ CStreaming::LoadBigBuildingsWhenNeeded(void)
 		CCollision::LoadCollisionScreen(CGame::currLevel);
 		DMAudio.Service();
 
+		CRenderer::m_loadingPriority = false;
+		ProtectCurrentSurfaceForLanding();
 		RemoveUnusedBigBuildings(CGame::currLevel);
 		RemoveUnusedBuildings(CGame::currLevel);
 		RemoveUnusedModelsInLoadedList();
@@ -2100,7 +2269,7 @@ CStreaming::LoadBigBuildingsWhenNeeded(void)
 		LoadSplash(GetLevelSplashScreen(CGame::currLevel));
 
 	ISLAND_LOADING_IS(LOW)
-		CStreaming::RequestBigBuildings(CGame::currLevel, TheCamera.GetPosition());
+		CStreaming::RequestBigBuildings(CGame::currLevel, landingPosition);
 #ifdef NO_ISLAND_LOADING
 	else if(FrontEndMenuManager.m_PrefsIslandLoading == CMenuManager::ISLAND_LOADING_MEDIUM) {
 		RemoveIslandsNotUsed(CGame::currLevel);
@@ -2109,6 +2278,12 @@ CStreaming::LoadBigBuildingsWhenNeeded(void)
 #endif
 
 	CStreaming::LoadAllRequestedModels(false);
+	CStreaming::InstanceBigBuildings(CGame::currLevel, landingPosition);
+	CStreaming::InstanceBigBuildings(LEVEL_GENERIC, landingPosition);
+	AddModelsToRequestList(landingPosition, STREAMFLAGS_LOADSCENE_PROTECT);
+	CStreaming::LoadAllRequestedModels(false);
+	CStreaming::InstanceLoadedModels(landingPosition);
+	ClearLoadSceneProtection();
 
 	CGame::TidyUpMemory(true, true);
 	CTimer::Resume();
@@ -3275,26 +3450,17 @@ void
 CStreaming::MakeSpaceFor(int32 size)
 {
 #ifdef WII
-	// GX pressure must retire an actually GX-backed resource before the
-	// allocator falls through to synchronous compaction/shrink recovery.
+	static const uint32 GX_RETENTION_FREE_BYTES = 3u * 1024u * 1024u;
+	static const uint32 GX_RETENTION_LARGEST_BYTES = 1u * 1024u * 1024u;
 	WiiMemoryPoolSnapshot gxSnapshot;
 	WiiMemoryGetPoolSnapshot(&gxSnapshot);
-	uint32 gxPressure = WiiMemoryGetStreamingPressureForSnapshot(&gxSnapshot);
 	int gxRetireAttempts = 0;
-	int gxNoProgress = 0;
-	while((gxPressure & WII_STREAM_PRESSURE_GX) != 0 &&
-	      gxRetireAttempts < 6){
-		WiiMemoryPoolSnapshot before = gxSnapshot;
-		if(!RemoveLeastUsedModel(STREAMFLAGS_20))
+	while((gxSnapshot.gxFree < GX_RETENTION_FREE_BYTES ||
+	       gxSnapshot.gxLargest < GX_RETENTION_LARGEST_BYTES) &&
+	      gxRetireAttempts < 4){
+		if(!RetireLeastUsedGxTxd(STREAMFLAGS_LOADSCENE_PROTECT))
 			break;
 		WiiMemoryGetPoolSnapshot(&gxSnapshot);
-		bool releasedGx = gxSnapshot.gxUsed < before.gxUsed;
-		bool improvedLayout = gxSnapshot.gxLargest > before.gxLargest;
-		if(releasedGx || improvedLayout)
-			gxNoProgress = 0;
-		else if(++gxNoProgress >= 2)
-			break;
-		gxPressure = WiiMemoryGetStreamingPressureForSnapshot(&gxSnapshot);
 		gxRetireAttempts++;
 	}
 #endif
@@ -3308,7 +3474,7 @@ CStreaming::MakeSpaceFor(int32 size)
 #undef MB
 #endif
 	while(ms_memoryUsed >= ms_memoryAvailable - size)
-		if(!RemoveLeastUsedModel(STREAMFLAGS_20)){
+		if(!RemoveLeastUsedModel(STREAMFLAGS_LOADSCENE_PROTECT)){
 			DeleteRwObjectsBehindCamera(ms_memoryAvailable - size);
 			return;
 		}
@@ -3339,7 +3505,7 @@ CStreaming::LoadScene(const CVector &pos)
 	LoadAllRequestedModels(false);
 	InstanceBigBuildings(level, pos);
 	InstanceBigBuildings(LEVEL_GENERIC, pos);
-	AddModelsToRequestList(pos, STREAMFLAGS_20);
+	AddModelsToRequestList(pos, STREAMFLAGS_LOADSCENE_PROTECT);
 	CRadar::StreamRadarSections(pos);
 
 	if (!CGame::IsInInterior()) {
@@ -3353,8 +3519,7 @@ CStreaming::LoadScene(const CVector &pos)
 	LoadAllRequestedModels(false);
 	InstanceLoadedModels(pos);
 
-	for(int i = 0; i < NUMSTREAMINFO; i++)
-		ms_aInfoForModel[i].m_flags &= ~STREAMFLAGS_20;
+	ClearLoadSceneProtection();
 	debug("End load scene\n");
 }
 

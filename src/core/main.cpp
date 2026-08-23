@@ -111,8 +111,6 @@ static char gCurrentSplashName[32];
 static bool CurrentSplashIsLoadingScreen(void);
 #ifdef WII
 static bool CurrentSplashIsIntroSequence(void);
-static bool WiiSplashNeedsSyncLoad(const char *name);
-static void WiiPresentIslandFallback(const char *levelName, const char *splashName);
 struct WiiFrameDiagnostics {
 	uint32 sequence;
 	double timeStepMs;
@@ -958,35 +956,6 @@ ForceScriptSplashNow(const char *name)
 #endif
 
 #ifdef WII
-static bool
-WiiSplashNeedsSyncLoad(const char *name)
-{
-	if(name == nil)
-		return false;
-	if(ShouldProtectActiveIntroSplash(name))
-		return false;
-
-	if(splashTxdId == -1)
-		return true;
-
-	RwTexDictionary *txd = CTxdStore::GetSlot(splashTxdId)->texDict;
-	if(txd == nil)
-		return true;
-
-	return RwTexDictionaryFindNamedTexture(txd, name) == nil;
-}
-
-static void
-WiiPresentIslandFallback(const char *levelName, const char *splashName)
-{
-	double presentStartMs = RsTimer();
-	FrontEndMenuManager.MessageScreen("FELD_WR", true);
-	printf("[WII-ISLAND-SPLASH] fallback-present level='%s' splash='%s' dt=%.2fms\n",
-	       levelName ? levelName : "<none>",
-	       splashName ? splashName : "<none>",
-	       RsTimer() - presentStartMs);
-}
-
 bool
 WiiPrepareIslandTransitionSplash(int level)
 {
@@ -1347,32 +1316,7 @@ LoadingScreen(const char *str1, const char *str2, const char *splashscreen)
 void
 LoadingIslandScreen(const char *levelName)
 {
-	CSprite2d *splash;
-	Const char *islandSplash = GetLevelSplashScreen(CGame::currLevel);
-#ifdef WII
-	bool needsSyncLoad = WiiSplashNeedsSyncLoad(islandSplash);
-	double loadStartMs = 0.0;
-	double loadMs = 0.0;
-	double targetPresentStartMs = 0.0;
-#endif
-
-#ifdef WII
-	if(needsSyncLoad)
-		WiiPresentIslandFallback(levelName, islandSplash);
-	loadStartMs = RsTimer();
-#endif
-	splash = LoadSplash(islandSplash ? islandSplash : nil);
-#ifdef WII
-	loadMs = RsTimer() - loadStartMs;
-#endif
-#ifdef WII
-	printf("[LOADSC-ISLAND] level='%s' currLevel=%d splash='%s' current='%s'\n",
-	       levelName ? levelName : "<none>",
-	       (int)CGame::currLevel,
-	       islandSplash ? islandSplash : "<keep-current>",
-	       gCurrentSplashName[0] ? gCurrentSplashName : "<none>");
-	targetPresentStartMs = RsTimer();
-#endif
+	CSprite2d *splash = LoadSplash(nil);
 	if(!DoRWStuffStartOfFrame(0, 0, 0, 0, 0, 0, 255))
 		return;
 
@@ -1387,12 +1331,8 @@ LoadingIslandScreen(const char *levelName)
 	CFont::DrawFonts();
 	DoRWStuffEndOfFrame();
 #ifdef WII
-	printf("[WII-ISLAND-SPLASH] target-present level='%s' splash='%s' sync=%d load=%.2fms present=%.2fms current='%s'\n",
+	printf("[WII-ISLAND-SPLASH] present-existing level='%s' current='%s'\n",
 	       levelName ? levelName : "<none>",
-	       islandSplash ? islandSplash : "<keep-current>",
-	       needsSyncLoad,
-	       loadMs,
-	       RsTimer() - targetPresentStartMs,
 	       gCurrentSplashName[0] ? gCurrentSplashName : "<none>");
 #endif
 }

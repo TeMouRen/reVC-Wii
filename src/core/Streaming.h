@@ -17,7 +17,7 @@ enum StreamFlags
 	STREAMFLAGS_DEPENDENCY  = 0x04,	// Is this right?
 	STREAMFLAGS_PRIORITY    = 0x08,
 	STREAMFLAGS_NOFADE      = 0x10,
-	STREAMFLAGS_20          = 0x20,	// TODO(MIAMI): what's this
+	STREAMFLAGS_LOADSCENE_PROTECT = 0x20,
 
 	STREAMFLAGS_CANT_REMOVE = STREAMFLAGS_DONT_REMOVE|STREAMFLAGS_SCRIPTOWNED,
 	STREAMFLAGS_KEEP_IN_MEMORY = STREAMFLAGS_DONT_REMOVE|STREAMFLAGS_SCRIPTOWNED|STREAMFLAGS_DEPENDENCY,
@@ -162,6 +162,9 @@ public:
 	static void RemoveBigBuildings(eLevelName level);
 	static bool RemoveLoadedVehicle(void);
 	static bool RemoveLeastUsedModel(uint32 excludeMask);
+#ifdef WII
+	static bool RetireLeastUsedGxTxd(uint32 excludeMask);
+#endif
 	static void RemoveAllUnusedModels(void);
 	static void RemoveUnusedModelsInLoadedList(void);
 	static bool RemoveLoadedZoneModel(void);

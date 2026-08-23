@@ -105,7 +105,6 @@
 namespace rw { namespace gx {
 void texPoolEnforceBudgetImmediate(const char *reason, int maxSteps);
 void texPoolResetSoftBudget(void);
-bool gxMemCompact(const char *reason, bool force);
 } }
 extern "C" void WiiMemoryDumpStats(const char *reason);
 #endif
@@ -1562,8 +1561,8 @@ void CGame::TidyUpMemory(bool moveTextures, bool flushDraw)
 	printf("Largest free block after tidy %d\n", gMainHeap.GetLargestFreeBlock());
 #endif
 #ifdef WII
-	if (moveTextures)
-		rw::gx::gxMemCompact(flushDraw ? "game-tidy-flush" : "game-tidy", true);
+	// Normal streaming pressure is handled by whole-TXD retirement. GX
+	// compaction remains the allocator's exceptional direct-failure fallback.
 	uint32 wiiTidyMs = (uint32)ticks_to_millisecs(gettime() - wiiTidyStartTicks);
 	if(wiiTidyMs >= 20u){
 		uint32 largestFree = 0;
