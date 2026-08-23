@@ -1691,6 +1691,18 @@ CStreaming::RetireLeastUsedGxTxd(uint32 excludeMask)
 
 	WiiMemoryPoolSnapshot before;
 	WiiMemoryGetPoolSnapshot(&before);
+	// DeleteRwObject releases one TXD reference per atomic.  Hold the
+	// maximum possible number while removing the whole dependency closure so
+	// the first model cannot destroy the shared TXD underneath its siblings.
+	int32 txdGuardRefs = 1;
+	for(int32 modelId = 0; modelId < STREAM_OFFSET_TXD; modelId++){
+		CBaseModelInfo *mi = CModelInfo::GetModelInfo(modelId);
+		if(mi && mi->GetTxdSlot() == candidateTxd &&
+		   ms_aInfoForModel[modelId].m_loadState == STREAMSTATE_LOADED)
+			txdGuardRefs += 3;
+	}
+	for(int32 i = 0; i < txdGuardRefs; i++)
+		CTxdStore::AddRef(candidateTxd);
 	int32 removedModels = 0;
 	for(int32 modelId = 0; modelId < STREAM_OFFSET_TXD; modelId++){
 		CBaseModelInfo *mi = CModelInfo::GetModelInfo(modelId);
@@ -1702,6 +1714,8 @@ CStreaming::RetireLeastUsedGxTxd(uint32 excludeMask)
 	}
 	const char *txdName = CTxdStore::GetTxdName(candidateTxd);
 	uint32 attributedBytes = gWiiTxdGxResidency[candidateTxd];
+	while(CTxdStore::GetNumRefs(candidateTxd) > 0)
+		CTxdStore::RemoveRefWithoutDelete(candidateTxd);
 	RemoveModel(candidateTxd + STREAM_OFFSET_TXD);
 
 	WiiMemoryPoolSnapshot after;

@@ -98,6 +98,8 @@ class T1StreamingLifecycleTests(unittest.TestCase):
         self.assertIn("texPoolVisitOwnerResidency", residency_snapshot)
         self.assertIn("IsTxdUsedByRequestedModels", retirement)
         self.assertIn("GetTxdSlot()", retirement)
+        self.assertIn("txdGuardRefs", retirement)
+        self.assertIn("RemoveRefWithoutDelete", retirement)
         self.assertIn("after.gxUsed < before.gxUsed", retirement)
 
         convert = function_body(
