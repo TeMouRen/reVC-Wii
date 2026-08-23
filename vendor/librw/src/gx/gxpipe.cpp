@@ -1072,11 +1072,114 @@ uninstance(rw::ObjPipeline * /*rwpipe*/, Atomic * /*atomic*/)
 
 // ── Material �?GX TEV (GX_FALSE �?same as gxskin.cpp) ──────
 
+// GX keeps this state across draws. Keep the shadow local to one atomic
+// render, so repeated material state does not emit redundant FIFO commands
+// without making assumptions about state owned by another pipeline.
+struct GxRenderStateCache
+{
+    bool cullValid;
+    u8 cullMode;
+    bool zCompValid;
+    u8 zCompLoc;
+    bool zModeValid;
+    u8 zTest;
+    u8 zFunc;
+    u8 zWrite;
+    bool blendValid;
+    u8 blendMode;
+    u8 blendSrc;
+    u8 blendDst;
+    u8 blendLogic;
+    bool alphaValid;
+    u8 alphaFunc;
+    u8 alphaRef;
+    u8 alphaOp;
+    u8 alphaComp1;
+    u8 alphaRef1;
+};
+
+static inline void
+setCullModeCached(GxRenderStateCache *cache, u8 mode)
+{
+    if(cache == nil || !cache->cullValid || cache->cullMode != mode){
+        GX_SetCullMode(mode);
+        if(cache){
+            cache->cullValid = true;
+            cache->cullMode = mode;
+        }
+    }
+}
+
+static inline void
+setZCompLocCached(GxRenderStateCache *cache, u8 loc)
+{
+    if(cache == nil || !cache->zCompValid || cache->zCompLoc != loc){
+        GX_SetZCompLoc(loc);
+        if(cache){
+            cache->zCompValid = true;
+            cache->zCompLoc = loc;
+        }
+    }
+}
+
+static inline void
+setZModeCached(GxRenderStateCache *cache, u8 test, u8 func, u8 write)
+{
+    if(cache == nil || !cache->zModeValid || cache->zTest != test ||
+       cache->zFunc != func || cache->zWrite != write){
+        GX_SetZMode(test, func, write);
+        if(cache){
+            cache->zModeValid = true;
+            cache->zTest = test;
+            cache->zFunc = func;
+            cache->zWrite = write;
+        }
+    }
+}
+
+static inline void
+setBlendModeCached(GxRenderStateCache *cache, u8 mode, u8 src, u8 dst,
+                   u8 logic, bool force = false)
+{
+    if(force || cache == nil || !cache->blendValid || cache->blendMode != mode ||
+       cache->blendSrc != src || cache->blendDst != dst ||
+       cache->blendLogic != logic){
+        GX_SetBlendMode(mode, src, dst, logic);
+        if(cache){
+            cache->blendValid = true;
+            cache->blendMode = mode;
+            cache->blendSrc = src;
+            cache->blendDst = dst;
+            cache->blendLogic = logic;
+        }
+    }
+}
+
+static inline void
+setAlphaCompareCached(GxRenderStateCache *cache, u8 func0, u8 ref0,
+                      u8 op, u8 func1, u8 ref1)
+{
+    if(cache == nil || !cache->alphaValid || cache->alphaFunc != func0 ||
+       cache->alphaRef != ref0 || cache->alphaOp != op ||
+       cache->alphaComp1 != func1 || cache->alphaRef1 != ref1){
+        GX_SetAlphaCompare(func0, ref0, op, func1, ref1);
+        if(cache){
+            cache->alphaValid = true;
+            cache->alphaFunc = func0;
+            cache->alphaRef = ref0;
+            cache->alphaOp = op;
+            cache->alphaComp1 = func1;
+            cache->alphaRef1 = ref1;
+        }
+    }
+}
+
 static uint32
 setMaterial(Material *mat, bool32 vertexAlpha, bool hasVertexColors,
             bool modulateMaterialColor, const GxAtomicLights &lights,
             uint32 passIndex, bool matFXPipeline,
-            bool *matFXEnvUsed, bool *blendEnabled)
+            bool *matFXEnvUsed, bool *blendEnabled,
+            GxRenderStateCache *stateCache)
 {
     static int s_alphaDiagCount = 0;
     static int s_cullDiagCount = 0;
@@ -1172,15 +1275,15 @@ setMaterial(Material *mat, bool32 vertexAlpha, bool hasVertexColors,
         /* noisy focused alpha/mesh trace disabled in favor of missing-texture diagnostics */
         s_roomAlphaDiagCount++;
     }
-    GX_SetCullMode(cullMode);
+    setCullModeCached(stateCache, cullMode);
 
-    GX_SetZCompLoc(zAfterTexturing ? GX_FALSE : GX_TRUE);
-    GX_SetZMode(gxState.zTest ? GX_TRUE : GX_FALSE, GX_LEQUAL,
-                zWriteEnable ? GX_TRUE : GX_FALSE);
-    GX_SetBlendMode(doBlend ? GX_BM_BLEND : GX_BM_NONE,
-                    (u8)gxState.srcBlend,
-                    (u8)gxState.dstBlend,
-                    GX_LO_CLEAR);
+    setZCompLocCached(stateCache, zAfterTexturing ? GX_FALSE : GX_TRUE);
+    setZModeCached(stateCache, gxState.zTest ? GX_TRUE : GX_FALSE, GX_LEQUAL,
+                   zWriteEnable ? GX_TRUE : GX_FALSE);
+    setBlendModeCached(stateCache, doBlend ? GX_BM_BLEND : GX_BM_NONE,
+                       (u8)gxState.srcBlend,
+                       (u8)gxState.dstBlend,
+                       GX_LO_CLEAR);
 
     // �?GX_FALSE + GX_SRC_REG: bypass lighting, pass register color directly to TEV
     // GX_TRUE would trigger MatColor × AmbColor where AmbColor defaults to black!
@@ -1209,14 +1312,15 @@ setMaterial(Material *mat, bool32 vertexAlpha, bool hasVertexColors,
         }
         effectiveAlphaRef = alphaRef;
         if(gxState.gsAlpha && usesAlpha && !gxState.zWrite) {
-            GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
+            setAlphaCompareCached(stateCache, GX_ALWAYS, 0, GX_AOP_AND,
+                                  GX_ALWAYS, 0);
         } else {
-            GX_SetAlphaCompare(alphaFunc,
-                               alphaRef,
-                               GX_AOP_AND, GX_ALWAYS, 0);
+            setAlphaCompareCached(stateCache, alphaFunc, alphaRef,
+                                  GX_AOP_AND, GX_ALWAYS, 0);
         }
     } else
-        GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
+        setAlphaCompareCached(stateCache, GX_ALWAYS, 0, GX_AOP_AND,
+                              GX_ALWAYS, 0);
     if((doBlend || doAlphaTest || vertexAlpha) &&
        (s_alphaDiagCount < 20 ||
         (alphaTraceTexture(texName) && s_alphaDiagCount < 80))){
@@ -1269,15 +1373,16 @@ setMaterial(Material *mat, bool32 vertexAlpha, bool hasVertexColors,
 }
 
 static inline void
-restoreMatFXState(bool envUsed, bool blendEnabled)
+restoreMatFXState(bool envUsed, bool blendEnabled,
+                  GxRenderStateCache *stateCache)
 {
     if(!envUsed)
         return;
     gxSetTexture(nil, 1);
-    GX_SetBlendMode(blendEnabled ? GX_BM_BLEND : GX_BM_NONE,
-                    (u8)gxState.srcBlend,
-                    (u8)gxState.dstBlend,
-                    GX_LO_CLEAR);
+    setBlendModeCached(stateCache, blendEnabled ? GX_BM_BLEND : GX_BM_NONE,
+                       (u8)gxState.srcBlend,
+                       (u8)gxState.dstBlend,
+                       GX_LO_CLEAR, true);
 }
 
 
@@ -1465,6 +1570,9 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
     Mesh *mesh = geo->meshHeader->getMeshes();
 
     GX_InvVtxCache();
+    setup3dVtxDesc(inst->hasNormals, inst->hasColors, inst->numTexCoords);
+    GxRenderStateCache stateCache;
+    memset(&stateCache, 0, sizeof(stateCache));
 
     for (uint32 m = 0; m < inst->numMeshes; m++, mesh++) {
         GxInstanceData::MeshData *md = &inst->meshes[m];
@@ -1502,13 +1610,13 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
                    (void*)md->material,
                    (md->material && md->material->texture) ? md->material->texture->name : "none");
         SetRenderState(VERTEXALPHA, meshNeedsBlendAlphaState);
-        setup3dVtxDesc(inst->hasNormals, inst->hasColors, inst->numTexCoords);
         bool matFXEnvUsed = false;
         bool matFXBlendEnabled = false;
         const bool matFXPipeline = rwpipe->pluginID == ID_MATFX;
         uint32 passCount = setMaterial(md->material, effectiveVertexAlpha, inst->hasColors,
                     (geo->flags & Geometry::MODULATE) != 0, lights, 0,
-                    matFXPipeline, &matFXEnvUsed, &matFXBlendEnabled);
+                    matFXPipeline, &matFXEnvUsed, &matFXBlendEnabled,
+                    &stateCache);
 #ifdef GX_PIPELINE_DIAGNOSTICS
         GxSolidDiagState solidDiag = classifySolidFallback(md->material);
         if(solidDiag.reason != nil) {
@@ -1532,19 +1640,19 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
         uint16 *meshIdx = mesh->indices;
         uint32  numIdx  = mesh->numIndices;
         if (numIdx == 0) {
-            restoreMatFXState(matFXEnvUsed, matFXBlendEnabled);
+            restoreMatFXState(matFXEnvUsed, matFXBlendEnabled, &stateCache);
             continue;
         }
         if (meshIdx == nil) {
             printf("[PIPE-SKIP] geo=%p mesh=%u indices=NULL numIdx=%u\n",
                    (void*)geo, (unsigned)m, (unsigned)numIdx);
-            restoreMatFXState(matFXEnvUsed, matFXBlendEnabled);
+            restoreMatFXState(matFXEnvUsed, matFXBlendEnabled, &stateCache);
             continue;
         }
         if (numIdx > 65535) {
             printf("[PIPE-SKIP] geo=%p mesh=%u numIdx=%u exceeds GX_Begin u16 count\n",
                    (void*)geo, (unsigned)m, (unsigned)numIdx);
-            restoreMatFXState(matFXEnvUsed, matFXBlendEnabled);
+            restoreMatFXState(matFXEnvUsed, matFXBlendEnabled, &stateCache);
             continue;
         }
         if(md->vertexAlpha && md->material && md->material->color.alpha == 255){
@@ -1563,25 +1671,26 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
             printf("[PIPE-SKIP] geo=%p mesh=%u badIndexAt=%u vi=%u totalVerts=%u numIdx=%u\n",
                    (void*)geo, (unsigned)m, (unsigned)badAt, (unsigned)badVi,
                    (unsigned)geo->numVertices, (unsigned)numIdx);
-            restoreMatFXState(matFXEnvUsed, matFXBlendEnabled);
+            restoreMatFXState(matFXEnvUsed, matFXBlendEnabled, &stateCache);
             continue;
         }
 
         drawPipeMesh(geo, meshIdx, numIdx,
                      inst->hasNormals, inst->hasColors,
                      inst->numTexCoords, prim, trace, m, 0);
-        restoreMatFXState(matFXEnvUsed, matFXBlendEnabled);
+        restoreMatFXState(matFXEnvUsed, matFXBlendEnabled, &stateCache);
         if(passCount > 1) {
             bool matFXEnvUsedSecond = false;
             bool matFXBlendEnabledSecond = false;
             setMaterial(md->material, effectiveVertexAlpha, inst->hasColors,
                         (geo->flags & Geometry::MODULATE) != 0, lights, 1,
                         matFXPipeline, &matFXEnvUsedSecond,
-                        &matFXBlendEnabledSecond);
+                        &matFXBlendEnabledSecond, &stateCache);
             drawPipeMesh(geo, meshIdx, numIdx,
                          inst->hasNormals, inst->hasColors,
                          inst->numTexCoords, prim, trace, m, 1);
-            restoreMatFXState(matFXEnvUsedSecond, matFXBlendEnabledSecond);
+            restoreMatFXState(matFXEnvUsedSecond, matFXBlendEnabledSecond,
+                              &stateCache);
         }
     }
     // GS alpha emulation changes the hardware compare/depth state for the
