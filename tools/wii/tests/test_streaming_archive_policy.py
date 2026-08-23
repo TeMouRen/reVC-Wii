@@ -114,7 +114,8 @@ class StreamingArchivePolicyTests(unittest.TestCase):
                 r"WiiStreamHardPressureBits\(pressure & blockedPressure\);.*?"
                 r"if\(\(pressure & blockedPressure & WII_STREAM_PRESSURE_GX_ADMISSION\) != 0\)\s*"
                 r"dependencyPressure \|= WII_STREAM_PRESSURE_GX;.*?"
-                r"if\(dependencyUnwindAvailable && dependencyPressure != 0\)\{.*?"
+                r"if\(dependencyUnwindAvailable && dependencyPressure != 0 &&\s*"
+                r"!ineffectiveGxTargetedRemoval\)\{.*?"
                 r"uint32 dependencyPoolBit = WiiStreamSelectPressureBit\(\s*"
                 r"dependencyPressure,\s*"
                 r"poolBefore, effectiveRequest\);.*?"
@@ -184,18 +185,45 @@ class StreamingArchivePolicyTests(unittest.TestCase):
         helper = self.source.index(
             "WiiStreamRetireOneHeadroomResource(const WiiMemoryPoolSnapshot &snapshot,"
         )
-        failure = self.source.index("if(!didRemove)\n\t\treturn false;", helper)
+        failure = self.source.index("if(!didRemove){", helper)
+        progress = self.source.index("WiiStreamPoolMadeProgress(", failure)
         success_mark = self.source.index(
             "gWiiStreamArchiveRetireFrame = frame;", failure
         )
+        self.assertLess(progress, success_mark)
         self.assertLess(failure, success_mark)
+
+    def test_ineffective_targeted_retirement_blocks_same_pool_fallbacks(self) -> None:
+        pressure_loop = self.source.index(
+            "while(pressureRemovals < WII_STREAM_PRESSURE_MAX_REMOVALS)"
+        )
+        pressure_loop_end = self.source.index(
+            "// If the owning pool is still under hard pressure", pressure_loop
+        )
+        pressure_source = self.source[pressure_loop:pressure_loop_end]
+        self.assertIn("ineffectiveGxTargetedRemoval = true;", pressure_source)
+        self.assertIn("blockedPressure |= poolBit;", pressure_source)
+        self.assertNotIn("WII_STREAM_PRESSURE_MAX_NO_PROGRESS", self.source)
+
+        dependency = self.source.index(
+            "if(dependencyUnwindAvailable && dependencyPressure != 0", pressure_loop_end
+        )
+        self.assertIn("!ineffectiveGxTargetedRemoval", self.source[dependency:dependency + 180])
+
+        persistent = self.source.index(
+            "if(WiiStreamApplyPersistentPressure(pressure) &&", dependency
+        )
+        self.assertIn(
+            "(WiiStreamHardPressureBits(pressure) & WII_STREAM_PRESSURE_GX) == 0",
+            self.source[persistent:persistent + 180],
+        )
 
     def test_dependency_unwind_never_falls_back_to_global_lru(self) -> None:
         dependency_fallback = self.source.index(
             "uint32 dependencyPoolBit = WiiStreamSelectPressureBit("
         )
         persistent_pressure = self.source.index(
-            "if(WiiStreamApplyPersistentPressure(pressure))",
+            "if(WiiStreamApplyPersistentPressure(pressure) &&",
             dependency_fallback,
         )
         fallback_source = self.source[dependency_fallback:persistent_pressure]
@@ -230,6 +258,24 @@ class StreamingArchivePolicyTests(unittest.TestCase):
                 r"streamId >= STREAM_OFFSET_TXD && streamId < STREAM_OFFSET_COL\).*?"
                 r"WiiStreamFindTxdDependencyVictim\(",
                 re.DOTALL,
+            ),
+        )
+
+    def test_gx_model_victims_require_measured_resident_bytes(self) -> None:
+        residency = self.source.index("WiiStreamHasRetireablePoolResidency")
+        selector = self.source.index("WiiStreamRemoveLeastUsedForPool")
+        self.assertLess(residency, selector)
+        helper = self.source[residency:selector]
+        self.assertIn("poolBit != WII_STREAM_PRESSURE_GX", helper)
+        self.assertIn("gWiiStreamResidentCost[streamId].gxKiB", helper)
+        self.assertIn("WII_STREAM_RESIDENT_UNKNOWN_KIB", helper)
+        self.assertRegex(
+            self.source,
+            re.compile(
+                r"if\(!WiiStreamResourceMatchesPool\(streamId, poolBit\)\)\s+"
+                r"continue;\s+"
+                r"if\(!WiiStreamHasRetireablePoolResidency\(streamId, poolBit\)\)\s+"
+                r"continue;",
             ),
         )
 

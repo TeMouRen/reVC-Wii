@@ -88,8 +88,8 @@ public:
 
 // The soft cache budget grows only while every allocator has comfortable
 // headroom. Pool pressure is reclaimed at the owning pool first; the archive
-// proxy is not an eviction target. A dependency-safe global fallback is used
-// only when hard pool pressure remains blocked.
+// proxy is not an eviction target. A global fallback is reserved for pressure
+// that does not include GX, whose victims must release GX-owned bytes.
 #ifndef WII_STREAM_ADAPTIVE_ARCHIVE_CEILING
 #define WII_STREAM_ADAPTIVE_ARCHIVE_CEILING 0
 #endif
@@ -158,7 +158,6 @@ static const uint32 WII_STREAM_HARD_FAIR_WAIT_MS = 3000u;
 static const uint32 WII_STREAM_RADAR_DEADLINE_MS = 500u;
 static const uint8 WII_STREAM_FOREGROUND_BURST = 4u;
 static const int32 WII_STREAM_PRESSURE_MAX_REMOVALS = 6;
-static const int32 WII_STREAM_PRESSURE_MAX_NO_PROGRESS = 2;
 static const size_t WII_STREAM_ARCHIVE_TRANSITION_GUARD = 512u * 1024u;
 static const size_t WII_STREAM_MIN_POOL_PROGRESS_BYTES = 32u * 1024u;
 static const uint32 WII_STREAM_PRESSURE_HARD_MASK =
@@ -5170,6 +5169,20 @@ WiiStreamResourceMatchesPool(int32 streamId, uint32 poolBit)
 }
 
 static bool
+WiiStreamHasRetireablePoolResidency(int32 streamId, uint32 poolBit)
+{
+	if(poolBit != WII_STREAM_PRESSURE_GX ||
+	   streamId >= STREAM_OFFSET_TXD)
+		return true;
+
+	// A model can inherit the GX pool bit from a conversion without owning a
+	// releasable GX allocation. Only use the measured ledger for model victims;
+	// TXD candidates are checked from their live raster storage below.
+	uint16 gxKiB = gWiiStreamResidentCost[streamId].gxKiB;
+	return gxKiB != 0 && gxKiB != WII_STREAM_RESIDENT_UNKNOWN_KIB;
+}
+
+static bool
 WiiStreamCanRemoveLoadedResource(int32 streamId)
 {
 	if(streamId < STREAM_OFFSET_TXD){
@@ -5274,6 +5287,8 @@ WiiStreamRemoveLeastUsedForPool(uint32 excludeMask, uint32 poolBit,
 			if(WiiIslandTransitionProtectsStreamId(streamId))
 				continue;
 			if(!WiiStreamResourceMatchesPool(streamId, poolBit))
+				continue;
+			if(!WiiStreamHasRetireablePoolResidency(streamId, poolBit))
 				continue;
 
 			int32 victimPass;
@@ -8001,14 +8016,32 @@ WiiStreamRetireOneHeadroomResource(const WiiMemoryPoolSnapshot &snapshot,
 	bool didRemove = WiiStreamRemoveLeastUsedForPool(
 		STREAMFLAGS_20, poolBit, nil, nil);
 	uint64 removalTicks = gettime() - removalStartTicks;
+	if(!didRemove){
+#if WII_STREAM_MEMORY_DIAGNOSTICS
+		if(ownsDiagEpisode)
+			WiiStreamDiagEndTrim();
+#endif
+		return false;
+	}
+	WiiMemoryPoolSnapshot after;
+	WiiMemoryGetPoolSnapshot(&after);
+	uint32 nextPressure =
+		WiiStreamGetStreamingPressureForSnapshotWithAdmission(after);
+	size_t reclaimedBytes = WiiStreamPoolReclaimedBytes(
+		poolBit, snapshot, after);
+	// Removing a stream entry is not sufficient evidence that the owning pool
+	// made room. A model can disappear while its TXD/raster remains resident.
+	// Leave the resource removed, but do not count that as headroom retirement.
+	bool effectiveRetirement = WiiStreamPoolMadeProgress(
+		poolBit, nextPressure, snapshot, after, reclaimedBytes);
 #if WII_STREAM_MEMORY_DIAGNOSTICS
 	if(ownsDiagEpisode){
 		WiiStreamDiagEndTrim();
-		if(didRemove)
+		if(effectiveRetirement)
 			WiiStreamRecordFrameWork(0, removalTicks, 1, 1, 0);
 	}
 #endif
-	if(!didRemove)
+	if(!effectiveRetirement)
 		return false;
 	gWiiStreamArchiveRetireFrame = frame;
 
@@ -8062,9 +8095,9 @@ CStreaming::MakeSpaceFor(int32 size)
 	int archiveRemovals = 0; // dependency-unwind fallback removals
 	int pressureRemovals = 0;
 	uint32 blockedPressure = 0;
-	int noProgress[3] = { 0, 0, 0 };
 	size_t reclaimedByPool[3] = { 0, 0, 0 };
 	int ineffectiveRemovals = 0;
+	bool ineffectiveGxTargetedRemoval = false;
 	bool sameFrameDeferred = false;
 #if WII_STREAM_MEMORY_DIAGNOSTICS
 	WiiStreamDiagBeginTrim(initialPressure, archiveTarget);
@@ -8116,11 +8149,12 @@ CStreaming::MakeSpaceFor(int32 size)
 		if(!WiiStreamPoolMadeProgress(poolBit, nextPressure,
 		                             poolBefore, poolAfter, reclaimedBytes)){
 			ineffectiveRemovals++;
-			noProgress[poolIndex]++;
-			if(noProgress[poolIndex] >= WII_STREAM_PRESSURE_MAX_NO_PROGRESS)
-				blockedPressure |= poolBit;
-		}else{
-			noProgress[poolIndex] = 0;
+			if(servicePressureBit == WII_STREAM_PRESSURE_GX)
+				ineffectiveGxTargetedRemoval = true;
+			// Do not keep removing logical LRU entries after the owning pool has
+			// proved that the selected resource did not release it. The next
+			// request/frame may expose the TXD after its dependency is gone.
+			blockedPressure |= poolBit;
 		}
 		pressure = nextPressure;
 		poolBefore = poolAfter;
@@ -8136,7 +8170,8 @@ CStreaming::MakeSpaceFor(int32 size)
 		WiiStreamHardPressureBits(pressure & blockedPressure);
 	if((pressure & blockedPressure & WII_STREAM_PRESSURE_GX_ADMISSION) != 0)
 		dependencyPressure |= WII_STREAM_PRESSURE_GX;
-	if(dependencyUnwindAvailable && dependencyPressure != 0){
+	if(dependencyUnwindAvailable && dependencyPressure != 0 &&
+	   !ineffectiveGxTargetedRemoval){
 		uint32 dependencyPoolBit = WiiStreamSelectPressureBit(
 			dependencyPressure,
 			poolBefore, effectiveRequest);
@@ -8185,9 +8220,10 @@ CStreaming::MakeSpaceFor(int32 size)
 #endif
 
 	// A transient reserve crossing no longer collapses the cache to 16 MiB.
-	// If targeted reclamation cannot clear pressure for two seconds, lower the
-	// soft budget by one step and release at most one global LRU entry.
-	if(WiiStreamApplyPersistentPressure(pressure)){
+	// If targeted reclamation cannot clear non-GX pressure for two seconds,
+	// lower the soft budget by one step and release at most one global LRU entry.
+	if(WiiStreamApplyPersistentPressure(pressure) &&
+	   (WiiStreamHardPressureBits(pressure) & WII_STREAM_PRESSURE_GX) == 0){
 		size_t softTarget = effectiveRequest < ms_memoryAvailable ?
 		                    ms_memoryAvailable - effectiveRequest : 0;
 		if(softTarget != 0 && ms_memoryUsed >= softTarget){

@@ -46,7 +46,7 @@ class P7Ps2WorldScanTests(unittest.TestCase):
         self.assertIsNotNone(purge_block)
         self.assertNotIn("P7-noaudio-ps2-world-scan", purge_block.group(0))
 
-    def test_p7_disables_adaptive_archive_ceiling(self) -> None:
+    def test_p7_enables_adaptive_archive_ceiling(self) -> None:
         adaptive_one = CMAKE_SOURCE.index(
             "set(WII_STREAM_ADAPTIVE_ARCHIVE_CEILING_VALUE 1)"
         )
@@ -58,7 +58,7 @@ class P7Ps2WorldScanTests(unittest.TestCase):
         )
         adaptive_block = CMAKE_SOURCE[adaptive_start:adaptive_zero]
         self.assertIn("WII_STREAM_ADAPTIVE_ARCHIVE_CEILING_VALUE 1", adaptive_block)
-        self.assertNotIn("P7-noaudio-ps2-world-scan", adaptive_block)
+        self.assertIn("P7-noaudio-ps2-world-scan", adaptive_block)
 
     def test_p7_enables_existing_gx_admission_guard(self) -> None:
         guard_block = re.search(
@@ -100,11 +100,12 @@ class P7Ps2WorldScanTests(unittest.TestCase):
             STREAMING_SOURCE,
         )
 
-    def test_p7_leaves_blocking_handoff_for_audio_derivative(self) -> None:
+    def test_p7_uses_blocking_handoff_for_the_confirmed_baseline(self) -> None:
         self.assertRegex(
             CMAKE_SOURCE,
             re.compile(
-                r'if\(WII_MEMORY_PROFILE_ID STREQUAL "A1-audio-ps2-world-scan"\)\s+'
+                r'if\(WII_MEMORY_PROFILE_ID STREQUAL "P7-noaudio-ps2-world-scan" OR\s+'
+                r'WII_MEMORY_PROFILE_ID STREQUAL "A1-audio-ps2-world-scan"\)\s+'
                 r'set\(WII_STREAM_P7_BLOCKING_HANDOFF_VALUE 1\)\s+'
                 r'else\(\)\s+'
                 r'set\(WII_STREAM_P7_BLOCKING_HANDOFF_VALUE 0\)'
@@ -166,9 +167,10 @@ class P7Ps2WorldScanTests(unittest.TestCase):
             STREAMING_SOURCE,
         )
 
-    def test_p7_disables_later_hud_and_visible_txd_guards(self) -> None:
+    def test_p7_uses_existing_hud_and_visible_txd_guards_without_persistence(self) -> None:
         hud_block = re.search(
-            r'if\(WII_MEMORY_PROFILE_ID STREQUAL "A1-audio-ps2-world-scan" OR\s+'
+            r'if\(WII_MEMORY_PROFILE_ID STREQUAL "P7-noaudio-ps2-world-scan" OR\s+'
+            r'WII_MEMORY_PROFILE_ID STREQUAL "A1-audio-ps2-world-scan" OR\s+'
             r'WII_MEMORY_PROFILE_ID STREQUAL "P15-noaudio-hud-weapon-pin" OR\s+'
             r'WII_MEMORY_PROFILE_ID STREQUAL "P16-noaudio-gx-headroom-guard"\)\s+'
             r'set\(WII_HUD_ACTIVE_WEAPON_RASTER_PIN_VALUE 1\).*?'
@@ -178,10 +180,12 @@ class P7Ps2WorldScanTests(unittest.TestCase):
         )
         self.assertIsNotNone(hud_block)
         assert hud_block is not None
-        self.assertNotIn("P7-noaudio-ps2-world-scan", hud_block.group(0))
+        self.assertIn("P7-noaudio-ps2-world-scan", hud_block.group(0))
+        self.assertNotIn("WII_HUD_USED_WEAPON_RASTER_PERSIST_VALUE 1", hud_block.group(0))
 
         visible_txd_block = re.search(
-            r'if\(WII_MEMORY_PROFILE_ID STREQUAL "A1-audio-ps2-world-scan"\)\s+'
+            r'if\(WII_MEMORY_PROFILE_ID STREQUAL "P7-noaudio-ps2-world-scan" OR\s+'
+            r'WII_MEMORY_PROFILE_ID STREQUAL "A1-audio-ps2-world-scan"\)\s+'
             r'set\(WII_STREAM_P7_VISIBLE_TXD_GUARD_VALUE 1\).*?'
             r'else\(\).*?set\(WII_STREAM_P7_VISIBLE_TXD_GUARD_VALUE 0\)',
             CMAKE_SOURCE,
@@ -189,7 +193,7 @@ class P7Ps2WorldScanTests(unittest.TestCase):
         )
         self.assertIsNotNone(visible_txd_block)
         assert visible_txd_block is not None
-        self.assertNotIn("P7-noaudio-ps2-world-scan", visible_txd_block.group(0))
+        self.assertIn("P7-noaudio-ps2-world-scan", visible_txd_block.group(0))
 
     def test_p7_splash_visual_gate_requires_visible_target_big_buildings(self) -> None:
         self.assertIn(

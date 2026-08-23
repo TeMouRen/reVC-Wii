@@ -130,6 +130,7 @@ if(WII)
        WII_MEMORY_PROFILE_ID STREQUAL "P4-noaudio-balanced" OR
        WII_MEMORY_PROFILE_ID STREQUAL "P5-noaudio-global-lru" OR
        WII_MEMORY_PROFILE_ID STREQUAL "P6-noaudio-ps2-policy" OR
+       WII_MEMORY_PROFILE_ID STREQUAL "P7-noaudio-ps2-world-scan" OR
        WII_MEMORY_PROFILE_ID STREQUAL "P14-noaudio-atomic-handoff" OR
        WII_MEMORY_PROFILE_ID STREQUAL "P15-noaudio-hud-weapon-pin" OR
        WII_MEMORY_PROFILE_ID STREQUAL "P16-noaudio-gx-headroom-guard" OR
@@ -167,7 +168,8 @@ if(WII)
     else()
         set(WII_STREAM_ATOMIC_BIG_HANDOFF_VALUE 0)
     endif()
-    if(WII_MEMORY_PROFILE_ID STREQUAL "A1-audio-ps2-world-scan" OR
+    if(WII_MEMORY_PROFILE_ID STREQUAL "P7-noaudio-ps2-world-scan" OR
+       WII_MEMORY_PROFILE_ID STREQUAL "A1-audio-ps2-world-scan" OR
        WII_MEMORY_PROFILE_ID STREQUAL "P15-noaudio-hud-weapon-pin" OR
        WII_MEMORY_PROFILE_ID STREQUAL "P16-noaudio-gx-headroom-guard")
         set(WII_HUD_ACTIVE_WEAPON_RASTER_PIN_VALUE 1)
@@ -192,7 +194,8 @@ if(WII)
     else()
         set(WII_STREAM_GX_HEADROOM_GUARD_VALUE 0)
     endif()
-    if(WII_MEMORY_PROFILE_ID STREQUAL "A1-audio-ps2-world-scan")
+    if(WII_MEMORY_PROFILE_ID STREQUAL "P7-noaudio-ps2-world-scan" OR
+       WII_MEMORY_PROFILE_ID STREQUAL "A1-audio-ps2-world-scan")
         set(WII_STREAM_P7_BLOCKING_HANDOFF_VALUE 1)
     else()
         set(WII_STREAM_P7_BLOCKING_HANDOFF_VALUE 0)
@@ -202,7 +205,8 @@ if(WII)
     else()
         set(WII_STREAM_SPLASH_VISUAL_GATE_VALUE 0)
     endif()
-    if(WII_MEMORY_PROFILE_ID STREQUAL "A1-audio-ps2-world-scan")
+    if(WII_MEMORY_PROFILE_ID STREQUAL "P7-noaudio-ps2-world-scan" OR
+       WII_MEMORY_PROFILE_ID STREQUAL "A1-audio-ps2-world-scan")
         set(WII_STREAM_P7_VISIBLE_TXD_GUARD_VALUE 1)
     else()
         set(WII_STREAM_P7_VISIBLE_TXD_GUARD_VALUE 0)

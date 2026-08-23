@@ -38,7 +38,8 @@ class P15HudWeaponPinTests(unittest.TestCase):
             CMAKE_SOURCE,
             re.compile(
                 r'if\(WII_MEMORY_PROFILE_ID STREQUAL '
-                r'"A1-audio-ps2-world-scan" OR\s+'
+                r'"P7-noaudio-ps2-world-scan" OR\s+'
+                r'WII_MEMORY_PROFILE_ID STREQUAL "A1-audio-ps2-world-scan" OR\s+'
                 r'WII_MEMORY_PROFILE_ID STREQUAL "P15-noaudio-hud-weapon-pin" OR\s+'
                 r'WII_MEMORY_PROFILE_ID STREQUAL "P16-noaudio-gx-headroom-guard"\)\s+'
                 r'set\(WII_HUD_ACTIVE_WEAPON_RASTER_PIN_VALUE 1\)\s+'
