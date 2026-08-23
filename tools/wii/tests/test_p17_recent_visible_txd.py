@@ -13,10 +13,9 @@ STREAMING_SOURCE = (REPO_ROOT / "src" / "core" / "Streaming.cpp").read_text(
 
 
 class P17RecentVisibleTxdTests(unittest.TestCase):
-    def test_only_p7_enables_recent_visible_txd_guard(self) -> None:
+    def test_only_a1_enables_recent_visible_txd_guard(self) -> None:
         guard_block = re.search(
-            r'if\(WII_MEMORY_PROFILE_ID STREQUAL "P7-noaudio-ps2-world-scan" OR\s+'
-            r'WII_MEMORY_PROFILE_ID STREQUAL "A1-audio-ps2-world-scan"\)\s+'
+            r'if\(WII_MEMORY_PROFILE_ID STREQUAL "A1-audio-ps2-world-scan"\)\s+'
             r'set\(WII_STREAM_P7_VISIBLE_TXD_GUARD_VALUE 1\)\s+'
             r'else\(\)\s+'
             r'set\(WII_STREAM_P7_VISIBLE_TXD_GUARD_VALUE 0\)',
@@ -24,8 +23,6 @@ class P17RecentVisibleTxdTests(unittest.TestCase):
             re.DOTALL,
         )
         self.assertIsNotNone(guard_block)
-        assert guard_block is not None
-        self.assertNotIn("P16-noaudio-gx-headroom-guard", guard_block.group(0))
 
     def test_compile_definition_is_exported(self) -> None:
         self.assertIn(

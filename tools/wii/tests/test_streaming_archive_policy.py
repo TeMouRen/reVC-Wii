@@ -125,6 +125,55 @@ class StreamingArchivePolicyTests(unittest.TestCase):
         self.assertNotIn("WII_STREAM_P7_RETIRE_ARCHIVE_MAX_REMOVALS_PER_FRAME", self.source)
         self.assertIn("while(pressureRemovals < WII_STREAM_PRESSURE_MAX_REMOVALS)", self.source)
 
+    def test_normal_world_path_retires_only_on_pool_headroom(self) -> None:
+        self.assertRegex(
+            self.source,
+            re.compile(
+                r"DeleteFarAwayRwObjects\(TheCamera\.GetPosition\(\)\);\s+"
+                r"#ifdef WII\s+"
+                r"wiiAfterPrepTicks = gettime\(\);\s+"
+                r"if\(!ms_disableStreaming\)\{[\s\S]{0,420}"
+                r"WiiStreamRetireOneHeadroomResource\(\s+"
+                r"headroomSnapshot, headroomPressure, nil\);"
+            ),
+        )
+        self.assertIn(
+            "WiiStreamArchiveRetirePool(const WiiMemoryPoolSnapshot &snapshot)",
+            self.source,
+        )
+
+    def test_headroom_retire_does_not_use_archive_debt_for_normal_service(self) -> None:
+        helper = self.source.index(
+            "WiiStreamRetireOneHeadroomResource(const WiiMemoryPoolSnapshot &snapshot,"
+        )
+        helper_end = self.source.index("\nbool\nCStreaming::MakeSpaceFor", helper)
+        helper_source = self.source[helper:helper_end]
+        self.assertIn(
+            "WiiStreamHardPressureBits(pressure) != 0 ||",
+            helper_source,
+        )
+        self.assertIn(
+            "WiiStreamAdmissionPressureBits(pressure) != 0",
+            helper_source,
+        )
+        self.assertNotIn("CStreaming::ms_memoryUsed", helper_source)
+        adaptive_branch = self.source.index(
+            "#if WII_STREAM_ADAPTIVE_ARCHIVE_CEILING",
+            self.source.index("CStreaming::MakeSpaceFor"),
+        )
+        adaptive_source = self.source[adaptive_branch:]
+        self.assertIn("ms_memoryUsed > archiveCeiling + retentionAllowance", adaptive_source)
+
+    def test_headroom_retire_marks_frame_after_success(self) -> None:
+        helper = self.source.index(
+            "WiiStreamRetireOneHeadroomResource(const WiiMemoryPoolSnapshot &snapshot,"
+        )
+        failure = self.source.index("if(!didRemove)\n\t\treturn false;", helper)
+        success_mark = self.source.index(
+            "gWiiStreamArchiveRetireFrame = frame;", failure
+        )
+        self.assertLess(failure, success_mark)
+
     def test_dependency_unwind_never_falls_back_to_global_lru(self) -> None:
         dependency_fallback = self.source.index(
             "uint32 dependencyPoolBit = WiiStreamSelectPressureBit("

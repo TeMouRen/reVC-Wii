@@ -117,11 +117,13 @@ static const size_t WII_STREAM_ARCHIVE_GROW_GENERIC_LARGEST_BYTES = 1u * 1024u *
 static const size_t WII_STREAM_ARCHIVE_GROW_NEWLIB_RAW_BYTES = 8u * 1024u * 1024u;
 static const size_t WII_STREAM_ARCHIVE_GROW_GX_FREE_BYTES = 6u * 1024u * 1024u;
 static const size_t WII_STREAM_ARCHIVE_GROW_GX_LARGEST_BYTES = 2u * 1024u * 1024u;
+#endif
 static const size_t WII_STREAM_ARCHIVE_KEEP_GENERIC_FREE_BYTES = 2u * 1024u * 1024u;
 static const size_t WII_STREAM_ARCHIVE_KEEP_GENERIC_LARGEST_BYTES = 512u * 1024u;
 static const size_t WII_STREAM_ARCHIVE_KEEP_NEWLIB_RAW_BYTES = 4u * 1024u * 1024u;
 static const size_t WII_STREAM_ARCHIVE_KEEP_GX_FREE_BYTES = 3u * 1024u * 1024u;
 static const size_t WII_STREAM_ARCHIVE_KEEP_GX_LARGEST_BYTES = 1u * 1024u * 1024u;
+#if WII_STREAM_ADAPTIVE_ARCHIVE_CEILING
 static const size_t WII_STREAM_ARCHIVE_MAX_ELASTIC_DEBT_BYTES = 2u * 1024u * 1024u;
 #endif
 static const size_t WII_STREAMING_MEMORY_BUDGET_STEP = 512u * 1024u;
@@ -217,9 +219,7 @@ static uint32 gWiiStreamArchivePressureSinceMs;
 static uint32 gWiiStreamArchivePressureLastSeenMs;
 static uint32 gWiiStreamArchiveRecoverySinceMs;
 static bool gWiiStreamArchiveRetreated;
-#if WII_STREAM_ADAPTIVE_ARCHIVE_CEILING
 static uint32 gWiiStreamArchiveRetireFrame = UINT32_MAX;
-#endif
 static uint32 gWiiStreamBudgetPressureSinceMs;
 static uint8 gWiiStreamForegroundServicesSinceFair;
 static uint32 gWiiStreamResidentSaturationCount;
@@ -322,6 +322,9 @@ static int32 WiiIslandCountVisualBigBuildings(eLevelName level,
 #endif
 static int32 WiiIslandRequestLandingCore(eLevelName level,
 	const CVector &position, int32 *treadableRequestedOut);
+static bool WiiStreamRetireOneHeadroomResource(
+	const WiiMemoryPoolSnapshot &snapshot, uint32 pressure,
+	uint32 *poolBitOut);
 
 enum eWiiIslandFlag {
 	WII_ISLAND_REQUIRED = 1u << 0,
@@ -1802,9 +1805,7 @@ WiiStreamResetState(void)
 	gWiiStreamArchivePressureLastSeenMs = 0;
 	gWiiStreamArchiveRecoverySinceMs = 0;
 	gWiiStreamArchiveRetreated = false;
-#if WII_STREAM_ADAPTIVE_ARCHIVE_CEILING
 	gWiiStreamArchiveRetireFrame = UINT32_MAX;
-#endif
 	gWiiStreamBudgetPressureSinceMs = 0;
 	gWiiStreamForegroundServicesSinceFair = 0;
 	gWiiStreamResidentSaturationCount = 0;
@@ -2066,7 +2067,9 @@ WiiStreamHasArchiveGrowthHeadroom(
 	       snapshot.gxFree >= WII_STREAM_ARCHIVE_GROW_GX_FREE_BYTES &&
 	       snapshot.gxLargest >= WII_STREAM_ARCHIVE_GROW_GX_LARGEST_BYTES;
 }
+#endif
 
+#if WII_STREAM_ADAPTIVE_ARCHIVE_CEILING
 static size_t
 WiiStreamArchiveElasticAllowance(
 	const WiiMemoryPoolSnapshot &snapshot, uint32 pressure)
@@ -3750,6 +3753,15 @@ CStreaming::Update(void)
 	DeleteFarAwayRwObjects(TheCamera.GetPosition());
 #ifdef WII
 	wiiAfterPrepTicks = gettime();
+	if(!ms_disableStreaming){
+		WiiMemoryPoolSnapshot headroomSnapshot;
+		WiiMemoryGetPoolSnapshot(&headroomSnapshot);
+		uint32 headroomPressure =
+			WiiStreamGetStreamingPressureForSnapshotWithAdmission(
+				headroomSnapshot);
+		WiiStreamRetireOneHeadroomResource(
+			headroomSnapshot, headroomPressure, nil);
+	}
 #endif
 
 	if(!ms_disableStreaming &&
@@ -7935,7 +7947,6 @@ CStreaming::DeleteRwObjectsNotInFrustumInSectorList(CPtrList &list, size_t mem)
 	return false;
 }
 
-#if WII_STREAM_ADAPTIVE_ARCHIVE_CEILING
 static uint32
 WiiStreamArchiveRetirePool(const WiiMemoryPoolSnapshot &snapshot)
 {
@@ -7953,33 +7964,51 @@ WiiStreamArchiveRetirePool(const WiiMemoryPoolSnapshot &snapshot)
 }
 
 static bool
-WiiStreamRetireOneArchiveResource(const WiiMemoryPoolSnapshot &snapshot,
-	size_t archiveCeiling, uint32 pressure, uint32 *poolBitOut)
+WiiStreamRetireOneHeadroomResource(const WiiMemoryPoolSnapshot &snapshot,
+	uint32 pressure, uint32 *poolBitOut)
 {
 	if(poolBitOut)
 		*poolBitOut = 0;
-	if(WiiStreamHardPressureBits(pressure) != 0)
-		return false;
-
-	size_t allowance = WiiStreamArchiveElasticAllowance(snapshot, pressure);
-	if(CStreaming::ms_memoryUsed <= archiveCeiling + allowance)
+	if(WiiStreamHardPressureBits(pressure) != 0 ||
+	   WiiStreamAdmissionPressureBits(pressure) != 0)
 		return false;
 
 	uint32 poolBit = WiiStreamArchiveRetirePool(snapshot);
 	uint32 frame = CTimer::GetFrameCounter();
 	if(poolBit == 0 || gWiiStreamArchiveRetireFrame == frame)
 		return false;
-	gWiiStreamArchiveRetireFrame = frame;
 
-	if(!WiiStreamRemoveLeastUsedForPool(
-		   STREAMFLAGS_20, poolBit, nil, nil))
+	bool ownsDiagEpisode = false;
+#if WII_STREAM_MEMORY_DIAGNOSTICS
+	if(!WiiStreamDiagCapturingTrim()){
+		WiiStreamDiagBeginTrim(pressure, 0);
+		ownsDiagEpisode = true;
+	}
+	WiiStreamDiagSetTrimPressure(pressure, poolBit);
+	WiiStreamDiagSetTrimReason(
+		poolBit == WII_STREAM_PRESSURE_GENERIC ? WII_STREAM_TRIM_POOL_GENERIC :
+		poolBit == WII_STREAM_PRESSURE_NEWLIB ? WII_STREAM_TRIM_POOL_NEWLIB :
+		WII_STREAM_TRIM_POOL_GX);
+#endif
+	uint64 removalStartTicks = gettime();
+	bool didRemove = WiiStreamRemoveLeastUsedForPool(
+		STREAMFLAGS_20, poolBit, nil, nil);
+	uint64 removalTicks = gettime() - removalStartTicks;
+#if WII_STREAM_MEMORY_DIAGNOSTICS
+	if(ownsDiagEpisode){
+		WiiStreamDiagEndTrim();
+		if(didRemove)
+			WiiStreamRecordFrameWork(0, removalTicks, 1, 1, 0);
+	}
+#endif
+	if(!didRemove)
 		return false;
+	gWiiStreamArchiveRetireFrame = frame;
 
 	if(poolBitOut)
 		*poolBitOut = poolBit;
 	return true;
 }
-#endif
 
 bool
 CStreaming::MakeSpaceFor(int32 size)
@@ -8135,16 +8164,11 @@ CStreaming::MakeSpaceFor(int32 size)
 	// Once real retention headroom is gone, retire at most one dependency-safe
 	// old resource per frame before allowing GX shrink to mutate textures.
 	uint32 archiveRetirePool = 0;
-	if(WiiStreamRetireOneArchiveResource(
-		   poolBefore, archiveCeiling, pressure, &archiveRetirePool)){
-#if WII_STREAM_MEMORY_DIAGNOSTICS
-		WiiStreamDiagSetTrimPressure(pressure, archiveRetirePool);
-		WiiStreamDiagSetTrimReason(
-			archiveRetirePool == WII_STREAM_PRESSURE_GENERIC ?
-			WII_STREAM_TRIM_POOL_GENERIC :
-			archiveRetirePool == WII_STREAM_PRESSURE_NEWLIB ?
-			WII_STREAM_TRIM_POOL_NEWLIB : WII_STREAM_TRIM_POOL_GX);
-#endif
+	size_t retentionAllowance =
+		WiiStreamArchiveElasticAllowance(poolBefore, pressure);
+	if(ms_memoryUsed > archiveCeiling + retentionAllowance &&
+	   WiiStreamRetireOneHeadroomResource(
+		   poolBefore, pressure, &archiveRetirePool)){
 		WiiMemoryGetPoolSnapshot(&poolBefore);
 		pressure = WiiStreamGetStreamingPressureForSnapshotWithAdmission(
 			poolBefore);
