@@ -7969,11 +7969,18 @@ WiiStreamRetireOneHeadroomResource(const WiiMemoryPoolSnapshot &snapshot,
 {
 	if(poolBitOut)
 		*poolBitOut = 0;
-	if(WiiStreamHardPressureBits(pressure) != 0 ||
-	   WiiStreamAdmissionPressureBits(pressure) != 0)
+	uint32 hardPressure = WiiStreamHardPressureBits(pressure);
+	uint32 gxAdmissionPressure =
+		WiiStreamAdmissionPressureBits(pressure) &
+		WII_STREAM_PRESSURE_GX_ADMISSION;
+	if((hardPressure & WII_STREAM_PRESSURE_GX) == 0 &&
+	   gxAdmissionPressure == 0)
 		return false;
 
-	uint32 poolBit = WiiStreamArchiveRetirePool(snapshot);
+	uint32 poolBit = (hardPressure & WII_STREAM_PRESSURE_GX) != 0 ||
+	                 gxAdmissionPressure != 0 ?
+	                 WII_STREAM_PRESSURE_GX :
+	                 WiiStreamArchiveRetirePool(snapshot);
 	uint32 frame = CTimer::GetFrameCounter();
 	if(poolBit == 0 || gWiiStreamArchiveRetireFrame == frame)
 		return false;
@@ -8119,17 +8126,19 @@ CStreaming::MakeSpaceFor(int32 size)
 		poolBefore = poolAfter;
 	}
 
-#if WII_STREAM_ADAPTIVE_ARCHIVE_CEILING
 	// If the owning pool is still under hard pressure after targeted removal
 	// blocked, try one more resource charged to that same pool. Never fall back
 	// to the global LRU here: unrelated model retirement cannot clear the pool.
 	uint32 dependencyUnwindFrame = CTimer::GetFrameCounter();
 	bool dependencyUnwindAvailable =
 		gWiiStreamDependencyUnwindFrame != dependencyUnwindFrame;
-	if(dependencyUnwindAvailable &&
-	   (WiiStreamHardPressureBits(pressure & blockedPressure) != 0)){
+	uint32 dependencyPressure =
+		WiiStreamHardPressureBits(pressure & blockedPressure);
+	if((pressure & blockedPressure & WII_STREAM_PRESSURE_GX_ADMISSION) != 0)
+		dependencyPressure |= WII_STREAM_PRESSURE_GX;
+	if(dependencyUnwindAvailable && dependencyPressure != 0){
 		uint32 dependencyPoolBit = WiiStreamSelectPressureBit(
-			WiiStreamHardPressureBits(pressure & blockedPressure),
+			dependencyPressure,
 			poolBefore, effectiveRequest);
 		dependencyPoolBit = WiiStreamPressureServiceBit(dependencyPoolBit);
 		if(dependencyPoolBit != 0){
@@ -8157,8 +8166,6 @@ CStreaming::MakeSpaceFor(int32 size)
 			}
 		}
 	}
-#endif
-
 #if WII_STREAM_ADAPTIVE_ARCHIVE_CEILING
 	// A healthy pool may temporarily carry archive data above its moving cap.
 	// Once real retention headroom is gone, retire at most one dependency-safe

@@ -184,9 +184,10 @@ if(WII)
         set(WII_GX_OPAQUE_RGBA8_RGB565_TIER_VALUE 0)
         set(WII_FONT_PERSISTENT_UPLOAD_VALUE 0)
     endif()
-    # Keep the P7 archive-retention baseline free of the later admission-only
-    # GX guard; retain that guard only for the explicit P16 experiment.
-    if(WII_MEMORY_PROFILE_ID STREQUAL "P16-noaudio-gx-headroom-guard")
+    # P7 needs the existing admission guard to start GX retirement before
+    # conversion reaches hard pressure. P16 keeps the same guard explicitly.
+    if(WII_MEMORY_PROFILE_ID STREQUAL "P7-noaudio-ps2-world-scan" OR
+       WII_MEMORY_PROFILE_ID STREQUAL "P16-noaudio-gx-headroom-guard")
         set(WII_STREAM_GX_HEADROOM_GUARD_VALUE 1)
     else()
         set(WII_STREAM_GX_HEADROOM_GUARD_VALUE 0)

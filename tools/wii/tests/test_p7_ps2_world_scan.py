@@ -60,6 +60,19 @@ class P7Ps2WorldScanTests(unittest.TestCase):
         self.assertIn("WII_STREAM_ADAPTIVE_ARCHIVE_CEILING_VALUE 1", adaptive_block)
         self.assertNotIn("P7-noaudio-ps2-world-scan", adaptive_block)
 
+    def test_p7_enables_existing_gx_admission_guard(self) -> None:
+        guard_block = re.search(
+            r'if\(WII_MEMORY_PROFILE_ID STREQUAL "P7-noaudio-ps2-world-scan" OR\s+'
+            r'WII_MEMORY_PROFILE_ID STREQUAL "P16-noaudio-gx-headroom-guard"\)\s+'
+            r'set\(WII_STREAM_GX_HEADROOM_GUARD_VALUE 1\).*?'
+            r'else\(\).*?set\(WII_STREAM_GX_HEADROOM_GUARD_VALUE 0\)',
+            CMAKE_SOURCE,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(guard_block)
+        assert guard_block is not None
+        self.assertNotIn("P15-noaudio-hud-weapon-pin", guard_block.group(0))
+
     def test_p7_and_atomic_derivatives_enable_ps2_world_scan_radius(self) -> None:
         self.assertRegex(
             CMAKE_SOURCE,

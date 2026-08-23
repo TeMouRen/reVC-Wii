@@ -103,16 +103,20 @@ class StreamingArchivePolicyTests(unittest.TestCase):
             "while(pressureRemovals < WII_STREAM_PRESSURE_MAX_REMOVALS)"
         )
         dependency_fallback = self.source.index(
-            "WiiStreamHardPressureBits(pressure & blockedPressure)",
+            "uint32 dependencyPressure =",
             pressure_loop,
         )
         self.assertGreater(dependency_fallback, pressure_loop)
         self.assertRegex(
             self.source,
             re.compile(
-                r"WiiStreamHardPressureBits\(pressure & blockedPressure\) != 0\).*?"
+                r"uint32 dependencyPressure =\s*"
+                r"WiiStreamHardPressureBits\(pressure & blockedPressure\);.*?"
+                r"if\(\(pressure & blockedPressure & WII_STREAM_PRESSURE_GX_ADMISSION\) != 0\)\s*"
+                r"dependencyPressure \|= WII_STREAM_PRESSURE_GX;.*?"
+                r"if\(dependencyUnwindAvailable && dependencyPressure != 0\)\{.*?"
                 r"uint32 dependencyPoolBit = WiiStreamSelectPressureBit\(\s*"
-                r"WiiStreamHardPressureBits\(pressure & blockedPressure\),\s*"
+                r"dependencyPressure,\s*"
                 r"poolBefore, effectiveRequest\);.*?"
                 r"dependencyPoolBit = WiiStreamPressureServiceBit\(dependencyPoolBit\);.*?"
                 r"WiiStreamRemoveLeastUsedForPool\(\s*"
@@ -142,20 +146,20 @@ class StreamingArchivePolicyTests(unittest.TestCase):
             self.source,
         )
 
-    def test_headroom_retire_does_not_use_archive_debt_for_normal_service(self) -> None:
+    def test_headroom_retire_services_gx_pressure_without_cross_pool_eviction(self) -> None:
         helper = self.source.index(
             "WiiStreamRetireOneHeadroomResource(const WiiMemoryPoolSnapshot &snapshot,"
         )
         helper_end = self.source.index("\nbool\nCStreaming::MakeSpaceFor", helper)
         helper_source = self.source[helper:helper_end]
+        self.assertIn("uint32 hardPressure = WiiStreamHardPressureBits(pressure);", helper_source)
+        self.assertIn("uint32 gxAdmissionPressure", helper_source)
         self.assertIn(
-            "WiiStreamHardPressureBits(pressure) != 0 ||",
+            "(hardPressure & WII_STREAM_PRESSURE_GX) == 0 &&",
             helper_source,
         )
-        self.assertIn(
-            "WiiStreamAdmissionPressureBits(pressure) != 0",
-            helper_source,
-        )
+        self.assertIn("gxAdmissionPressure != 0", helper_source)
+        self.assertIn("WII_STREAM_PRESSURE_GX :", helper_source)
         self.assertNotIn("CStreaming::ms_memoryUsed", helper_source)
         adaptive_branch = self.source.index(
             "#if WII_STREAM_ADAPTIVE_ARCHIVE_CEILING",
@@ -163,6 +167,18 @@ class StreamingArchivePolicyTests(unittest.TestCase):
         )
         adaptive_source = self.source[adaptive_branch:]
         self.assertIn("ms_memoryUsed > archiveCeiling + retentionAllowance", adaptive_source)
+
+    def test_dependency_unwind_normalizes_gx_admission_pressure(self) -> None:
+        unwind = self.source.index(
+            "// If the owning pool is still under hard pressure after targeted removal"
+        )
+        unwind_end = self.source.index(
+            "#if WII_STREAM_ADAPTIVE_ARCHIVE_CEILING", unwind
+        )
+        unwind_source = self.source[unwind:unwind_end]
+        self.assertIn("uint32 dependencyPressure", unwind_source)
+        self.assertIn("WII_STREAM_PRESSURE_GX_ADMISSION", unwind_source)
+        self.assertIn("dependencyPressure |= WII_STREAM_PRESSURE_GX", unwind_source)
 
     def test_headroom_retire_marks_frame_after_success(self) -> None:
         helper = self.source.index(
@@ -184,7 +200,11 @@ class StreamingArchivePolicyTests(unittest.TestCase):
         )
         fallback_source = self.source[dependency_fallback:persistent_pressure]
         self.assertIn(
-            "WiiStreamHardPressureBits(pressure & blockedPressure)",
+            "dependencyPressure,",
+            fallback_source,
+        )
+        self.assertIn(
+            "dependencyPoolBit = WiiStreamPressureServiceBit(dependencyPoolBit);",
             fallback_source,
         )
         self.assertIn(

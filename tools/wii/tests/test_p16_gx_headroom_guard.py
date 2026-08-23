@@ -24,7 +24,7 @@ class P16GxHeadroomGuardTests(unittest.TestCase):
             CMAKE_SOURCE,
         )
 
-    def test_profile_inherits_p15_feature_flags_but_only_p16_enables_guard(self) -> None:
+    def test_profile_inherits_p15_feature_flags_and_shares_guard_with_p7(self) -> None:
         for definition in (
             "WII_STREAM_ATOMIC_BIG_HANDOFF_VALUE",
             "WII_HUD_ACTIVE_WEAPON_RASTER_PIN_VALUE",
@@ -40,7 +40,8 @@ class P16GxHeadroomGuardTests(unittest.TestCase):
             )
 
         guard_block = re.search(
-            r'if\(WII_MEMORY_PROFILE_ID STREQUAL "P16-noaudio-gx-headroom-guard"\)\s+'
+            r'if\(WII_MEMORY_PROFILE_ID STREQUAL "P7-noaudio-ps2-world-scan" OR\s+'
+            r'WII_MEMORY_PROFILE_ID STREQUAL "P16-noaudio-gx-headroom-guard"\)\s+'
             r'set\(WII_STREAM_GX_HEADROOM_GUARD_VALUE 1\)\s+'
             r'else\(\)\s+'
             r'set\(WII_STREAM_GX_HEADROOM_GUARD_VALUE 0\)',
