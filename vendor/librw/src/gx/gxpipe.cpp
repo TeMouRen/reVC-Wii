@@ -1177,9 +1177,7 @@ setAlphaCompareCached(GxRenderStateCache *cache, u8 func0, u8 ref0,
 static uint32
 setMaterial(Material *mat, bool32 vertexAlpha, bool hasVertexColors,
             bool modulateMaterialColor, const GxAtomicLights &lights,
-            uint32 passIndex, bool matFXPipeline,
-            bool *matFXEnvUsed, bool *blendEnabled,
-            GxRenderStateCache *stateCache)
+            uint32 passIndex, GxRenderStateCache *stateCache)
 {
     static int s_alphaDiagCount = 0;
     static int s_cullDiagCount = 0;
@@ -1254,10 +1252,6 @@ setMaterial(Material *mat, bool32 vertexAlpha, bool hasVertexColors,
     bool dualPass = gxState.gsAlpha && usesAlpha && gxState.zWrite;
     bool zWriteEnable = dualPass ? (passIndex == 0) : gxState.zWrite;
     bool zAfterTexturing = usesAlpha;
-    if(matFXEnvUsed)
-        *matFXEnvUsed = false;
-    if(blendEnabled)
-        *blendEnabled = doBlend;
     bool twoSided = isLikelyRoomShellDoubleSided(texName) ||
                     isLikelyThinTwoSidedTexture(texName) ||
                     isLikelyVegetationTwoSidedTexture(texName) ||
@@ -1341,48 +1335,15 @@ setMaterial(Material *mat, bool32 vertexAlpha, bool hasVertexColors,
             GX_SetNumTexGens(1);
             GX_SetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4,
                               GX_TG_TEX0, GX_IDENTITY);
-            bool useMatFXEnv = matFXPipeline &&
-                               gxMatFXEnvReady(mat, lights.hasNormals);
-            setupDefaultLitTev(matColor, true, useMatFXEnv);
-            if(useMatFXEnv){
-                if(gxMatFXSetupEnv(mat, true)){
-                    if(matFXEnvUsed)
-                        *matFXEnvUsed = true;
-                }else{
-                    setupDefaultLitTev(matColor, true, false);
-                }
-            }
+            setupDefaultLitTev(matColor, true, false);
             return dualPass ? 2u : 1u;
         }
     }
 
     // No valid texture �?solid color via PASSCLR
     GX_SetNumTexGens(0);
-    bool useMatFXEnv = matFXPipeline &&
-                       gxMatFXEnvReady(mat, lights.hasNormals);
-    setupDefaultLitTev(matColor, false, useMatFXEnv);
-    if(useMatFXEnv){
-        if(gxMatFXSetupEnv(mat, false)){
-            if(matFXEnvUsed)
-                *matFXEnvUsed = true;
-        }else{
-            setupDefaultLitTev(matColor, false, false);
-        }
-    }
+    setupDefaultLitTev(matColor, false, false);
     return dualPass ? 2u : 1u;
-}
-
-static inline void
-restoreMatFXState(bool envUsed, bool blendEnabled,
-                  GxRenderStateCache *stateCache)
-{
-    if(!envUsed)
-        return;
-    gxSetTexture(nil, 1);
-    setBlendModeCached(stateCache, blendEnabled ? GX_BM_BLEND : GX_BM_NONE,
-                       (u8)gxState.srcBlend,
-                       (u8)gxState.dstBlend,
-                       GX_LO_CLEAR, true);
 }
 
 
@@ -1610,12 +1571,8 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
                    (void*)md->material,
                    (md->material && md->material->texture) ? md->material->texture->name : "none");
         SetRenderState(VERTEXALPHA, meshNeedsBlendAlphaState);
-        bool matFXEnvUsed = false;
-        bool matFXBlendEnabled = false;
-        const bool matFXPipeline = rwpipe->pluginID == ID_MATFX;
         uint32 passCount = setMaterial(md->material, effectiveVertexAlpha, inst->hasColors,
                     (geo->flags & Geometry::MODULATE) != 0, lights, 0,
-                    matFXPipeline, &matFXEnvUsed, &matFXBlendEnabled,
                     &stateCache);
 #ifdef GX_PIPELINE_DIAGNOSTICS
         GxSolidDiagState solidDiag = classifySolidFallback(md->material);
@@ -1640,19 +1597,16 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
         uint16 *meshIdx = mesh->indices;
         uint32  numIdx  = mesh->numIndices;
         if (numIdx == 0) {
-            restoreMatFXState(matFXEnvUsed, matFXBlendEnabled, &stateCache);
             continue;
         }
         if (meshIdx == nil) {
             printf("[PIPE-SKIP] geo=%p mesh=%u indices=NULL numIdx=%u\n",
                    (void*)geo, (unsigned)m, (unsigned)numIdx);
-            restoreMatFXState(matFXEnvUsed, matFXBlendEnabled, &stateCache);
             continue;
         }
         if (numIdx > 65535) {
             printf("[PIPE-SKIP] geo=%p mesh=%u numIdx=%u exceeds GX_Begin u16 count\n",
                    (void*)geo, (unsigned)m, (unsigned)numIdx);
-            restoreMatFXState(matFXEnvUsed, matFXBlendEnabled, &stateCache);
             continue;
         }
         if(md->vertexAlpha && md->material && md->material->color.alpha == 255){
@@ -1671,26 +1625,19 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
             printf("[PIPE-SKIP] geo=%p mesh=%u badIndexAt=%u vi=%u totalVerts=%u numIdx=%u\n",
                    (void*)geo, (unsigned)m, (unsigned)badAt, (unsigned)badVi,
                    (unsigned)geo->numVertices, (unsigned)numIdx);
-            restoreMatFXState(matFXEnvUsed, matFXBlendEnabled, &stateCache);
             continue;
         }
 
         drawPipeMesh(geo, meshIdx, numIdx,
                      inst->hasNormals, inst->hasColors,
                      inst->numTexCoords, prim, trace, m, 0);
-        restoreMatFXState(matFXEnvUsed, matFXBlendEnabled, &stateCache);
         if(passCount > 1) {
-            bool matFXEnvUsedSecond = false;
-            bool matFXBlendEnabledSecond = false;
             setMaterial(md->material, effectiveVertexAlpha, inst->hasColors,
                         (geo->flags & Geometry::MODULATE) != 0, lights, 1,
-                        matFXPipeline, &matFXEnvUsedSecond,
-                        &matFXBlendEnabledSecond, &stateCache);
+                        &stateCache);
             drawPipeMesh(geo, meshIdx, numIdx,
                          inst->hasNormals, inst->hasColors,
                          inst->numTexCoords, prim, trace, m, 1);
-            restoreMatFXState(matFXEnvUsedSecond, matFXBlendEnabledSecond,
-                              &stateCache);
         }
     }
     // GS alpha emulation changes the hardware compare/depth state for the

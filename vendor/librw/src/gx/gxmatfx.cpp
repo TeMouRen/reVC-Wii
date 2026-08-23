@@ -1,9 +1,9 @@
-// gxmatfx.cpp -- the first real GX MatFX effect
+// gxmatfx.cpp -- GX MatFX pipeline boundary
 //
-// The object pipe owns instancing, lighting and drawing. This file owns only
-// the effect-specific resource lookup, reflection texgen and TEV stages.
-// ENVMAP is the only MatFX effect present in the active GTA3 archive; other
-// effects intentionally remain on the default material path for now.
+// The GX MatFX effect path is intentionally quarantined until it has a
+// verified two-pass implementation. MatFX atomics still use the normal GX
+// object pipeline, so materials remain visible without applying an unverified
+// reflection, blend, depth, or fog approximation.
 
 #ifdef GAMECUBE
 
@@ -26,6 +26,12 @@
 
 namespace rw {
 namespace gx {
+
+// The previous one-pass environment-map approximation is retained below for
+// reference only. It must not be compiled into the production path until its
+// PS2/D3D8 blend, depth, fog, and framebuffer-alpha behavior has a visual
+// regression baseline.
+#if 0
 
 static GxRaster*
 getNativeRaster(Texture *texture)
@@ -264,13 +270,33 @@ gxMatFXSetupEnv(Material *mat, bool baseTextured)
     return true;
 }
 
+// Keep the gxpipe interface stable while the effect implementation is
+// disabled. No GX texture unit, texgen, TEV, blend, or depth state is changed.
+#else
+bool
+gxMatFXEnvReady(Material *mat, bool hasNormals)
+{
+    (void)mat;
+    (void)hasNormals;
+    return false;
+}
+
+bool
+gxMatFXSetupEnv(Material *mat, bool baseTextured)
+{
+    (void)mat;
+    (void)baseTextured;
+    return false;
+}
+#endif
+
 } // namespace gx
 
 static void*
 matfxOpen(void *o, int32, int32)
 {
     matFXGlobals.pipelines[PLATFORM_GX] = makeMatFXPipeline();
-    printf("[GX-MATFX] open: ENVMAP pipeline=%p\n",
+    printf("[GX-MATFX] open: fallback pipeline=%p\n",
            (void*)matFXGlobals.pipelines[PLATFORM_GX]);
     return o;
 }
