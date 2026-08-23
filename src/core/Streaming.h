@@ -72,18 +72,6 @@ struct CStreamingChannel
 	int32 status;	// from CdStream
 };
 
-#ifdef WII
-struct WiiStreamingFrameWork
-{
-	uint32 makeSpaceCalls;
-	uint32 removals;
-	uint32 archiveRemovals;
-	uint32 pressureRemovals;
-	uint32 makeSpaceUs;
-	uint32 removalUs;
-};
-#endif
-
 class CDirectory;
 class CPtrList;
 
@@ -131,9 +119,6 @@ public:
 	static void ReInit(void);
 	static void Shutdown(void);
 	static void Update(void);
-#ifdef WII
-	static void GetFrameWork(WiiStreamingFrameWork *work);
-#endif
 	static void LoadCdDirectory(void);
 	static void LoadCdDirectory(const char *dirname, int32 n);
 	static bool ConvertBufferToObject(int8 *buf, int32 streamId);
@@ -147,12 +132,8 @@ public:
 	static bool CanRemoveCol(int32 id) { return CanRemoveModel(id+STREAM_OFFSET_COL); }
 	static bool CanRemoveAnim(int32 id) { return CanRemoveModel(id+STREAM_OFFSET_ANIM); }
 	static void RequestModel(int32 model, int32 flags);
-	static void RequestModelFromWorldScan(int32 model, int32 flags);
 	static void ReRequestModel(int32 model) { RequestModel(model, ms_aInfoForModel[model].m_flags); }
 	static void RequestTxd(int32 txd, int32 flags) { RequestModel(txd + STREAM_OFFSET_TXD, flags); }
-#ifdef WII
-	static void RequestRadarTxd(int32 txd, int32 flags, int32 tileX, int32 tileY);
-#endif
 	static void ReRequestTxd(int32 txd) { ReRequestModel(txd + STREAM_OFFSET_TXD); }
 	static void RequestCol(int32 col, int32 flags) { RequestModel(col + STREAM_OFFSET_COL, flags); }
 	static void ReRequestCol(int32 col) { ReRequestModel(col + STREAM_OFFSET_COL); }
@@ -179,7 +160,7 @@ public:
 	static void RemoveUnusedBigBuildings(eLevelName level);
 	static void RemoveIslandsNotUsed(eLevelName level);
 	static void RemoveBigBuildings(eLevelName level);
-	static bool RemoveLoadedVehicle(uint32 poolBit = 0);
+	static bool RemoveLoadedVehicle(void);
 	static bool RemoveLeastUsedModel(uint32 excludeMask);
 	static void RemoveAllUnusedModels(void);
 	static void RemoveUnusedModelsInLoadedList(void);
@@ -200,12 +181,7 @@ public:
 	static void RemoveCurrentZonesModels(void);
 	static void LoadBigBuildingsWhenNeeded(void);
 #ifdef WII
-	static bool IsIslandTransitionActive(void);
-	static bool IsIslandTransitionBlocking(void);
-	static bool IsIslandTransitionConversionBudgetActive(void);
 	static bool ShouldSuppressIslandLOD(int32 modelId);
-	static bool ShouldKeepColForIslandTransition(int32 col);
-	static bool ShouldKeepRadarTxdForIslandTransition(int32 txd);
 #endif
 
 	static int32 GetCdImageOffset(int32 lastPosn);
@@ -218,7 +194,7 @@ public:
 	static void FlushChannels(void);
 	static void FlushRequestList(void);
 
-	static bool MakeSpaceFor(int32 size);
+	static void MakeSpaceFor(int32 size);
 	static void ImGonnaUseStreamingMemory(void);
 	static void IHaveUsedStreamingMemory(void);
 	static void UpdateMemoryUsed(void);

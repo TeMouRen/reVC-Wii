@@ -937,26 +937,9 @@ CRenderer::SetupBigBuildingVisibility(CEntity *ent)
 		return VIS_INVISIBLE;
 
 #ifdef WII
-	// Island proxies live in LEVEL_GENERIC because of their 3000-unit draw
-	// distance. Keep the current island's proxy out of the render/request path;
-	// RequestIslands owns which opposite-island proxy should be resident.
+	// The current island's coarse proxy overlaps its detailed world geometry.
+	// Keep only the opposite island proxy available for distant rendering.
 	if(CStreaming::ShouldSuppressIslandLOD(ent->GetModelIndex())){
-#ifdef WII_ISLAND_LOD_DIAGNOSTICS
-		static int32 lastSuppressedModel = -1;
-		static eLevelName lastSuppressedLevel = LEVEL_GENERIC;
-		static uint32 suppressLogCount = 0;
-		if(suppressLogCount < 8 &&
-		   (lastSuppressedModel != ent->GetModelIndex() ||
-		    lastSuppressedLevel != CGame::currLevel)){
-			printf("[WII-ISLAND-LOD] action=suppress model=%d level=%d state=%u instanced=%d\n",
-			       ent->GetModelIndex(), (int)CGame::currLevel,
-			       (unsigned)CStreaming::ms_aInfoForModel[ent->GetModelIndex()].m_loadState,
-			       ent->m_rwObject ? 1 : 0);
-			lastSuppressedModel = ent->GetModelIndex();
-			lastSuppressedLevel = CGame::currLevel;
-			suppressLogCount++;
-		}
-#endif
 		if(ent->m_rwObject && !ent->bImBeingRendered)
 			ent->DeleteRwObject();
 		return VIS_INVISIBLE;
@@ -1656,7 +1639,7 @@ CRenderer::ScanBigBuildingList(CPtrList &list)
 				   CStreaming::ms_numPriorityRequests < 4)
 					flags = STREAMFLAGS_PRIORITY;
 #endif
-				CStreaming::RequestModelFromWorldScan(ent->GetModelIndex(), flags);
+				CStreaming::RequestModel(ent->GetModelIndex(), flags);
 #ifdef WII
 				gWiiBigBuildingRequestsThisFrame++;
 #endif
@@ -1704,7 +1687,7 @@ CRenderer::ScanSectorList(CPtrList *lists)
 			case VIS_STREAMME:
 				if(!CStreaming::ms_disableStreaming)
 					if(!m_loadingPriority || CStreaming::ms_numModelsRequested < 10)
-						CStreaming::RequestModelFromWorldScan(ent->GetModelIndex(), 0);
+					CStreaming::RequestModel(ent->GetModelIndex(), 0);
 				break;
 			}
 		}
@@ -1748,7 +1731,7 @@ CRenderer::ScanSectorList_Priority(CPtrList *lists)
 				break;
 			case VIS_STREAMME:
 				if(!CStreaming::ms_disableStreaming){
-					CStreaming::RequestModelFromWorldScan(ent->GetModelIndex(), STREAMFLAGS_PRIORITY);
+					CStreaming::RequestModel(ent->GetModelIndex(), STREAMFLAGS_PRIORITY);
 					if(CStreaming::ms_aInfoForModel[ent->GetModelIndex()].m_loadState != STREAMSTATE_LOADED)
 						m_loadingPriority = true;
 				}

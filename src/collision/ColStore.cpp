@@ -207,12 +207,7 @@ CColStore::LoadCollision(const CVector2D &pos)
 		if(wantThisOne)
 			CStreaming::RequestCol(i, STREAMFLAGS_PRIORITY);
 		else
-#ifdef WII
-		if(!CStreaming::ShouldKeepColForIslandTransition(i))
 			CStreaming::RemoveCol(i);
-#else
-			CStreaming::RemoveCol(i);
-#endif
 	}
 	bLoadAtSecondPosition = false;
 }

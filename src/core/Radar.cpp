@@ -243,26 +243,13 @@ void ClipRadarTileCoords(int32 &x, int32 &y)
 void RequestMapSection(int32 x, int32 y)
 {
 	ClipRadarTileCoords(x, y);
-#ifdef WII
-	CStreaming::RequestRadarTxd(gRadarTxdIds[x + RADAR_NUM_TILES * y],
-	                            STREAMFLAGS_DONT_REMOVE | STREAMFLAGS_DEPENDENCY |
-	                            STREAMFLAGS_PRIORITY,
-	                            x, y);
-#else
 	CStreaming::RequestTxd(gRadarTxdIds[x + RADAR_NUM_TILES * y], STREAMFLAGS_DONT_REMOVE | STREAMFLAGS_DEPENDENCY);
-#endif
 }
 
 void RemoveMapSection(int32 x, int32 y)
 {
-	if (x >= 0 && x <= RADAR_NUM_TILES - 1 && y >= 0 && y <= RADAR_NUM_TILES - 1){
-		int32 txd = gRadarTxdIds[x + RADAR_NUM_TILES * y];
-#ifdef WII
-		if(CStreaming::ShouldKeepRadarTxdForIslandTransition(txd))
-			return;
-#endif
-		CStreaming::RemoveTxd(txd);
-	}
+	if (x >= 0 && x <= RADAR_NUM_TILES - 1 && y >= 0 && y <= RADAR_NUM_TILES - 1)
+		CStreaming::RemoveTxd(gRadarTxdIds[x + RADAR_NUM_TILES * y]);
 }
 
 // Transform from section indices to world coordinates

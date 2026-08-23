@@ -21,7 +21,6 @@
 #include "MBlur.h"
 #include "Sprite2d.h"
 #include "Renderer.h"
-#include "Streaming.h"
 #include "Coronas.h"
 #include "WaterLevel.h"
 #include "Weather.h"
@@ -154,7 +153,6 @@ struct WiiFrameDiagnostics {
 	double frameLoopMs;
 	double processToPresentMs;
 	double diagLogMs;
-	WiiStreamingFrameWork streaming;
 };
 static WiiFrameDiagnostics gWiiFrameDiag;
 static WiiFrameDiagnostics gWiiPrevFrameDiag;
@@ -237,16 +235,6 @@ WiiCheckCompletedFrameDiagnostics(const WiiFrameDiagnostics &diag)
 	static uint32 sSummaryWorkHistogram[6];
 	static double sSummaryWorkTotalMs = 0.0;
 	static double sSummaryWorkMaxMs = 0.0;
-	static uint32 sSummaryStreamFrames = 0;
-	static uint32 sSummaryStreamOver40 = 0;
-	static uint32 sSummaryNoStreamOver40 = 0;
-	static uint32 sSummaryStreamCalls = 0;
-	static uint32 sSummaryStreamRemovals = 0;
-	static uint32 sSummaryStreamArchiveRemovals = 0;
-	static uint32 sSummaryStreamPressureRemovals = 0;
-	static uint64 sSummaryStreamMakeUs = 0;
-	static uint64 sSummaryStreamRemovalUs = 0;
-	static uint32 sSummaryStreamMakeMaxUs = 0;
 
 	if(diag.sequence == 0 || diag.sequence == sLastSequence)
 		return;
@@ -279,22 +267,6 @@ WiiCheckCompletedFrameDiagnostics(const WiiFrameDiagnostics &diag)
 	sSummaryWorkTotalMs += workMs;
 	if(workMs > sSummaryWorkMaxMs)
 		sSummaryWorkMaxMs = workMs;
-	bool streamWorked = diag.streaming.makeSpaceCalls != 0;
-	if(streamWorked){
-		sSummaryStreamFrames++;
-		if(scoreMs >= 40.0)
-			sSummaryStreamOver40++;
-	}else if(scoreMs >= 40.0){
-		sSummaryNoStreamOver40++;
-	}
-	sSummaryStreamCalls += diag.streaming.makeSpaceCalls;
-	sSummaryStreamRemovals += diag.streaming.removals;
-	sSummaryStreamArchiveRemovals += diag.streaming.archiveRemovals;
-	sSummaryStreamPressureRemovals += diag.streaming.pressureRemovals;
-	sSummaryStreamMakeUs += diag.streaming.makeSpaceUs;
-	sSummaryStreamRemovalUs += diag.streaming.removalUs;
-	if(diag.streaming.makeSpaceUs > sSummaryStreamMakeMaxUs)
-		sSummaryStreamMakeMaxUs = diag.streaming.makeSpaceUs;
 	if(summaryNowMs - sSummaryStartMs >= 5000.0){
 		uint32 wanted = (sSummaryFrames * 95u + 99u) / 100u;
 		uint32 seen = 0;
@@ -306,7 +278,7 @@ WiiCheckCompletedFrameDiagnostics(const WiiFrameDiagnostics &diag)
 				break;
 			}
 		}
-		SYS_Report("[WII-FRAME-HIST] win=%ums frames=%u risky=%u over40=%u over50=%u work=avg%u/p95b%u/max%u hist=%u/%u/%u/%u/%u/%u stream=frames%u/calls%u/remove%u/a%u/p%u make=total%llu/max%u removeUs=%llu corr=stream40%u/nostream40%u\n",
+		SYS_Report("[WII-FRAME-HIST] win=%ums frames=%u risky=%u over40=%u over50=%u work=avg%u/p95b%u/max%u hist=%u/%u/%u/%u/%u/%u\n",
 		           (unsigned)(summaryNowMs - sSummaryStartMs),
 		           (unsigned)sSummaryFrames, (unsigned)sSummaryRisky,
 		           (unsigned)sSummaryOver40, (unsigned)sSummaryOver50,
@@ -318,17 +290,7 @@ WiiCheckCompletedFrameDiagnostics(const WiiFrameDiagnostics &diag)
 		           (unsigned)sSummaryWorkHistogram[2],
 		           (unsigned)sSummaryWorkHistogram[3],
 		           (unsigned)sSummaryWorkHistogram[4],
-		           (unsigned)sSummaryWorkHistogram[5],
-		           (unsigned)sSummaryStreamFrames,
-		           (unsigned)sSummaryStreamCalls,
-		           (unsigned)sSummaryStreamRemovals,
-		           (unsigned)sSummaryStreamArchiveRemovals,
-		           (unsigned)sSummaryStreamPressureRemovals,
-		           (unsigned long long)sSummaryStreamMakeUs,
-		           (unsigned)sSummaryStreamMakeMaxUs,
-		           (unsigned long long)sSummaryStreamRemovalUs,
-		           (unsigned)sSummaryStreamOver40,
-		           (unsigned)sSummaryNoStreamOver40);
+		           (unsigned)sSummaryWorkHistogram[5]);
 		sSummaryStartMs = summaryNowMs;
 		sSummaryFrames = 0;
 		sSummaryRisky = 0;
@@ -337,16 +299,6 @@ WiiCheckCompletedFrameDiagnostics(const WiiFrameDiagnostics &diag)
 		memset(sSummaryWorkHistogram, 0, sizeof(sSummaryWorkHistogram));
 		sSummaryWorkTotalMs = 0.0;
 		sSummaryWorkMaxMs = 0.0;
-		sSummaryStreamFrames = 0;
-		sSummaryStreamOver40 = 0;
-		sSummaryNoStreamOver40 = 0;
-		sSummaryStreamCalls = 0;
-		sSummaryStreamRemovals = 0;
-		sSummaryStreamArchiveRemovals = 0;
-		sSummaryStreamPressureRemovals = 0;
-		sSummaryStreamMakeUs = 0;
-		sSummaryStreamRemovalUs = 0;
-		sSummaryStreamMakeMaxUs = 0;
 	}
 	if(sWindowFrames == 0 || scoreMs > sWorstScoreMs){
 		sWorstScoreMs = scoreMs;
@@ -2565,7 +2517,6 @@ Idle(void *arg)
 	gWiiFrameDiag.fadeMs = wiiStageAfterDoFadeMs - wiiStageAfterMenusMs;
 	gWiiFrameDiag.render2dFadeMs = wiiStageAfterRender2dFadeMs - wiiStageAfterDoFadeMs;
 	gWiiFrameDiag.endFrameMs = wiiStageAfterEndFrameMs - wiiStageAfterRender2dFadeMs;
-	CStreaming::GetFrameWork(&gWiiFrameDiag.streaming);
 	gWiiFrameDiag.cpuBeforePresentMs =
 		(wiiStageAfterEndFrameMs - wiiStageFrameStartMs) - gWiiFrameDiag.presentSubmitMs;
 	if(gWiiFrameDiag.cpuBeforePresentMs < 0.0)
