@@ -8,6 +8,7 @@ does not modify an archive, a deployed DOL, or the game source/runtime.
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import re
@@ -52,6 +53,10 @@ GLOBAL_TXD_NAMES = {
     "hud.txd",
     "particle.txd",
 }
+
+LEVEL_NAMES = {0: "GENERIC", 1: "BEACH", 2: "MAINLAND"}
+WORLD_MODEL_SECTIONS = {"objs", "tobj"}
+LOD_DISTANCE = 300.0
 
 
 def sha256_file(path: Path) -> str:
@@ -103,6 +108,302 @@ def inventory_summary(inventory_rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def source_package(path: Path, data_root: Path) -> str:
+    relative = path.resolve().relative_to(data_root.resolve())
+    if relative.parent == Path(".") or relative.parent.name.casefold() == "maps":
+        return path.stem.casefold()
+    return relative.parent.name.casefold()
+
+
+def parse_ide_metadata(data_root: Path) -> dict[str, Any]:
+    records: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for path in sorted(data_root.rglob("*.ide"), key=lambda item: str(item).casefold()):
+        section = ""
+        for line_number, raw_line in enumerate(
+            path.read_text(encoding="ascii").splitlines(), start=1
+        ):
+            line = raw_line.partition("#")[0].strip()
+            if not line:
+                continue
+            lowered = line.casefold()
+            if lowered == "end":
+                section = ""
+                continue
+            if not section and "," not in line:
+                section = lowered
+                continue
+            if section not in {"objs", "tobj", "weap", "hier", "cars", "peds"}:
+                continue
+            try:
+                fields = [field.strip() for field in next(csv.reader([line]))]
+                model_id = int(fields[0], 0)
+                model = fields[1]
+                txd = fields[2]
+                first_lod_distance = None
+                lod_distances: list[float] = []
+                flags = None
+                if section in WORLD_MODEL_SECTIONS:
+                    atomic_count = int(fields[3], 0)
+                    lod_distances = [float(value) for value in fields[4 : 4 + atomic_count]]
+                    if len(lod_distances) != atomic_count:
+                        raise ValueError("missing LOD distance")
+                    first_lod_distance = lod_distances[0]
+                    flags = int(fields[4 + atomic_count], 0)
+                records.append(
+                    {
+                        "id": model_id,
+                        "model": model,
+                        "txd": txd,
+                        "section": section,
+                        "source": str(path),
+                        "relative_source": path.resolve()
+                        .relative_to(data_root.resolve())
+                        .as_posix(),
+                        "source_package": source_package(path, data_root),
+                        "line": line_number,
+                        "lod_distances": lod_distances,
+                        "first_lod_distance": first_lod_distance,
+                        "flags": flags,
+                        "ignore_draw_distance": bool(flags is not None and flags & 0x100),
+                        "runtime_big_building": bool(
+                            first_lod_distance is not None
+                            and first_lod_distance > LOD_DISTANCE
+                        ),
+                        "related_model": None,
+                        "related_by": [],
+                        "lod_role": "non_world_model",
+                    }
+                )
+            except (IndexError, ValueError) as exc:
+                errors.append(f"{path}:{line_number}: {exc}")
+
+    by_source: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for record in records:
+        by_source[record["source"]].append(record)
+    for source_records in by_source.values():
+        simple_records = sorted(
+            (row for row in source_records if row["section"] in WORLD_MODEL_SECTIONS),
+            key=lambda row: int(row["id"]),
+        )
+        for record in simple_records:
+            if not record["runtime_big_building"]:
+                continue
+            suffix = str(record["model"])[3:].casefold()
+            related = next(
+                (
+                    candidate
+                    for candidate in simple_records
+                    if candidate is not record
+                    and str(candidate["model"])[3:].casefold() == suffix
+                ),
+                None,
+            )
+            if related:
+                record["related_model"] = related["model"]
+                related["related_by"].append(record["model"])
+
+    for record in records:
+        if record["runtime_big_building"]:
+            record["lod_role"] = (
+                "runtime_big_building_with_near_model"
+                if record["related_model"]
+                else "runtime_big_building_without_near_model"
+            )
+        elif record["related_by"]:
+            record["lod_role"] = "near_model_related_to_big_building"
+        elif record["section"] in WORLD_MODEL_SECTIONS:
+            record["lod_role"] = "ordinary_world_model"
+
+    return {
+        "records": records,
+        "by_id": {int(row["id"]): row for row in records},
+        "by_name": {str(row["model"]).casefold(): row for row in records},
+        "errors": errors,
+    }
+
+
+def parse_map_zones(data_root: Path) -> dict[str, Any]:
+    path = data_root / "map.zon"
+    zones: list[dict[str, Any]] = []
+    errors: list[str] = []
+    section = ""
+    for line_number, raw_line in enumerate(
+        path.read_text(encoding="ascii").splitlines(), start=1
+    ):
+        line = raw_line.partition("#")[0].strip()
+        if not line:
+            continue
+        lowered = line.casefold()
+        if lowered == "end":
+            section = ""
+            continue
+        if not section and "," not in line:
+            section = lowered
+            continue
+        if section != "zone":
+            continue
+        try:
+            fields = [field.strip() for field in next(csv.reader([line]))]
+            level_id = int(fields[8], 0)
+            zones.append(
+                {
+                    "name": fields[0],
+                    "type": int(fields[1], 0),
+                    "minimum": [float(value) for value in fields[2:5]],
+                    "maximum": [float(value) for value in fields[5:8]],
+                    "level_id": level_id,
+                    "level": LEVEL_NAMES.get(level_id, f"UNKNOWN_{level_id}"),
+                    "line": line_number,
+                }
+            )
+        except (IndexError, ValueError) as exc:
+            errors.append(f"{path}:{line_number}: {exc}")
+    return {"path": str(path), "zones": zones, "errors": errors}
+
+
+def level_from_position(zones: list[dict[str, Any]], position: tuple[float, float, float]) -> str:
+    x, y, z = position
+    for zone in zones:
+        minimum = zone["minimum"]
+        maximum = zone["maximum"]
+        if (
+            minimum[0] <= x <= maximum[0]
+            and minimum[1] <= y <= maximum[1]
+            and minimum[2] <= z <= maximum[2]
+        ):
+            return str(zone["level"])
+    return "GENERIC"
+
+
+def static_world_scope(levels: set[str]) -> str:
+    if not levels:
+        return "no_world_instance"
+    if levels == {"GENERIC"}:
+        return "generic_only"
+    if levels == {"BEACH"}:
+        return "beach_only"
+    if levels == {"MAINLAND"}:
+        return "mainland_only"
+    return "cross_level_shared"
+
+
+def parse_ipl_instances(
+    data_root: Path, zones: list[dict[str, Any]], model_info_by_id: dict[int, dict[str, Any]]
+) -> dict[str, Any]:
+    aggregates: dict[int, dict[str, Any]] = {}
+    errors: list[str] = []
+    total_instances = 0
+    model_info_misses: Counter[str] = Counter()
+    id_name_mismatches = 0
+    for path in sorted(data_root.rglob("*.ipl"), key=lambda item: str(item).casefold()):
+        section = ""
+        for line_number, raw_line in enumerate(
+            path.read_text(encoding="ascii").splitlines(), start=1
+        ):
+            line = raw_line.partition("#")[0].strip()
+            if not line:
+                continue
+            lowered = line.casefold()
+            if lowered == "end":
+                section = ""
+                continue
+            if not section and "," not in line:
+                section = lowered
+                continue
+            if section != "inst":
+                continue
+            try:
+                fields = [field.strip() for field in next(csv.reader([line]))]
+                model_id = int(fields[0], 0)
+                model_name = fields[1]
+                if len(fields) == 13:
+                    area = float(fields[2])
+                    position = tuple(float(value) for value in fields[3:6])
+                elif len(fields) == 12:
+                    area = 0.0
+                    position = tuple(float(value) for value in fields[2:5])
+                else:
+                    raise ValueError(f"unexpected IPL inst field count {len(fields)}")
+                spatial_level = level_from_position(zones, position)
+                model_info = model_info_by_id.get(model_id)
+                runtime_level = spatial_level
+                if model_info is None:
+                    model_info_misses[f"{model_id}:{model_name}"] += 1
+                else:
+                    if str(model_info["model"]).casefold() != model_name.casefold():
+                        id_name_mismatches += 1
+                    if model_info["runtime_big_building"] and (
+                        float(model_info["first_lod_distance"] or 0.0) > 2500.0
+                        or model_info["ignore_draw_distance"]
+                    ):
+                        runtime_level = "GENERIC"
+                aggregate = aggregates.setdefault(
+                    model_id,
+                    {
+                        "model": model_name,
+                        "instance_count": 0,
+                        "spatial_levels": Counter(),
+                        "runtime_levels": Counter(),
+                        "areas": Counter(),
+                        "sources": Counter(),
+                    },
+                )
+                aggregate["instance_count"] += 1
+                aggregate["spatial_levels"][spatial_level] += 1
+                aggregate["runtime_levels"][runtime_level] += 1
+                aggregate["areas"][str(int(area) if area.is_integer() else area)] += 1
+                aggregate["sources"][
+                    path.resolve().relative_to(data_root.resolve()).as_posix()
+                ] += 1
+                total_instances += 1
+            except (IndexError, ValueError) as exc:
+                errors.append(f"{path}:{line_number}: {exc}")
+
+    serializable: dict[int, dict[str, Any]] = {}
+    for model_id, row in aggregates.items():
+        serializable[model_id] = {
+            "model": row["model"],
+            "instance_count": row["instance_count"],
+            "spatial_levels": dict(sorted(row["spatial_levels"].items())),
+            "runtime_levels": dict(sorted(row["runtime_levels"].items())),
+            "areas": dict(sorted(row["areas"].items())),
+            "sources": dict(sorted(row["sources"].items())),
+        }
+    return {
+        "by_model_id": serializable,
+        "total_instances": total_instances,
+        "model_info_miss_count": sum(model_info_misses.values()),
+        "model_info_misses": dict(sorted(model_info_misses.items())),
+        "id_name_mismatch_count": id_name_mismatches,
+        "errors": errors,
+    }
+
+
+def parse_col_model_names(payload: bytes, source: str) -> tuple[list[str], list[str]]:
+    names: list[str] = []
+    errors: list[str] = []
+    offset = 0
+    while offset + 8 <= len(payload):
+        if not any(payload[offset:]):
+            break
+        if payload[offset : offset + 4] != b"COLL":
+            next_offset = payload.find(b"COLL", offset + 1)
+            if next_offset < 0:
+                errors.append(f"{source}: no COLL header at offset {offset}")
+                break
+            errors.append(f"{source}: skipped {next_offset - offset} bytes before COLL header")
+            offset = next_offset
+        size = int.from_bytes(payload[offset + 4 : offset + 8], "little")
+        if size < 24 or offset + 8 + size > len(payload):
+            errors.append(f"{source}: invalid COLL size {size} at offset {offset}")
+            break
+        raw_name = payload[offset + 8 : offset + 32].split(b"\0", 1)[0]
+        names.append(raw_name.decode("ascii", errors="replace"))
+        offset += 8 + ((size + 3) & ~3)
+    return names, errors
+
+
 def build_dependency_report(
     entries: list[Any], image_handle: Any, inventory_by_txd: dict[str, Any], data_root: Path
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -117,17 +418,142 @@ def build_dependency_report(
     dff_parse_errors: list[dict[str, str]] = []
     unmapped_dffs: list[str] = []
     models_by_txd: dict[str, list[str]] = defaultdict(list)
+    inferred_models_by_txd: dict[str, list[str]] = defaultdict(list)
     dff_bytes_by_txd: Counter[str] = Counter()
+    inferred_dff_bytes_by_txd: Counter[str] = Counter()
     refs_by_txd: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    inferred_refs_by_txd: dict[str, set[tuple[str, str]]] = defaultdict(set)
     unresolved_refs_by_txd: dict[str, set[str]] = defaultdict(set)
+    txd_entries_by_key = {
+        entry.name.casefold(): entry for entry in entries if entry.extension == ".txd"
+    }
+    known_textures_by_txd = {
+        key: {
+            (
+                str(item.get("name") or "").casefold(),
+                str(item.get("mask") or "").casefold(),
+            )
+            for item in inventory.get("textures", [])
+        }
+        for key, inventory in inventory_by_txd.items()
+    }
+    txd_display_by_key = {
+        entry.name.casefold(): entry.name for entry in entries if entry.extension == ".txd"
+    }
+    exact_texture_owners: dict[tuple[str, str], set[str]] = defaultdict(set)
+    named_texture_owners: dict[str, set[str]] = defaultdict(set)
+    for owner, texture_keys in known_textures_by_txd.items():
+        for name, mask in texture_keys:
+            exact_texture_owners[(name, mask)].add(owner)
+            named_texture_owners[name].add(owner)
+    unresolved_reference_rows: list[dict[str, Any]] = []
+    cross_txd_consumers: dict[str, set[str]] = defaultdict(set)
+
+    def annotate_reference_resolution(
+        references: list[dict[str, Any]], declared_key: str | None, model: str
+    ) -> None:
+        declared_known = known_textures_by_txd.get(declared_key or "", set())
+        for reference in references:
+            name = str(reference["name"]).casefold()
+            mask = str(reference.get("mask") or "").casefold()
+            key = (name, mask)
+            if key in declared_known:
+                reference["resolution"] = "declared_txd"
+                reference["archive_candidate_txds"] = []
+                continue
+            exact_candidates = sorted(
+                exact_texture_owners.get(key, set()) - ({declared_key} if declared_key else set())
+            )
+            name_candidates = sorted(
+                named_texture_owners.get(name, set()) - ({declared_key} if declared_key else set())
+            )
+            if exact_candidates:
+                candidates = exact_candidates
+                resolution = (
+                    "unique_exact_cross_txd_candidate"
+                    if len(candidates) == 1
+                    else "ambiguous_exact_cross_txd_candidates"
+                )
+            elif name_candidates:
+                candidates = name_candidates
+                resolution = (
+                    "unique_name_only_cross_txd_candidate"
+                    if len(candidates) == 1
+                    else "ambiguous_name_only_cross_txd_candidates"
+                )
+            else:
+                candidates = []
+                resolution = "missing_from_archive_inventory"
+            display_candidates = [
+                txd_display_by_key.get(candidate, candidate) for candidate in candidates
+            ]
+            reference["resolution"] = resolution
+            reference["archive_candidate_txds"] = display_candidates
+            unresolved_reference_rows.append(
+                {
+                    "model": model,
+                    "declared_or_inferred_txd": (
+                        txd_display_by_key.get(declared_key, declared_key)
+                        if declared_key
+                        else None
+                    ),
+                    "texture": reference["name"],
+                    "mask": reference.get("mask") or "",
+                    "resolution": resolution,
+                    "archive_candidate_txds": display_candidates,
+                }
+            )
+            consumer = f"{model}:{reference['name']}:{reference.get('mask') or ''}"
+            for candidate in candidates:
+                cross_txd_consumers[candidate].add(consumer)
 
     for entry in entries:
         if entry.extension != ".dff":
             continue
         model = Path(entry.name).stem
         binding = bindings.get(model.casefold())
+        refs: list[dict[str, str]] = []
+        parse_error = None
+        try:
+            parsed = extract_dff_texture_references(read_entry(image_handle, entry), entry.name)
+            for ref in parsed:
+                refs.append({"name": ref.name, "mask": ref.mask})
+        except RwParseError as exc:
+            parse_error = str(exc)
+            dff_parse_errors.append({"dff": entry.name, "error": parse_error})
+
+        inferred_txd = None
+        inference = None
         if binding is None:
             unmapped_dffs.append(entry.name)
+            candidate_key = f"{model}.txd".casefold()
+            candidate_entry = txd_entries_by_key.get(candidate_key)
+            if candidate_entry is not None:
+                inferred_txd = candidate_entry.name
+                annotate_reference_resolution(refs, candidate_key, model)
+                known = known_textures_by_txd.get(candidate_key, set())
+                ref_keys = {
+                    (str(ref["name"]).casefold(), str(ref.get("mask") or "").casefold())
+                    for ref in refs
+                }
+                missing = sorted(
+                    f"{ref[0]}" + (f" (mask={ref[1]})" if ref[1] else "")
+                    for ref in ref_keys - known
+                )
+                complete_match = bool(ref_keys) and not missing and parse_error is None
+                inference = {
+                    "basis": "same archive basename; not an IDE/runtime binding",
+                    "texture_reference_count": len(ref_keys),
+                    "complete_texture_set_match": complete_match,
+                    "missing_texture_references": missing,
+                }
+                inferred_models_by_txd[candidate_key].append(model)
+                inferred_dff_bytes_by_txd[candidate_key] += entry.size_bytes
+                inferred_refs_by_txd[candidate_key].update(ref_keys)
+                classification = "dff_without_ide_binding_same_name_txd_candidate"
+            else:
+                classification = "dff_without_ide_txd_binding"
+                annotate_reference_resolution(refs, None, model)
             model_rows.append(
                 {
                     "model": model,
@@ -136,9 +562,11 @@ def build_dependency_report(
                     "dff_bytes": entry.size_bytes,
                     "txd": None,
                     "binding": None,
-                    "texture_references": [],
-                    "parse_error": None,
-                    "classification": "dff_without_ide_txd_binding",
+                    "inferred_txd": inferred_txd,
+                    "inference": inference,
+                    "texture_references": refs,
+                    "parse_error": parse_error,
+                    "classification": classification,
                 }
             )
             continue
@@ -146,30 +574,19 @@ def build_dependency_report(
         key = txd_key(binding.txd)
         models_by_txd[key].append(model)
         dff_bytes_by_txd[key] += entry.size_bytes
-        refs: list[dict[str, str]] = []
-        parse_error = None
-        try:
-            parsed = extract_dff_texture_references(read_entry(image_handle, entry), entry.name)
-            for ref in parsed:
-                refs.append({"name": ref.name, "mask": ref.mask})
-                ref_key = (ref.name.casefold(), ref.mask.casefold())
-                refs_by_txd[key].add(ref_key)
-                txd_inventory = inventory_by_txd.get(key)
-                known = set()
-                if txd_inventory:
-                    known = {
-                        (str(item.get("name") or "").casefold(),
-                         str(item.get("mask") or "").casefold())
-                        for item in txd_inventory.get("textures", [])
-                    }
-                if ref_key not in known:
-                    unresolved_refs_by_txd[key].add(
-                        f"{ref.name}" + (f" (mask={ref.mask})" if ref.mask else "")
-                    )
-        except RwParseError as exc:
-            parse_error = str(exc)
-            dff_parse_errors.append({"dff": entry.name, "error": parse_error})
-
+        known = known_textures_by_txd.get(key, set())
+        annotate_reference_resolution(refs, key, model)
+        for ref in refs:
+            ref_key = (
+                str(ref["name"]).casefold(),
+                str(ref.get("mask") or "").casefold(),
+            )
+            refs_by_txd[key].add(ref_key)
+            if ref_key not in known:
+                unresolved_refs_by_txd[key].add(
+                    f"{ref['name']}"
+                    + (f" (mask={ref['mask']})" if ref.get("mask") else "")
+                )
         model_rows.append(
             {
                 "model": model,
@@ -178,6 +595,8 @@ def build_dependency_report(
                 "dff_bytes": entry.size_bytes,
                 "txd": binding.txd,
                 "binding": {"source": binding.source, "line": binding.line},
+                "inferred_txd": None,
+                "inference": None,
                 "texture_references": refs,
                 "parse_error": parse_error,
                 "classification": "model_backed_txd",
@@ -199,12 +618,32 @@ def build_dependency_report(
                 texture.get("resident_bytes") or 0
             )
         mapped_models = sorted(models_by_txd.get(key, []), key=str.casefold)
+        inferred_models = sorted(inferred_models_by_txd.get(key, []), key=str.casefold)
+        cross_txd_references = sorted(cross_txd_consumers.get(key, set()), key=str.casefold)
         if key in GLOBAL_TXD_NAMES:
             classification = "global_frontend_or_system_txd"
-        elif not mapped_models:
-            classification = "txd_without_mapped_dff_candidate_global_or_script"
-        else:
+        elif mapped_models:
             classification = "model_backed_txd"
+        elif inferred_models:
+            complete = all(
+                bool(
+                    next(
+                        row.get("inference")
+                        for row in model_rows
+                        if row["model"].casefold() == model.casefold()
+                    ).get("complete_texture_set_match")
+                )
+                for model in inferred_models
+            )
+            classification = (
+                "same_name_dff_candidate_complete_texture_match"
+                if complete
+                else "same_name_dff_candidate_unproven"
+            )
+        elif cross_txd_references:
+            classification = "cross_txd_texture_donor_candidate"
+        else:
+            classification = "txd_without_dff_or_ide_owner"
         txd_rows.append(
             {
                 "name": entry.name,
@@ -218,8 +657,16 @@ def build_dependency_report(
                 "texture_count": len((inv or {}).get("textures", [])),
                 "mapped_model_count": len(mapped_models),
                 "mapped_models": mapped_models,
+                "inferred_unbound_model_count": len(inferred_models),
+                "inferred_unbound_models": inferred_models,
+                "cross_txd_reference_count": len(cross_txd_references),
+                "cross_txd_references": cross_txd_references,
                 "dff_bytes": dff_bytes_by_txd.get(key, 0),
+                "inferred_dff_bytes": inferred_dff_bytes_by_txd.get(key, 0),
                 "texture_reference_count": len(refs_by_txd.get(key, set())),
+                "inferred_texture_reference_count": len(
+                    inferred_refs_by_txd.get(key, set())
+                ),
                 "unresolved_texture_references": sorted(
                     unresolved_refs_by_txd.get(key, set()), key=str.casefold
                 ),
@@ -235,13 +682,256 @@ def build_dependency_report(
         "dff_count": sum(entry.extension == ".dff" for entry in entries),
         "mapped_dff_count": sum(row["txd"] is not None for row in model_rows),
         "unmapped_dff_count": len(unmapped_dffs),
+        "same_name_txd_candidate_count": sum(
+            row["inferred_txd"] is not None for row in model_rows
+        ),
         "unmapped_dffs": sorted(unmapped_dffs, key=str.casefold),
         "dff_parse_error_count": len(dff_parse_errors),
         "dff_parse_errors": dff_parse_errors,
+        "unresolved_reference_classification": {
+            "count": len(unresolved_reference_rows),
+            "counts_by_resolution": dict(
+                sorted(Counter(row["resolution"] for row in unresolved_reference_rows).items())
+            ),
+            "rows": sorted(
+                unresolved_reference_rows,
+                key=lambda row: (
+                    str(row["model"]).casefold(),
+                    str(row["texture"]).casefold(),
+                    str(row["mask"]).casefold(),
+                ),
+            ),
+        },
         "models": sorted(model_rows, key=lambda row: str(row["model"]).casefold()),
         "txds": sorted(txd_rows, key=lambda row: str(row["name"]).casefold()),
     }
     return dependency, {"models_by_txd": models_by_txd}
+
+
+def build_static_world_report(
+    entries: list[Any], image_handle: Any, data_root: Path, dependency: dict[str, Any]
+) -> dict[str, Any]:
+    ide = parse_ide_metadata(data_root)
+    zones = parse_map_zones(data_root)
+    instances = parse_ipl_instances(data_root, zones["zones"], ide["by_id"])
+    by_name = ide["by_name"]
+    by_model_id = instances["by_model_id"]
+
+    def model_info_view(metadata: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": metadata["id"],
+            "section": metadata["section"],
+            "source": metadata["relative_source"],
+            "source_package": metadata["source_package"],
+            "lod_distances": metadata["lod_distances"],
+            "first_lod_distance": metadata["first_lod_distance"],
+            "flags": metadata["flags"],
+            "ignore_draw_distance": metadata["ignore_draw_distance"],
+            "runtime_big_building": metadata["runtime_big_building"],
+            "related_model": metadata["related_model"],
+            "related_by": metadata["related_by"],
+            "lod_role": metadata["lod_role"],
+        }
+
+    for model in dependency["models"]:
+        metadata = by_name.get(str(model["model"]).casefold())
+        model["model_info"] = model_info_view(metadata) if metadata else None
+        model["static_world"] = (
+            by_model_id.get(int(metadata["id"])) if metadata else None
+        )
+
+    scope_cost: Counter[str] = Counter()
+    scope_txd_count: Counter[str] = Counter()
+    lod_cost: Counter[str] = Counter()
+    lod_txd_count: Counter[str] = Counter()
+    for txd in dependency["txds"]:
+        metadata_rows = [
+            by_name[name.casefold()]
+            for name in txd["mapped_models"]
+            if name.casefold() in by_name
+        ]
+        world_metadata = [
+            row for row in metadata_rows if row["section"] in WORLD_MODEL_SECTIONS
+        ]
+        instanced_metadata = [
+            row for row in world_metadata if int(row["id"]) in by_model_id
+        ]
+        runtime_level_counts: Counter[str] = Counter()
+        spatial_level_counts: Counter[str] = Counter()
+        area_counts: Counter[str] = Counter()
+        source_packages: set[str] = set()
+        lod_roles: Counter[str] = Counter()
+        for metadata in instanced_metadata:
+            instance = by_model_id[int(metadata["id"])]
+            runtime_level_counts.update(instance["runtime_levels"])
+            spatial_level_counts.update(instance["spatial_levels"])
+            area_counts.update(instance["areas"])
+            source_packages.add(str(metadata["source_package"]))
+            lod_roles[str(metadata["lod_role"])] += 1
+        runtime_levels = set(runtime_level_counts)
+        scope = static_world_scope(runtime_levels)
+        big_count = sum(bool(row["runtime_big_building"]) for row in instanced_metadata)
+        ordinary_count = len(instanced_metadata) - big_count
+        if not instanced_metadata:
+            lod_scope = "no_world_model"
+        elif big_count and ordinary_count:
+            lod_scope = "mixed_lod_and_ordinary"
+        elif big_count:
+            lod_scope = "lod_only"
+        else:
+            lod_scope = "ordinary_only"
+        txd["static_world_scope"] = scope
+        txd["runtime_level_instance_counts"] = dict(sorted(runtime_level_counts.items()))
+        txd["spatial_level_instance_counts"] = dict(sorted(spatial_level_counts.items()))
+        txd["area_instance_counts"] = dict(sorted(area_counts.items()))
+        txd["world_instance_count"] = sum(runtime_level_counts.values())
+        txd["interior_instance_count"] = sum(
+            count for area, count in area_counts.items() if area != "0"
+        )
+        txd["world_model_info_count"] = len(world_metadata)
+        txd["instanced_world_model_count"] = len(instanced_metadata)
+        txd["lod_scope"] = lod_scope
+        txd["lod_role_counts"] = dict(sorted(lod_roles.items()))
+        txd["source_packages"] = sorted(source_packages)
+        scope_cost[scope] += int(txd["resident_bytes"])
+        scope_txd_count[scope] += 1
+        lod_cost[lod_scope] += int(txd["resident_bytes"])
+        lod_txd_count[lod_scope] += 1
+
+    loose_cols_by_stem = {
+        path.stem.casefold(): path
+        for path in data_root.rglob("*.col")
+        if path.is_file()
+    }
+    collision_rows: list[dict[str, Any]] = []
+    collision_errors: list[str] = []
+    for entry in entries:
+        if entry.extension != ".col":
+            continue
+        names, errors = parse_col_model_names(read_entry(image_handle, entry), entry.name)
+        collision_errors.extend(errors)
+        runtime_levels: Counter[str] = Counter()
+        spatial_levels: Counter[str] = Counter()
+        matched_models: list[str] = []
+        unmatched_models: list[str] = []
+        packages: set[str] = set()
+        for name in names:
+            metadata = by_name.get(name.casefold())
+            if metadata is None:
+                unmatched_models.append(name)
+                continue
+            matched_models.append(name)
+            packages.add(str(metadata["source_package"]))
+            instance = by_model_id.get(int(metadata["id"]))
+            if instance:
+                runtime_levels.update(instance["runtime_levels"])
+                spatial_levels.update(instance["spatial_levels"])
+        loose_path = loose_cols_by_stem.get(Path(entry.name).stem.casefold())
+        loose_names: list[str] = []
+        loose_errors: list[str] = []
+        if loose_path:
+            loose_names, loose_errors = parse_col_model_names(
+                loose_path.read_bytes(), str(loose_path)
+            )
+            collision_errors.extend(loose_errors)
+        collision_rows.append(
+            {
+                "name": entry.name,
+                "entry_index": entry.index,
+                "archive_bytes": entry.size_bytes,
+                "model_count": len(names),
+                "model_info_match_count": len(matched_models),
+                "unmatched_models": sorted(set(unmatched_models), key=str.casefold),
+                "world_instance_count": sum(runtime_levels.values()),
+                "runtime_level_instance_counts": dict(sorted(runtime_levels.items())),
+                "spatial_level_instance_counts": dict(sorted(spatial_levels.items())),
+                "static_world_scope": static_world_scope(set(runtime_levels)),
+                "source_packages": sorted(packages),
+                "loose_counterpart": str(loose_path) if loose_path else None,
+                "loose_model_count": len(loose_names) if loose_path else None,
+                "loose_model_set_matches_archive": (
+                    set(name.casefold() for name in loose_names)
+                    == set(name.casefold() for name in names)
+                    if loose_path and not errors and not loose_errors
+                    else None
+                ),
+                "parse_errors": errors,
+            }
+        )
+
+    world_records = [
+        row for row in ide["records"] if row["section"] in WORLD_MODEL_SECTIONS
+    ]
+    instanced_world_ids = {
+        model_id for model_id in by_model_id if model_id in ide["by_id"]
+    }
+    return {
+        "runtime_rules": {
+            "zone_assignment": (
+                "First containing map.zon entry, otherwise GENERIC; equivalent to "
+                "CTheZones::GetLevelFromPosition."
+            ),
+            "big_building": (
+                "objs/tobj first LOD distance > 300; related near model matches the "
+                "model name after its first three characters within the IDE."
+            ),
+            "generic_override": (
+                "Big buildings with first LOD distance > 2500 or IDE flag 0x100 "
+                "are assigned GENERIC by CEntity::SetupBigBuilding."
+            ),
+        },
+        "zone_file": zones["path"],
+        "zone_count": len(zones["zones"]),
+        "zone_errors": zones["errors"],
+        "model_info_count": len(ide["records"]),
+        "world_model_info_count": len(world_records),
+        "runtime_big_building_count": sum(
+            bool(row["runtime_big_building"]) for row in world_records
+        ),
+        "big_building_without_near_model_count": sum(
+            row["lod_role"] == "runtime_big_building_without_near_model"
+            for row in world_records
+        ),
+        "ide_parse_errors": ide["errors"],
+        "ipl_instance_count": instances["total_instances"],
+        "instanced_model_count": len(by_model_id),
+        "instanced_world_model_count": len(instanced_world_ids),
+        "ipl_model_info_miss_count": instances["model_info_miss_count"],
+        "ipl_model_info_misses": instances["model_info_misses"],
+        "ipl_id_name_mismatch_count": instances["id_name_mismatch_count"],
+        "ipl_parse_errors": instances["errors"],
+        "txd_cost_by_static_world_scope": {
+            scope: {
+                "txd_count": scope_txd_count[scope],
+                "resident_bytes": resident,
+                "resident_mib": bytes_to_mib(resident),
+            }
+            for scope, resident in sorted(scope_cost.items())
+        },
+        "txd_cost_by_lod_scope": {
+            scope: {
+                "txd_count": lod_txd_count[scope],
+                "resident_bytes": resident,
+                "resident_mib": bytes_to_mib(resident),
+            }
+            for scope, resident in sorted(lod_cost.items())
+        },
+        "collision": {
+            "archive_col_count": len(collision_rows),
+            "archive_bytes": sum(int(row["archive_bytes"]) for row in collision_rows),
+            "rows": sorted(collision_rows, key=lambda row: str(row["name"]).casefold()),
+            "parse_errors": collision_errors,
+            "ownership_note": (
+                "COL ownership is derived from model names inside each COLL stream and "
+                "those models' IPL instances, matching how CColStore builds slot bounds."
+            ),
+        },
+        "cost_note": (
+            "TXD bytes are counted once in one static-world bucket. Shared TXDs are not "
+            "split between islands, so bucket totals are residency upper bounds rather "
+            "than simultaneous working-set predictions."
+        ),
+    }
 
 
 def parse_runtime_log(path: Path | None) -> dict[str, Any]:
@@ -329,6 +1019,12 @@ def classify_unknowns(
 ) -> dict[str, Any]:
     no_model = [row for row in txd_rows if row["mapped_model_count"] == 0]
     global_rows = [row for row in txd_rows if row["classification"] == "global_frontend_or_system_txd"]
+    classification_counts: Counter[str] = Counter()
+    classification_bytes: Counter[str] = Counter()
+    for row in no_model:
+        classification = str(row["classification"])
+        classification_counts[classification] += 1
+        classification_bytes[classification] += int(row["resident_bytes"])
     other_extensions = Counter(entry.extension for entry in entries)
     loose_rows = []
     if loose_models_root.is_dir():
@@ -375,16 +1071,42 @@ def classify_unknowns(
                 "resident_bytes": row["resident_bytes"],
                 "resident_mib": row["resident_mib"],
                 "classification": row["classification"],
+                "inferred_unbound_models": row["inferred_unbound_models"],
+                "inferred_texture_reference_count": row[
+                    "inferred_texture_reference_count"
+                ],
+                "cross_txd_reference_count": row["cross_txd_reference_count"],
             }
             for row in no_model
+        ],
+        "classification_summary": {
+            classification: {
+                "txd_count": classification_counts[classification],
+                "resident_bytes": resident,
+                "resident_mib": bytes_to_mib(resident),
+            }
+            for classification, resident in sorted(classification_bytes.items())
+        },
+        "cross_txd_donor_candidates": [
+            {
+                "name": row["name"],
+                "resident_bytes": row["resident_bytes"],
+                "resident_mib": row["resident_mib"],
+                "cross_txd_reference_count": row["cross_txd_reference_count"],
+                "cross_txd_references": row["cross_txd_references"][:50],
+            }
+            for row in txd_rows
+            if row["cross_txd_reference_count"]
         ],
         "loose_models_root": str(loose_models_root),
         "loose_txds": loose_rows,
         "archive_extension_counts": dict(sorted(other_extensions.items())),
         "classification_limit": (
-            "No-mapped-DFF means the static IDE/DFF audit cannot prove a model owner. "
-            "It may be a script, frontend, particle, cutscene, or other global consumer. "
-            "Do not treat it as safe to retire without runtime owner evidence."
+            "A same-name DFF/TXD pair with a complete texture-set match is a strong "
+            "archive candidate, not proof of a runtime model-info binding. TXDs without "
+            "an IDE binding may also be script, frontend, particle, cutscene, unused "
+            "archive residue, or another global consumer. Do not retire them from this "
+            "classification alone."
         ),
     }
 
@@ -445,20 +1167,25 @@ def build_dependency_graph(
             dff_bytes=model["dff_bytes"],
             classification=model["classification"],
             parse_error=model["parse_error"],
+            model_info=model.get("model_info"),
+            static_world=model.get("static_world"),
         )
-        if not model["txd"]:
+        linked_txd = model["txd"] or model.get("inferred_txd")
+        if not linked_txd:
             continue
-        txd_name = canonical_archive_txd_name(str(model["txd"]))
+        txd_name = canonical_archive_txd_name(str(linked_txd))
         txd_id = graph_node_id("txd", "archive", txd_name)
         add_node(txd_id, "txd", txd_name, scope="archive")
         binding = model.get("binding") or {}
+        relation = "ide_binding" if model["txd"] else "same_name_archive_candidate"
         add_edge(
             model_id,
             txd_id,
-            "ide_binding",
+            relation,
             dff=model["dff"],
             binding_source=binding.get("source"),
             line=binding.get("line"),
+            inference=model.get("inference"),
             texture_reference_count=len(model["texture_references"]),
         )
         txd_key_name = txd_key(txd_name)
@@ -497,8 +1224,17 @@ def build_dependency_graph(
                     scope="archive",
                     txd=txd_name,
                     mask=ref_mask,
+                    resolution=ref.get("resolution"),
+                    archive_candidate_txds=ref.get("archive_candidate_txds", []),
                 )
-                add_edge(model_id, unresolved_id, "unresolved_texture_reference", mask=ref_mask)
+                add_edge(
+                    model_id,
+                    unresolved_id,
+                    "unresolved_texture_reference",
+                    mask=ref_mask,
+                    resolution=ref.get("resolution"),
+                    archive_candidate_txds=ref.get("archive_candidate_txds", []),
+                )
 
     for txd in dependency["txds"]:
         txd_name = str(txd["name"])
@@ -514,7 +1250,11 @@ def build_dependency_graph(
             resident_bytes=txd["resident_bytes"],
             texture_count=txd["texture_count"],
             mapped_model_count=txd["mapped_model_count"],
+            inferred_unbound_model_count=txd["inferred_unbound_model_count"],
             classification=txd["classification"],
+            static_world_scope=txd.get("static_world_scope"),
+            lod_scope=txd.get("lod_scope"),
+            runtime_level_instance_counts=txd.get("runtime_level_instance_counts"),
         )
         inventory = inventory_by_txd.get(txd_name.casefold(), {})
         for texture in inventory.get("textures", []):
@@ -603,7 +1343,7 @@ def build_dependency_graph(
         for node in nodes.values()
     )
     graph = {
-        "schema": "wii-model-txd-texture-graph-v1",
+        "schema": "wii-model-txd-texture-graph-v2",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "archive": str(archive_path),
         "node_count": len(nodes),
@@ -692,7 +1432,7 @@ def graph_markdown(graph: dict[str, Any]) -> str:
         "",
         f"Archive: `{graph['archive']}`",
         "",
-        "This is an offline graph. Model to TXD edges come from IDE bindings; TXD to texture edges come from the GX inventory; direct model texture edges come from parsed DFF material references.",
+        "This is an offline graph. Model to TXD edges distinguish proven IDE bindings from same-name archive candidates; TXD to texture edges come from the GX inventory; direct model texture edges come from parsed DFF material references.",
         "",
         "## Counts",
         "",
@@ -745,6 +1485,9 @@ def make_report(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any
         dependency, _ = build_dependency_report(
             entries, image_handle, inventory_by_txd, args.data_root.resolve()
         )
+        static_world = build_static_world_report(
+            entries, image_handle, args.data_root.resolve(), dependency
+        )
 
     txd_rows = dependency["txds"]
     unknowns = classify_unknowns(txd_rows, entries, archive.parent)
@@ -752,9 +1495,12 @@ def make_report(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any
         dependency, inventory_by_txd, unknowns, image_path
     )
     report = {
-        "schema": "wii-gx-lifecycle-audit-v1",
+        "schema": "wii-gx-lifecycle-audit-v2",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "scope": "offline archive cost, static DFF/IDE dependency mapping, and optional runtime evidence",
+        "scope": (
+            "offline archive cost, DFF/IDE/TXD dependency mapping, runtime-equivalent "
+            "IPL island/LOD/COL classification, and optional runtime evidence"
+        ),
         "archive": {
             "img": str(image_path),
             "dir": str(dir_path),
@@ -781,6 +1527,7 @@ def make_report(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any
             sorted(Counter(entry.extension for entry in entries).items())
         ),
         "dependency": dependency,
+        "static_world_lifecycle": static_world,
         "unknown_owner_classification": unknowns,
         "dependency_graph": {
             "schema": graph["schema"],
@@ -795,6 +1542,8 @@ def markdown_report(report: dict[str, Any]) -> str:
     archive = report["archive"]
     inv = report["inventory"]["summary"]
     dep = report["dependency"]
+    world = report["static_world_lifecycle"]
+    unresolved = dep["unresolved_reference_classification"]
     unknown = report["unknown_owner_classification"]
     graph = report["dependency_graph"]
     runtime = report["runtime_evidence"]
@@ -834,7 +1583,15 @@ def markdown_report(report: dict[str, Any]) -> str:
             "",
             f"- IDE bindings: **{dep['binding_count']}**",
             f"- DFFs: **{dep['dff_count']}**; mapped: **{dep['mapped_dff_count']}**; unmapped: **{dep['unmapped_dff_count']}**",
+            f"- Unmapped DFFs with a same-name archive TXD candidate: **{dep['same_name_txd_candidate_count']}**",
             f"- DFF parse errors: **{dep['dff_parse_error_count']}**",
+            f"- Texture reference occurrences missing from the declared/inferred TXD: **{unresolved['count']}**.",
+            "- Cross-TXD resolution: `"
+            + ", ".join(
+                f"{key}={value}"
+                for key, value in unresolved["counts_by_resolution"].items()
+            )
+            + "`.",
             "",
             "Top TXDs by offline GX resident cost:",
             "",
@@ -849,13 +1606,58 @@ def markdown_report(report: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
+            "## Static World Lifecycle",
+            "",
+            f"- Map zones: **{world['zone_count']}**; IPL instances: **{world['ipl_instance_count']}**.",
+            f"- IDE world models: **{world['world_model_info_count']}**; runtime big-building/LOD models: **{world['runtime_big_building_count']}**.",
+            f"- Big-building models without a related near model: **{world['big_building_without_near_model_count']}**.",
+            f"- IPL parse errors: **{len(world['ipl_parse_errors'])}**; IDE parse errors: **{len(world['ide_parse_errors'])}**; IPL model-info misses: **{world['ipl_model_info_miss_count']}**.",
+            "",
+            "TXD GX cost by runtime island scope:",
+            "",
+            "| Scope | TXDs | Resident MiB |",
+            "|---|---:|---:|",
+        ]
+    )
+    for scope, row in world["txd_cost_by_static_world_scope"].items():
+        lines.append(f"| {scope} | {row['txd_count']} | {row['resident_mib']} |")
+    lines.extend(
+        [
+            "",
+            "TXD GX cost by LOD ownership:",
+            "",
+            "| LOD scope | TXDs | Resident MiB |",
+            "|---|---:|---:|",
+        ]
+    )
+    for scope, row in world["txd_cost_by_lod_scope"].items():
+        lines.append(f"| {scope} | {row['txd_count']} | {row['resident_mib']} |")
+    lines.extend(
+        [
+            "",
+            f"Streamed collision archives: **{world['collision']['archive_col_count']}**; parse errors: **{len(world['collision']['parse_errors'])}**.",
+            "",
+            world["cost_note"],
+            "",
             "## Unknown or Global Candidates",
             "",
             f"- TXDs with no mapped DFF: **{unknown['txds_without_mapped_dff_count']}** ({bytes_to_mib(unknown['txds_without_mapped_dff_resident_bytes'])} MiB)",
             f"- Known global/frontend names found: `{', '.join(unknown['global_frontend_or_system_txds']) or 'none'}`",
             f"- Loose model-directory TXDs: **{len(unknown['loose_txds'])}**; these are outside `gta3.img` and are classified separately.",
+            f"- TXDs referenced as cross-TXD texture donor candidates: **{len(unknown['cross_txd_donor_candidates'])}** (only candidates, not lifetime-safe ownership proof).",
             "",
             unknown["classification_limit"],
+            "",
+            "| Classification | TXDs | Resident MiB |",
+            "|---|---:|---:|",
+        ]
+    )
+    for classification, row in unknown["classification_summary"].items():
+        lines.append(
+            f"| {classification} | {row['txd_count']} | {row['resident_mib']} |"
+        )
+    lines.extend(
+        [
             "",
             "## Dependency Graph",
             "",
@@ -892,11 +1694,110 @@ def markdown_report(report: dict[str, Any]) -> str:
             "",
             "## Interpretation Boundary",
             "",
-            "This report proves byte cost and static dependency relationships. It does not prove that a TXD is retired-safe: runtime stream owners, collision/LOD residency, active material references, and handoff state still require lifecycle instrumentation.",
+            "This report proves byte cost, static dependency relationships, island/LOD assignment, and COL model ownership from shipped data. It does not prove that a TXD is retired-safe: live references, current visibility, request state, and handoff state still require runtime lifecycle instrumentation.",
             "",
         ]
     )
     return "\n".join(lines)
+
+
+def write_lifecycle_matrices(report: dict[str, Any], output: Path) -> dict[str, str]:
+    txd_path = output / "txd-lifecycle-matrix.csv"
+    collision_path = output / "collision-lifecycle-matrix.csv"
+    unknown_path = output / "unknown-owner-matrix.csv"
+
+    with txd_path.open("w", encoding="utf-8", newline="") as handle:
+        fieldnames = [
+            "name",
+            "resident_bytes",
+            "resident_mib",
+            "classification",
+            "mapped_model_count",
+            "inferred_unbound_model_count",
+            "static_world_scope",
+            "lod_scope",
+            "world_model_info_count",
+            "instanced_world_model_count",
+            "world_instance_count",
+            "interior_instance_count",
+            "runtime_level_instance_counts",
+            "spatial_level_instance_counts",
+            "source_packages",
+            "cross_txd_reference_count",
+            "cross_txd_references",
+        ]
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in report["dependency"]["txds"]:
+            writer.writerow(
+                {
+                    key: (
+                        json.dumps(row.get(key), sort_keys=True)
+                        if isinstance(row.get(key), (dict, list))
+                        else row.get(key)
+                    )
+                    for key in fieldnames
+                }
+            )
+
+    with collision_path.open("w", encoding="utf-8", newline="") as handle:
+        fieldnames = [
+            "name",
+            "archive_bytes",
+            "model_count",
+            "model_info_match_count",
+            "world_instance_count",
+            "static_world_scope",
+            "runtime_level_instance_counts",
+            "spatial_level_instance_counts",
+            "source_packages",
+            "unmatched_models",
+            "loose_counterpart",
+            "loose_model_set_matches_archive",
+            "parse_errors",
+        ]
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in report["static_world_lifecycle"]["collision"]["rows"]:
+            writer.writerow(
+                {
+                    key: (
+                        json.dumps(row.get(key), sort_keys=True)
+                        if isinstance(row.get(key), (dict, list))
+                        else row.get(key)
+                    )
+                    for key in fieldnames
+                }
+            )
+
+    with unknown_path.open("w", encoding="utf-8", newline="") as handle:
+        fieldnames = [
+            "name",
+            "resident_bytes",
+            "resident_mib",
+            "classification",
+            "inferred_unbound_models",
+            "inferred_texture_reference_count",
+            "cross_txd_reference_count",
+        ]
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in report["unknown_owner_classification"]["txds_without_mapped_dff"]:
+            writer.writerow(
+                {
+                    key: (
+                        json.dumps(row.get(key), sort_keys=True)
+                        if isinstance(row.get(key), (dict, list))
+                        else row.get(key)
+                    )
+                    for key in fieldnames
+                }
+            )
+    return {
+        "txd_lifecycle_csv": str(txd_path),
+        "collision_lifecycle_csv": str(collision_path),
+        "unknown_owner_csv": str(unknown_path),
+    }
 
 
 def parse_args() -> argparse.Namespace:
@@ -918,6 +1819,7 @@ def main() -> int:
     graph_json_path = args.output / "dependency-graph.json"
     graph_dot_path = args.output / "dependency-graph.dot"
     graph_md_path = args.output / "dependency-graph.md"
+    report["matrix_files"] = write_lifecycle_matrices(report, args.output)
     report["dependency_graph"]["files"] = {
         "json": str(graph_json_path),
         "dot": str(graph_dot_path),
@@ -938,6 +1840,10 @@ def main() -> int:
         "mapped_dffs": report["dependency"]["mapped_dff_count"],
         "unmapped_dffs": report["dependency"]["unmapped_dff_count"],
         "dff_parse_errors": report["dependency"]["dff_parse_error_count"],
+        "same_name_txd_candidates": report["dependency"]["same_name_txd_candidate_count"],
+        "world_instances": report["static_world_lifecycle"]["ipl_instance_count"],
+        "runtime_big_buildings": report["static_world_lifecycle"]["runtime_big_building_count"],
+        "collision_parse_errors": len(report["static_world_lifecycle"]["collision"]["parse_errors"]),
         "graph_nodes": graph["node_count"],
         "graph_edges": graph["edge_count"],
         "graph_unresolved_texture_nodes": graph["summary"]["unresolved_texture_nodes"],
