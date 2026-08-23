@@ -8097,7 +8097,6 @@ CStreaming::MakeSpaceFor(int32 size)
 	uint32 blockedPressure = 0;
 	size_t reclaimedByPool[3] = { 0, 0, 0 };
 	int ineffectiveRemovals = 0;
-	bool ineffectiveGxTargetedRemoval = false;
 	bool sameFrameDeferred = false;
 #if WII_STREAM_MEMORY_DIAGNOSTICS
 	WiiStreamDiagBeginTrim(initialPressure, archiveTarget);
@@ -8149,8 +8148,6 @@ CStreaming::MakeSpaceFor(int32 size)
 		if(!WiiStreamPoolMadeProgress(poolBit, nextPressure,
 		                             poolBefore, poolAfter, reclaimedBytes)){
 			ineffectiveRemovals++;
-			if(servicePressureBit == WII_STREAM_PRESSURE_GX)
-				ineffectiveGxTargetedRemoval = true;
 			// Do not keep removing logical LRU entries after the owning pool has
 			// proved that the selected resource did not release it. The next
 			// request/frame may expose the TXD after its dependency is gone.
@@ -8170,8 +8167,7 @@ CStreaming::MakeSpaceFor(int32 size)
 		WiiStreamHardPressureBits(pressure & blockedPressure);
 	if((pressure & blockedPressure & WII_STREAM_PRESSURE_GX_ADMISSION) != 0)
 		dependencyPressure |= WII_STREAM_PRESSURE_GX;
-	if(dependencyUnwindAvailable && dependencyPressure != 0 &&
-	   !ineffectiveGxTargetedRemoval){
+	if(dependencyUnwindAvailable && dependencyPressure != 0){
 		uint32 dependencyPoolBit = WiiStreamSelectPressureBit(
 			dependencyPressure,
 			poolBefore, effectiveRequest);

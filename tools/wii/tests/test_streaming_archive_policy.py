@@ -114,8 +114,7 @@ class StreamingArchivePolicyTests(unittest.TestCase):
                 r"WiiStreamHardPressureBits\(pressure & blockedPressure\);.*?"
                 r"if\(\(pressure & blockedPressure & WII_STREAM_PRESSURE_GX_ADMISSION\) != 0\)\s*"
                 r"dependencyPressure \|= WII_STREAM_PRESSURE_GX;.*?"
-                r"if\(dependencyUnwindAvailable && dependencyPressure != 0 &&\s*"
-                r"!ineffectiveGxTargetedRemoval\)\{.*?"
+                r"if\(dependencyUnwindAvailable && dependencyPressure != 0\)\{.*?"
                 r"uint32 dependencyPoolBit = WiiStreamSelectPressureBit\(\s*"
                 r"dependencyPressure,\s*"
                 r"poolBefore, effectiveRequest\);.*?"
@@ -193,7 +192,7 @@ class StreamingArchivePolicyTests(unittest.TestCase):
         self.assertLess(progress, success_mark)
         self.assertLess(failure, success_mark)
 
-    def test_ineffective_targeted_retirement_blocks_same_pool_fallbacks(self) -> None:
+    def test_ineffective_targeted_retirement_allows_dependency_unwind(self) -> None:
         pressure_loop = self.source.index(
             "while(pressureRemovals < WII_STREAM_PRESSURE_MAX_REMOVALS)"
         )
@@ -201,14 +200,13 @@ class StreamingArchivePolicyTests(unittest.TestCase):
             "// If the owning pool is still under hard pressure", pressure_loop
         )
         pressure_source = self.source[pressure_loop:pressure_loop_end]
-        self.assertIn("ineffectiveGxTargetedRemoval = true;", pressure_source)
         self.assertIn("blockedPressure |= poolBit;", pressure_source)
         self.assertNotIn("WII_STREAM_PRESSURE_MAX_NO_PROGRESS", self.source)
 
         dependency = self.source.index(
             "if(dependencyUnwindAvailable && dependencyPressure != 0", pressure_loop_end
         )
-        self.assertIn("!ineffectiveGxTargetedRemoval", self.source[dependency:dependency + 180])
+        self.assertNotIn("!ineffectiveGxTargetedRemoval", self.source[dependency:dependency + 180])
 
         persistent = self.source.index(
             "if(WiiStreamApplyPersistentPressure(pressure) &&", dependency
