@@ -60,10 +60,9 @@ class P7Ps2WorldScanTests(unittest.TestCase):
         self.assertIn("WII_STREAM_ADAPTIVE_ARCHIVE_CEILING_VALUE 1", adaptive_block)
         self.assertIn("P7-noaudio-ps2-world-scan", adaptive_block)
 
-    def test_p7_enables_existing_gx_admission_guard(self) -> None:
+    def test_p7_keeps_gx_admission_guard_disabled(self) -> None:
         guard_block = re.search(
-            r'if\(WII_MEMORY_PROFILE_ID STREQUAL "P7-noaudio-ps2-world-scan" OR\s+'
-            r'WII_MEMORY_PROFILE_ID STREQUAL "P16-noaudio-gx-headroom-guard"\)\s+'
+            r'if\(WII_MEMORY_PROFILE_ID STREQUAL "P16-noaudio-gx-headroom-guard"\)\s+'
             r'set\(WII_STREAM_GX_HEADROOM_GUARD_VALUE 1\).*?'
             r'else\(\).*?set\(WII_STREAM_GX_HEADROOM_GUARD_VALUE 0\)',
             CMAKE_SOURCE,
@@ -71,6 +70,7 @@ class P7Ps2WorldScanTests(unittest.TestCase):
         )
         self.assertIsNotNone(guard_block)
         assert guard_block is not None
+        self.assertNotIn("P7-noaudio-ps2-world-scan", guard_block.group(0))
         self.assertNotIn("P15-noaudio-hud-weapon-pin", guard_block.group(0))
 
     def test_p7_and_atomic_derivatives_enable_ps2_world_scan_radius(self) -> None:
@@ -195,7 +195,15 @@ class P7Ps2WorldScanTests(unittest.TestCase):
         assert visible_txd_block is not None
         self.assertIn("P7-noaudio-ps2-world-scan", visible_txd_block.group(0))
 
-    def test_p7_splash_visual_gate_requires_visible_target_big_buildings(self) -> None:
+    def test_p7_keeps_later_splash_visual_gate_disabled(self) -> None:
+        self.assertIn(
+            "set(WII_STREAM_SPLASH_VISUAL_GATE_VALUE 0)",
+            CMAKE_SOURCE,
+        )
+        self.assertNotIn(
+            "set(WII_STREAM_SPLASH_VISUAL_GATE_VALUE 1)",
+            CMAKE_SOURCE,
+        )
         self.assertIn(
             "WII_STREAM_SPLASH_VISUAL_GATE=${WII_STREAM_SPLASH_VISUAL_GATE_VALUE}",
             CMAKE_SOURCE,
