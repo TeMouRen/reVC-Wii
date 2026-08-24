@@ -2157,7 +2157,50 @@ CStreaming::RemoveAllUnusedModels(void)
 void
 CStreaming::RemoveUnusedModelsInLoadedList(void)
 {
-	// empty
+	CStreamingInfo *si;
+	CStreamingInfo *prev;
+	int32 streamId;
+
+	// Clear unreferenced model objects first. Their DeleteRwObject calls
+	// release the corresponding TXD references, so TXDs are handled in a
+	// second pass below.
+	for(si = ms_endLoadedList.m_prev; si != &ms_startLoadedList; si = prev){
+		prev = si->m_prev;
+		streamId = si - ms_aInfoForModel;
+		if(streamId >= STREAM_OFFSET_TXD ||
+		   si->m_loadState != STREAMSTATE_LOADED ||
+		   (si->m_flags & (STREAMFLAGS_KEEP_IN_MEMORY |
+		                   STREAMFLAGS_PRIORITY |
+		                   STREAMFLAGS_LOADSCENE_PROTECT)) != 0 ||
+		   !CanRemoveModel(streamId))
+			continue;
+		CBaseModelInfo *mi = CModelInfo::GetModelInfo(streamId);
+		if(mi == nil || mi->GetNumRefs() != 0)
+			continue;
+		if(mi->GetTxdSlot() != -1 &&
+		   IsTxdUsedByRequestedModels(mi->GetTxdSlot()))
+			continue;
+		RemoveModel(streamId);
+	}
+
+	// Only release a TXD after all of its model users and the request/channel
+	// dependency graph are clear. Alias-pinned dictionaries remain resident.
+	for(si = ms_endLoadedList.m_prev; si != &ms_startLoadedList; si = prev){
+		prev = si->m_prev;
+		streamId = si - ms_aInfoForModel;
+		if(streamId < STREAM_OFFSET_TXD || streamId >= STREAM_OFFSET_COL ||
+		   si->m_loadState != STREAMSTATE_LOADED ||
+		   (si->m_flags & (STREAMFLAGS_KEEP_IN_MEMORY |
+		                   STREAMFLAGS_PRIORITY |
+		                   STREAMFLAGS_LOADSCENE_PROTECT)) != 0 ||
+		   !CanRemoveModel(streamId))
+			continue;
+		int32 txdId = streamId - STREAM_OFFSET_TXD;
+		if(CTxdStore::GetNumRefs(txdId) == 0 &&
+		   !CTxdStore::IsTxdAliasPinned(txdId) &&
+		   !IsTxdUsedByRequestedModels(txdId))
+			RemoveModel(streamId);
+	}
 }
 
 bool
@@ -2679,6 +2722,11 @@ CStreaming::LoadBigBuildingsWhenNeeded(void)
 	{
 		DMAudio.SetEffectsFadeVol(0);
 		CPad::StopPadsShaking();
+#ifdef WII
+		// Load the destination splash before Collision presents the first
+		// loading frame so it cannot draw an empty or stale texture.
+		WiiPrepareIslandTransitionSplash(CGame::currLevel);
+#endif
 		CCollision::LoadCollisionScreen(CGame::currLevel);
 		DMAudio.Service();
 
@@ -3442,7 +3490,11 @@ CStreaming::ProcessEntitiesInSectorList(CPtrList &list, float x, float y, float 
 			CTimeModelInfo *mi = (CTimeModelInfo*)CModelInfo::GetModelInfo(e->GetModelIndex());
 			if (mi->GetModelType() != MITYPE_TIME || CClock::GetIsTimeInRange(mi->GetTimeOn(), mi->GetTimeOff())) {
 				lodDistSq = sq(mi->GetLargestLodDistance());
+#if WII_STREAM_PS2_WORLD_SCAN_RADIUS
+				lodDistSq = Max(lodDistSq, sq(STREAM_DIST));
+#else
 				lodDistSq = Min(lodDistSq, sq(STREAM_DIST));
+#endif
 				pos = CVector2D(e->GetPosition());
 				if(xmin < pos.x && pos.x < xmax &&
 				   ymin < pos.y && pos.y < ymax &&
