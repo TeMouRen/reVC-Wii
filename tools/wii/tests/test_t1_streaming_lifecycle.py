@@ -68,9 +68,18 @@ class T1StreamingLifecycleTests(unittest.TestCase):
         self.assertIn("streamState == STREAMSTATE_READING", admission)
         self.assertIn("streamState == STREAMSTATE_STARTED", admission)
         self.assertIn("ent->m_rwObject == nil", admission)
+        self.assertIn("!m_loadingPriority", admission)
         self.assertIn("CStreaming::ms_numPriorityRequests < 4", admission)
-        self.assertIn("gWiiBigBuildingRequestsThisFrame >= 2 &&", admission)
+        self.assertIn("gWiiBigBuildingRequestsThisFrame >= 2", admission)
         self.assertIn("!canPromote", admission)
+
+    def test_big_building_requests_do_not_enter_the_transient_nonpriority_queue(self) -> None:
+        scan = function_body(RENDERER_SOURCE, "CRenderer::ScanBigBuildingList(CPtrList &list)")
+        admission_start = scan.index("case VIS_STREAMME:")
+        admission = scan[admission_start:]
+        self.assertIn("if(!canPromote || frameCap || backlogCap)", admission)
+        self.assertIn('"priority_cap"', admission)
+        self.assertIn("flags = STREAMFLAGS_PRIORITY", admission)
 
     def test_loadscene_protection_is_named_and_reaches_resident_txd(self) -> None:
         self.assertIn("STREAMFLAGS_LOADSCENE_PROTECT = 0x20", STREAMING_HEADER)

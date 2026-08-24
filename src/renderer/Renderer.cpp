@@ -1648,17 +1648,18 @@ CRenderer::ScanBigBuildingList(CPtrList &list)
 				   streamState == STREAMSTATE_STARTED)
 					break;
 
-				// Visible entities without an instance may use the bounded priority
-				// slots. This exception can bypass the normal caps, but remains
-				// limited by the existing global priority count.
+				// A visible big building must use the existing priority queue. A
+				// non-priority request would be discarded by CStreaming::Update's
+				// end-of-frame request cleanup before it can become visible.
 				bool canPromote = ent->m_rwObject == nil &&
+				                  !m_loadingPriority &&
 				                  CStreaming::ms_numPriorityRequests < 4;
-				bool frameCap = gWiiBigBuildingRequestsThisFrame >= 2 &&
-				                !canPromote;
-				bool backlogCap = CStreaming::ms_numModelsRequested >= 24 && !canPromote;
-				if(frameCap || backlogCap){
+				bool frameCap = gWiiBigBuildingRequestsThisFrame >= 2;
+				bool backlogCap = CStreaming::ms_numModelsRequested >= 24;
+				if(!canPromote || frameCap || backlogCap){
 				#if WII_STREAM_BIG_BUILDING_PROBE
 					CStreaming::ProbeBigBuilding("scan_skip", ent->GetModelIndex(), 0,
+					                             !canPromote ? "priority_cap" :
 					                             frameCap && backlogCap ?
 					                             "frame_cap+backlog_cap" :
 					                             frameCap ? "frame_cap" : "backlog_cap");
