@@ -1639,9 +1639,22 @@ CRenderer::ScanBigBuildingList(CPtrList &list)
 		case VIS_STREAMME:
 			if(!CStreaming::ms_disableStreaming){
 #ifdef WII
-				bool canPromote = !m_loadingPriority &&
+				uint8 streamState =
+					CStreaming::ms_aInfoForModel[ent->GetModelIndex()].m_loadState;
+				// A loaded or actively reading model cannot be made more ready by
+				// another request. Keep the admission path for queued work only.
+				if(streamState == STREAMSTATE_LOADED ||
+				   streamState == STREAMSTATE_READING ||
+				   streamState == STREAMSTATE_STARTED)
+					break;
+
+				// Visible entities without an instance may use the bounded priority
+				// slots. This exception can bypass the normal caps, but remains
+				// limited by the existing global priority count.
+				bool canPromote = ent->m_rwObject == nil &&
 				                  CStreaming::ms_numPriorityRequests < 4;
-				bool frameCap = gWiiBigBuildingRequestsThisFrame >= 2;
+				bool frameCap = gWiiBigBuildingRequestsThisFrame >= 2 &&
+				                !canPromote;
 				bool backlogCap = CStreaming::ms_numModelsRequested >= 24 && !canPromote;
 				if(frameCap || backlogCap){
 				#if WII_STREAM_BIG_BUILDING_PROBE
