@@ -1988,8 +1988,9 @@ CStreaming::RetireLeastUsedGxTxd(uint32 excludeMask)
 			blocker |= WII_AUDIT_BLOCK_FLAGS;
 		if(txdDef == nil || txdDef->texDict == nil)
 			blocker |= WII_AUDIT_BLOCK_STATE;
-		if(CTxdStore::GetNumRefs(txdId) != 0)
-			blocker |= WII_AUDIT_BLOCK_REFS;
+		// A loaded model owns a TXD reference for its source atomic/clump.
+		// Those references must be released with the dependency closure below;
+		// they are not, by themselves, a reason to block TXD retirement.
 		if(CTxdStore::IsTxdAliasPinned(txdId))
 			blocker |= WII_AUDIT_BLOCK_ALIAS;
 		bool requested = IsTxdUsedByRequestedModels(txdId);
@@ -2013,18 +2014,21 @@ CStreaming::RetireLeastUsedGxTxd(uint32 excludeMask)
 		   (si->m_flags & (excludeMask | STREAMFLAGS_CANT_REMOVE)) != 0 ||
 		   CTxdStore::GetSlot(txdId) == nil ||
 		   CTxdStore::GetSlot(txdId)->texDict == nil ||
-		   CTxdStore::GetNumRefs(txdId) != 0 ||
 		   CTxdStore::IsTxdAliasPinned(txdId) ||
 		   IsTxdUsedByRequestedModels(txdId))
 			continue;
 		#endif
 
 		bool dependencyClosed = true;
+		bool hasLoadedModelObject = false;
 		for(int32 modelId = 0; modelId < STREAM_OFFSET_TXD; modelId++){
 			CBaseModelInfo *mi = CModelInfo::GetModelInfo(modelId);
 			if(mi == nil || mi->GetTxdSlot() != txdId ||
 			   ms_aInfoForModel[modelId].m_loadState == STREAMSTATE_NOTLOADED)
 				continue;
+			if(ms_aInfoForModel[modelId].m_loadState == STREAMSTATE_LOADED &&
+			   mi->GetRwObject() != nil)
+				hasLoadedModelObject = true;
 			if(ms_aInfoForModel[modelId].m_loadState != STREAMSTATE_LOADED ||
 			   CModelInfo::GetModelInfo(modelId)->GetNumRefs() != 0 ||
 			   (ms_aInfoForModel[modelId].m_flags &
@@ -2034,7 +2038,9 @@ CStreaming::RetireLeastUsedGxTxd(uint32 excludeMask)
 				break;
 			}
 		}
-		if(dependencyClosed){
+		bool refsAreRetirable = hasLoadedModelObject ||
+		                        CTxdStore::GetNumRefs(txdId) == 0;
+		if(dependencyClosed && refsAreRetirable){
 			#if WII_STREAM_LIFECYCLE_AUDIT
 			auditScan.eligibleTxd++;
 			auditScan.eligibleBytes += residentBytes;
@@ -2043,12 +2049,14 @@ CStreaming::RetireLeastUsedGxTxd(uint32 excludeMask)
 			break;
 		}
 		#if WII_STREAM_LIFECYCLE_AUDIT
-		if(!dependencyClosed){
+		if(!dependencyClosed || !refsAreRetirable){
 			auditScan.blockedTxd++;
 			auditScan.blockedBytes += residentBytes;
-			auditScan.reasonTxd[4]++;
-			auditScan.reasonBytes[4] += residentBytes;
+			int reasonBit = dependencyClosed ? 1 : 4;
+			auditScan.reasonTxd[reasonBit]++;
+			auditScan.reasonBytes[reasonBit] += residentBytes;
 			WiiLifecycleAuditRecordBlocker(&auditScan, txdId, residentBytes,
+			                              dependencyClosed ? WII_AUDIT_BLOCK_REFS :
 			                              WII_AUDIT_BLOCK_DEPENDENCY);
 		}
 		#endif
@@ -2093,24 +2101,33 @@ CStreaming::RetireLeastUsedGxTxd(uint32 excludeMask)
 	}
 	const char *txdName = CTxdStore::GetTxdName(candidateTxd);
 	uint32 attributedBytes = gWiiTxdGxResidency[candidateTxd];
-	while(CTxdStore::GetNumRefs(candidateTxd) > 0)
+	// Drop only the temporary guard.  Any references left now belong to an
+	// external owner and must keep the TXD resident.
+	for(int32 i = 0; i < txdGuardRefs; i++)
 		CTxdStore::RemoveRefWithoutDelete(candidateTxd);
-	RemoveModel(candidateTxd + STREAM_OFFSET_TXD);
+	bool txdRemoved = false;
+	if(CTxdStore::GetNumRefs(candidateTxd) == 0 &&
+	   !CTxdStore::IsTxdAliasPinned(candidateTxd) &&
+	   !IsTxdUsedByRequestedModels(candidateTxd)){
+		RemoveModel(candidateTxd + STREAM_OFFSET_TXD);
+		txdRemoved = true;
+	}
 
 	WiiMemoryPoolSnapshot after;
 	WiiMemoryGetPoolSnapshot(&after);
 	bool releasedGx = after.gxUsed < before.gxUsed;
-	printf("[WII-GX-RETIRE] txd='%s' models=%d attributed=%uKB released=%uKB effective=%d\n",
+	printf("[WII-GX-RETIRE] txd='%s' models=%d txd_removed=%d attributed=%uKB released=%uKB effective=%d\n",
 	       txdName ? txdName : "<unnamed>", removedModels,
+	       txdRemoved ? 1 : 0,
 	       (unsigned)(attributedBytes / 1024u),
 	       releasedGx ? (unsigned)((before.gxUsed - after.gxUsed) / 1024u) : 0u,
 	       releasedGx ? 1 : 0);
 	#if WII_STREAM_LIFECYCLE_AUDIT
-	printf("[WII-LIFE] event=gx_retire txd='%s' attributed=%uKB released=%uKB models=%d refs_after=%d alias_pins=%d gx_free=%uKB->%uKB gx_largest=%uKB->%uKB effective=%d\n",
+	printf("[WII-LIFE] event=gx_retire txd='%s' attributed=%uKB released=%uKB models=%d txd_removed=%d refs_after=%d alias_pins=%d gx_free=%uKB->%uKB gx_largest=%uKB->%uKB effective=%d\n",
 	       txdName ? txdName : "<unnamed>",
 	       (unsigned)(attributedBytes / 1024u),
 	       releasedGx ? (unsigned)((before.gxUsed - after.gxUsed) / 1024u) : 0u,
-	       removedModels, CTxdStore::GetNumRefs(candidateTxd),
+	       removedModels, txdRemoved ? 1 : 0, CTxdStore::GetNumRefs(candidateTxd),
 	       CTxdStore::GetSlot(candidateTxd) ? CTxdStore::GetSlot(candidateTxd)->aliasPinCount : 0,
 	       (unsigned)(before.gxFree / 1024u), (unsigned)(after.gxFree / 1024u),
 	       (unsigned)(before.gxLargest / 1024u), (unsigned)(after.gxLargest / 1024u),

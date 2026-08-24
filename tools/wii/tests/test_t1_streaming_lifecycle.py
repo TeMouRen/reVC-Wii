@@ -108,6 +108,13 @@ class T1StreamingLifecycleTests(unittest.TestCase):
         self.assertIn("GetTxdSlot()", retirement)
         self.assertIn("txdGuardRefs", retirement)
         self.assertIn("RemoveRefWithoutDelete", retirement)
+        self.assertIn("external owner and must keep the TXD resident", retirement)
+        self.assertIn("txdRemoved", retirement)
+        self.assertIn("hasLoadedModelObject", retirement)
+        self.assertIn("refsAreRetirable", retirement)
+        self.assertNotIn(
+            "while(CTxdStore::GetNumRefs(candidateTxd) > 0)", retirement
+        )
         self.assertIn("after.gxUsed < before.gxUsed", retirement)
 
         convert = function_body(
