@@ -363,6 +363,10 @@ CTxdStore::RemoveTxd(int slot)
 {
 	TxdDef *def = GetSlot(slot);
 	if(def->aliasPinCount > 0){
+	#if WII_STREAM_LIFECYCLE_AUDIT
+		printf("[WII-LIFE] event=txd_remove_blocked txd='%s' slot=%d refs=%d alias_pins=%d reason=alias_pin\n",
+		       def->name, slot, def->refCount, def->aliasPinCount);
+	#endif
 		WiiReportAliasLifetime("stream-remove-blocked", slot, def);
 		return false;
 	}

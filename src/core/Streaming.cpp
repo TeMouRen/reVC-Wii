@@ -83,6 +83,321 @@ WiiSnapshotTxdGxResidency(void)
 	rw::gx::texPoolVisitOwnerResidency(WiiAccumulateTxdGxResidency);
 }
 
+#if WII_STREAM_LIFECYCLE_AUDIT
+enum WiiLifecycleAuditBlocker {
+	WII_AUDIT_BLOCK_FLAGS      = 1u << 0,
+	WII_AUDIT_BLOCK_REFS       = 1u << 1,
+	WII_AUDIT_BLOCK_ALIAS      = 1u << 2,
+	WII_AUDIT_BLOCK_REQUESTED  = 1u << 3,
+	WII_AUDIT_BLOCK_DEPENDENCY = 1u << 4,
+	WII_AUDIT_BLOCK_STATE      = 1u << 5,
+};
+
+struct WiiLifecycleAuditBlockerEntry {
+	int32 txd;
+	uint32 bytes;
+	uint32 reason;
+	int refs;
+	int aliasPins;
+	int modelRefs;
+	int loadedModels;
+};
+
+struct WiiLifecycleAuditScan {
+	uint32 residentTxd;
+	uint32 residentBytes;
+	uint32 eligibleTxd;
+	uint32 eligibleBytes;
+	uint32 blockedTxd;
+	uint32 blockedBytes;
+	uint32 reasonTxd[6];
+	uint32 reasonBytes[6];
+	WiiLifecycleAuditBlockerEntry top[8];
+	int topCount;
+};
+
+static void WiiLifecycleAuditTxdStats(int32 txdId, int *loadedModels,
+	                                   int *modelRefs, uint32 *flags);
+
+static void
+WiiLifecycleAuditRecordBlocker(WiiLifecycleAuditScan *scan, int32 txdId,
+	                             uint32 bytes, uint32 reason)
+{
+	if(scan == nil || reason == 0)
+		return;
+	WiiLifecycleAuditBlockerEntry entry;
+	entry.txd = txdId;
+	entry.bytes = bytes;
+	entry.reason = reason;
+	entry.refs = CTxdStore::GetNumRefs(txdId);
+	entry.aliasPins = CTxdStore::GetSlot(txdId) ? CTxdStore::GetSlot(txdId)->aliasPinCount : 0;
+	entry.modelRefs = 0;
+	entry.loadedModels = 0;
+	WiiLifecycleAuditTxdStats(txdId, &entry.loadedModels, &entry.modelRefs, nil);
+	int insert = scan->topCount < 8 ? scan->topCount++ : -1;
+	if(insert < 0){
+		for(int i = 0; i < 8; i++)
+			if(bytes > scan->top[i].bytes){ insert = i; break; }
+	}
+	if(insert < 0)
+		return;
+	if(insert < 8){
+		int limit = scan->topCount < 8 ? scan->topCount - 1 : 7;
+		for(int i = limit; i > insert; i--)
+			scan->top[i] = scan->top[i - 1];
+		scan->top[insert] = entry;
+	}
+}
+
+static void
+WiiLifecycleAuditLogGxBlockers(const WiiLifecycleAuditScan *scan)
+{
+	if(scan == nil)
+		return;
+	printf("[WII-LIFE] event=gx_scan resident_txd=%u resident=%uKB eligible_txd=%u eligible=%uKB blocked_txd=%u blocked=%uKB flags=%u/%uKB refs=%u/%uKB alias=%u/%uKB requested=%u/%uKB dependency=%u/%uKB state=%u/%uKB\n",
+	       (unsigned)scan->residentTxd, (unsigned)(scan->residentBytes / 1024u),
+	       (unsigned)scan->eligibleTxd, (unsigned)(scan->eligibleBytes / 1024u),
+	       (unsigned)scan->blockedTxd, (unsigned)(scan->blockedBytes / 1024u),
+	       (unsigned)scan->reasonTxd[0], (unsigned)(scan->reasonBytes[0] / 1024u),
+	       (unsigned)scan->reasonTxd[1], (unsigned)(scan->reasonBytes[1] / 1024u),
+	       (unsigned)scan->reasonTxd[2], (unsigned)(scan->reasonBytes[2] / 1024u),
+	       (unsigned)scan->reasonTxd[3], (unsigned)(scan->reasonBytes[3] / 1024u),
+	       (unsigned)scan->reasonTxd[4], (unsigned)(scan->reasonBytes[4] / 1024u),
+	       (unsigned)scan->reasonTxd[5], (unsigned)(scan->reasonBytes[5] / 1024u));
+	for(int i = 0; i < scan->topCount; i++){
+		const WiiLifecycleAuditBlockerEntry *entry = &scan->top[i];
+		printf("[WII-LIFE] event=gx_blocker rank=%d txd='%s' gx=%uKB reason=0x%02X refs=%d alias_pins=%d loaded_models=%d model_refs=%d\n",
+		       i + 1,
+		       CTxdStore::GetTxdName(entry->txd) ? CTxdStore::GetTxdName(entry->txd) : "<unnamed>",
+		       (unsigned)(entry->bytes / 1024u), (unsigned)entry->reason,
+		       entry->refs, entry->aliasPins, entry->loadedModels, entry->modelRefs);
+	}
+}
+
+struct WiiLifecycleAuditHandoff {
+	bool active;
+	uint32 sequence;
+	eLevelName from;
+	eLevelName to;
+	uint32 startedMs;
+	WiiMemoryPoolSnapshot before;
+	uint32 oldEntitiesBefore;
+	uint32 oldRwBefore;
+};
+
+static WiiLifecycleAuditHandoff gWiiLifecycleAuditHandoff;
+static bool gWiiLifecycleAuditGxBlockedEpisode;
+static uint32 gWiiLifecycleAuditEntityLevels[TXDSTORESIZE][3];
+static uint32 gWiiLifecycleAuditEntityRw[TXDSTORESIZE][3];
+static uint16 gWiiLifecycleAuditLoadedModels[TXDSTORESIZE];
+static uint32 gWiiLifecycleAuditModelRefs[TXDSTORESIZE];
+static uint32 gWiiLifecycleAuditModelFlags[TXDSTORESIZE];
+
+static const char *
+WiiLifecycleAuditLevelName(eLevelName level)
+{
+	switch(level){
+	case LEVEL_BEACH: return "beach";
+	case LEVEL_MAINLAND: return "mainland";
+	default: return "generic";
+	}
+}
+
+static uint32
+WiiLifecycleAuditNowMs(void)
+{
+	return CTimer::GetCurrentTimeInCycles() / CTimer::GetCyclesPerMillisecond();
+}
+
+static void
+WiiLifecycleAuditCountLevelEntities(eLevelName level, uint32 *total, uint32 *rw)
+{
+	uint32 count = 0, rwCount = 0;
+	for(int poolKind = 0; poolKind < 4; poolKind++){
+		int size = 0;
+		if(poolKind == 0) size = CPools::GetBuildingPool()->GetSize();
+		else if(poolKind == 1) size = CPools::GetTreadablePool()->GetSize();
+		else if(poolKind == 2) size = CPools::GetObjectPool()->GetSize();
+		else size = CPools::GetDummyPool()->GetSize();
+		for(int i = size - 1; i >= 0; i--){
+			CEntity *entity = nil;
+			if(poolKind == 0) entity = CPools::GetBuildingPool()->GetSlot(i);
+			else if(poolKind == 1) entity = CPools::GetTreadablePool()->GetSlot(i);
+			else if(poolKind == 2) entity = CPools::GetObjectPool()->GetSlot(i);
+			else entity = CPools::GetDummyPool()->GetSlot(i);
+			if(entity && entity->m_level == level){
+				count++;
+				if(entity->m_rwObject)
+					rwCount++;
+			}
+		}
+	}
+	if(total) *total = count;
+	if(rw) *rw = rwCount;
+}
+
+static void
+WiiLifecycleAuditCollectEntityLevels(void)
+{
+	memset(gWiiLifecycleAuditEntityLevels, 0, sizeof(gWiiLifecycleAuditEntityLevels));
+	memset(gWiiLifecycleAuditEntityRw, 0, sizeof(gWiiLifecycleAuditEntityRw));
+	for(int poolKind = 0; poolKind < 4; poolKind++){
+		int size = 0;
+		if(poolKind == 0) size = CPools::GetBuildingPool()->GetSize();
+		else if(poolKind == 1) size = CPools::GetTreadablePool()->GetSize();
+		else if(poolKind == 2) size = CPools::GetObjectPool()->GetSize();
+		else size = CPools::GetDummyPool()->GetSize();
+		for(int i = size - 1; i >= 0; i--){
+			CEntity *entity = nil;
+			if(poolKind == 0) entity = CPools::GetBuildingPool()->GetSlot(i);
+			else if(poolKind == 1) entity = CPools::GetTreadablePool()->GetSlot(i);
+			else if(poolKind == 2) entity = CPools::GetObjectPool()->GetSlot(i);
+			else entity = CPools::GetDummyPool()->GetSlot(i);
+			if(entity == nil)
+				continue;
+			int32 modelId = entity->GetModelIndex();
+			if(modelId < 0 || modelId >= STREAM_OFFSET_TXD)
+				continue;
+			CBaseModelInfo *mi = CModelInfo::GetModelInfo(modelId);
+			if(mi == nil)
+				continue;
+			int32 txdId = mi->GetTxdSlot();
+			if(txdId < 0 || txdId >= TXDSTORESIZE)
+				continue;
+			int level = entity->m_level >= LEVEL_GENERIC && entity->m_level <= LEVEL_MAINLAND ?
+			            entity->m_level : LEVEL_GENERIC;
+			gWiiLifecycleAuditEntityLevels[txdId][level]++;
+			if(entity->m_rwObject)
+				gWiiLifecycleAuditEntityRw[txdId][level]++;
+		}
+	}
+}
+
+static void
+WiiLifecycleAuditCollectModelStats(void)
+{
+	memset(gWiiLifecycleAuditLoadedModels, 0, sizeof(gWiiLifecycleAuditLoadedModels));
+	memset(gWiiLifecycleAuditModelRefs, 0, sizeof(gWiiLifecycleAuditModelRefs));
+	memset(gWiiLifecycleAuditModelFlags, 0, sizeof(gWiiLifecycleAuditModelFlags));
+	for(int32 modelId = 0; modelId < STREAM_OFFSET_TXD; modelId++){
+		CBaseModelInfo *mi = CModelInfo::GetModelInfo(modelId);
+		if(mi == nil || mi->GetTxdSlot() < 0 || mi->GetTxdSlot() >= TXDSTORESIZE ||
+		   CStreaming::ms_aInfoForModel[modelId].m_loadState == STREAMSTATE_NOTLOADED)
+			continue;
+		int32 txdId = mi->GetTxdSlot();
+		gWiiLifecycleAuditLoadedModels[txdId]++;
+		gWiiLifecycleAuditModelRefs[txdId] += mi->GetNumRefs();
+		gWiiLifecycleAuditModelFlags[txdId] |= CStreaming::ms_aInfoForModel[modelId].m_flags;
+	}
+}
+
+static void
+WiiLifecycleAuditTxdStats(int32 txdId, int *loadedModels, int *modelRefs, uint32 *flags)
+{
+	if(loadedModels) *loadedModels = gWiiLifecycleAuditLoadedModels[txdId];
+	if(modelRefs) *modelRefs = gWiiLifecycleAuditModelRefs[txdId];
+	if(flags) *flags = gWiiLifecycleAuditModelFlags[txdId];
+}
+
+static void
+WiiLifecycleAuditHandoffBegin(const char *reason, eLevelName from, eLevelName to)
+{
+	if(gWiiLifecycleAuditHandoff.active)
+		return;
+	gWiiLifecycleAuditHandoff.active = true;
+	gWiiLifecycleAuditHandoff.sequence++;
+	gWiiLifecycleAuditHandoff.from = from;
+	gWiiLifecycleAuditHandoff.to = to;
+	gWiiLifecycleAuditHandoff.startedMs = WiiLifecycleAuditNowMs();
+	WiiMemoryGetPoolSnapshot(&gWiiLifecycleAuditHandoff.before);
+	WiiLifecycleAuditCountLevelEntities(from,
+	                                    &gWiiLifecycleAuditHandoff.oldEntitiesBefore,
+	                                    &gWiiLifecycleAuditHandoff.oldRwBefore);
+	printf("[WII-LIFE] event=handoff_begin seq=%u reason=%s from=%s to=%s gx_free=%uKB gx_largest=%uKB requested=%d priority=%d old_entities=%u old_rw=%u\n",
+	       (unsigned)gWiiLifecycleAuditHandoff.sequence,
+	       reason ? reason : "unknown", WiiLifecycleAuditLevelName(from),
+	       WiiLifecycleAuditLevelName(to),
+	       (unsigned)(gWiiLifecycleAuditHandoff.before.gxFree / 1024u),
+	       (unsigned)(gWiiLifecycleAuditHandoff.before.gxLargest / 1024u),
+	       CStreaming::ms_numModelsRequested, CStreaming::ms_numPriorityRequests,
+	       (unsigned)gWiiLifecycleAuditHandoff.oldEntitiesBefore,
+	       (unsigned)gWiiLifecycleAuditHandoff.oldRwBefore);
+}
+
+static void
+WiiLifecycleAuditResiduals(void)
+{
+	WiiLifecycleAuditCollectEntityLevels();
+	bool logged[TXDSTORESIZE];
+	memset(logged, 0, sizeof(logged));
+	for(int rank = 0; rank < 8; rank++){
+		int32 best = -1;
+		uint32 bestBytes = 0;
+		for(int32 txdId = 0; txdId < TXDSTORESIZE; txdId++){
+			if(logged[txdId] || gWiiTxdGxResidency[txdId] == 0)
+				continue;
+			uint32 oldCount = gWiiLifecycleAuditEntityLevels[txdId][gWiiLifecycleAuditHandoff.from];
+			uint32 currentCount = gWiiLifecycleAuditEntityLevels[txdId][gWiiLifecycleAuditHandoff.to];
+			int loadedModels = 0, modelRefs = 0;
+			WiiLifecycleAuditTxdStats(txdId, &loadedModels, &modelRefs, nil);
+			if(oldCount == 0 && currentCount == 0 && loadedModels == 0)
+				continue;
+			if(gWiiTxdGxResidency[txdId] > bestBytes){
+				best = txdId;
+				bestBytes = gWiiTxdGxResidency[txdId];
+			}
+		}
+		if(best < 0)
+			break;
+		logged[best] = true;
+		int loadedModels = 0, modelRefs = 0;
+		uint32 flags = 0;
+		WiiLifecycleAuditTxdStats(best, &loadedModels, &modelRefs, &flags);
+		uint32 oldCount = gWiiLifecycleAuditEntityLevels[best][gWiiLifecycleAuditHandoff.from];
+		uint32 currentCount = gWiiLifecycleAuditEntityLevels[best][gWiiLifecycleAuditHandoff.to];
+		const char *scope = oldCount && currentCount ? "shared" :
+		                    oldCount ? "old_only" : currentCount ? "current_only" : "dormant_model";
+		printf("[WII-LIFE] event=residual seq=%u rank=%d txd='%s' gx=%uKB scope=%s old_entities=%u current_entities=%u old_rw=%u current_rw=%u loaded_models=%d model_refs=%d flags=0x%02X alias_pins=%d requested=%d\n",
+		       (unsigned)gWiiLifecycleAuditHandoff.sequence, rank + 1,
+		       CTxdStore::GetTxdName(best) ? CTxdStore::GetTxdName(best) : "<unnamed>",
+		       (unsigned)(bestBytes / 1024u), scope,
+		       (unsigned)oldCount, (unsigned)currentCount,
+		       (unsigned)gWiiLifecycleAuditEntityRw[best][gWiiLifecycleAuditHandoff.from],
+		       (unsigned)gWiiLifecycleAuditEntityRw[best][gWiiLifecycleAuditHandoff.to],
+		       loadedModels, modelRefs, (unsigned)flags,
+		       CTxdStore::GetSlot(best) ? CTxdStore::GetSlot(best)->aliasPinCount : 0,
+		       CStreaming::IsTxdUsedByRequestedModels(best) ? 1 : 0);
+	}
+}
+
+static void
+WiiLifecycleAuditHandoffEnd(void)
+{
+	if(!gWiiLifecycleAuditHandoff.active)
+		return;
+	WiiMemoryPoolSnapshot after;
+	WiiMemoryGetPoolSnapshot(&after);
+	WiiSnapshotTxdGxResidency();
+	WiiLifecycleAuditCollectModelStats();
+	uint32 oldEntities = 0, oldRw = 0, currentEntities = 0, currentRw = 0;
+	WiiLifecycleAuditCountLevelEntities(gWiiLifecycleAuditHandoff.from, &oldEntities, &oldRw);
+	WiiLifecycleAuditCountLevelEntities(gWiiLifecycleAuditHandoff.to, &currentEntities, &currentRw);
+	printf("[WII-LIFE] event=handoff_end seq=%u duration=%ums old_entities=%u->%u old_rw=%u->%u current_entities=%u current_rw=%u requested=%d priority=%d gx_free=%uKB->%uKB gx_largest=%uKB->%uKB\n",
+	       (unsigned)gWiiLifecycleAuditHandoff.sequence,
+	       (unsigned)(WiiLifecycleAuditNowMs() - gWiiLifecycleAuditHandoff.startedMs),
+	       (unsigned)gWiiLifecycleAuditHandoff.oldEntitiesBefore, (unsigned)oldEntities,
+	       (unsigned)gWiiLifecycleAuditHandoff.oldRwBefore, (unsigned)oldRw,
+	       (unsigned)currentEntities, (unsigned)currentRw,
+	       CStreaming::ms_numModelsRequested, CStreaming::ms_numPriorityRequests,
+	       (unsigned)(gWiiLifecycleAuditHandoff.before.gxFree / 1024u),
+	       (unsigned)(after.gxFree / 1024u),
+	       (unsigned)(gWiiLifecycleAuditHandoff.before.gxLargest / 1024u),
+	       (unsigned)(after.gxLargest / 1024u));
+	WiiLifecycleAuditResiduals();
+	gWiiLifecycleAuditHandoff.active = false;
+}
+#endif
+
 static const char *
 WiiStreamStateName(uint8 state)
 {
@@ -1648,6 +1963,11 @@ bool
 CStreaming::RetireLeastUsedGxTxd(uint32 excludeMask)
 {
 	WiiSnapshotTxdGxResidency();
+	#if WII_STREAM_LIFECYCLE_AUDIT
+	WiiLifecycleAuditCollectModelStats();
+	WiiLifecycleAuditScan auditScan;
+	memset(&auditScan, 0, sizeof(auditScan));
+	#endif
 
 	int32 candidateTxd = -1;
 	for(CStreamingInfo *si = ms_endLoadedList.m_prev;
@@ -1656,7 +1976,40 @@ CStreaming::RetireLeastUsedGxTxd(uint32 excludeMask)
 		if(streamId < STREAM_OFFSET_TXD || streamId >= STREAM_OFFSET_COL)
 			continue;
 		int32 txdId = streamId - STREAM_OFFSET_TXD;
-		if(gWiiTxdGxResidency[txdId] == 0 ||
+		uint32 residentBytes = gWiiTxdGxResidency[txdId];
+		#if WII_STREAM_LIFECYCLE_AUDIT
+		if(residentBytes > 0){
+			auditScan.residentTxd++;
+			auditScan.residentBytes += residentBytes;
+		}
+		uint32 blocker = 0;
+		TxdDef *txdDef = CTxdStore::GetSlot(txdId);
+		if((si->m_flags & (excludeMask | STREAMFLAGS_CANT_REMOVE)) != 0)
+			blocker |= WII_AUDIT_BLOCK_FLAGS;
+		if(txdDef == nil || txdDef->texDict == nil)
+			blocker |= WII_AUDIT_BLOCK_STATE;
+		if(CTxdStore::GetNumRefs(txdId) != 0)
+			blocker |= WII_AUDIT_BLOCK_REFS;
+		if(CTxdStore::IsTxdAliasPinned(txdId))
+			blocker |= WII_AUDIT_BLOCK_ALIAS;
+		bool requested = IsTxdUsedByRequestedModels(txdId);
+		if(requested)
+			blocker |= WII_AUDIT_BLOCK_REQUESTED;
+		if(residentBytes == 0)
+			continue;
+		if(blocker != 0){
+			auditScan.blockedTxd++;
+			auditScan.blockedBytes += residentBytes;
+			for(int bit = 0; bit < 6; bit++)
+				if(blocker & (1u << bit)){
+					auditScan.reasonTxd[bit]++;
+					auditScan.reasonBytes[bit] += residentBytes;
+				}
+			WiiLifecycleAuditRecordBlocker(&auditScan, txdId, residentBytes, blocker);
+			continue;
+		}
+		#else
+		if(residentBytes == 0 ||
 		   (si->m_flags & (excludeMask | STREAMFLAGS_CANT_REMOVE)) != 0 ||
 		   CTxdStore::GetSlot(txdId) == nil ||
 		   CTxdStore::GetSlot(txdId)->texDict == nil ||
@@ -1664,6 +2017,7 @@ CStreaming::RetireLeastUsedGxTxd(uint32 excludeMask)
 		   CTxdStore::IsTxdAliasPinned(txdId) ||
 		   IsTxdUsedByRequestedModels(txdId))
 			continue;
+		#endif
 
 		bool dependencyClosed = true;
 		for(int32 modelId = 0; modelId < STREAM_OFFSET_TXD; modelId++){
@@ -1681,13 +2035,38 @@ CStreaming::RetireLeastUsedGxTxd(uint32 excludeMask)
 			}
 		}
 		if(dependencyClosed){
+			#if WII_STREAM_LIFECYCLE_AUDIT
+			auditScan.eligibleTxd++;
+			auditScan.eligibleBytes += residentBytes;
+			#endif
 			candidateTxd = txdId;
 			break;
 		}
+		#if WII_STREAM_LIFECYCLE_AUDIT
+		if(!dependencyClosed){
+			auditScan.blockedTxd++;
+			auditScan.blockedBytes += residentBytes;
+			auditScan.reasonTxd[4]++;
+			auditScan.reasonBytes[4] += residentBytes;
+			WiiLifecycleAuditRecordBlocker(&auditScan, txdId, residentBytes,
+			                              WII_AUDIT_BLOCK_DEPENDENCY);
+		}
+		#endif
 	}
 
-	if(candidateTxd < 0)
+	if(candidateTxd < 0){
+		#if WII_STREAM_LIFECYCLE_AUDIT
+		WiiMemoryPoolSnapshot pressure;
+		WiiMemoryGetPoolSnapshot(&pressure);
+		if((pressure.gxFree < 3u * 1024u * 1024u ||
+		    pressure.gxLargest < 1u * 1024u * 1024u) &&
+		   !gWiiLifecycleAuditGxBlockedEpisode){
+			WiiLifecycleAuditLogGxBlockers(&auditScan);
+			gWiiLifecycleAuditGxBlockedEpisode = true;
+		}
+		#endif
 		return false;
+	}
 
 	WiiMemoryPoolSnapshot before;
 	WiiMemoryGetPoolSnapshot(&before);
@@ -1726,6 +2105,17 @@ CStreaming::RetireLeastUsedGxTxd(uint32 excludeMask)
 	       (unsigned)(attributedBytes / 1024u),
 	       releasedGx ? (unsigned)((before.gxUsed - after.gxUsed) / 1024u) : 0u,
 	       releasedGx ? 1 : 0);
+	#if WII_STREAM_LIFECYCLE_AUDIT
+	printf("[WII-LIFE] event=gx_retire txd='%s' attributed=%uKB released=%uKB models=%d refs_after=%d alias_pins=%d gx_free=%uKB->%uKB gx_largest=%uKB->%uKB effective=%d\n",
+	       txdName ? txdName : "<unnamed>",
+	       (unsigned)(attributedBytes / 1024u),
+	       releasedGx ? (unsigned)((before.gxUsed - after.gxUsed) / 1024u) : 0u,
+	       removedModels, CTxdStore::GetNumRefs(candidateTxd),
+	       CTxdStore::GetSlot(candidateTxd) ? CTxdStore::GetSlot(candidateTxd)->aliasPinCount : 0,
+	       (unsigned)(before.gxFree / 1024u), (unsigned)(after.gxFree / 1024u),
+	       (unsigned)(before.gxLargest / 1024u), (unsigned)(after.gxLargest / 1024u),
+	       releasedGx ? 1 : 0);
+	#endif
 	return releasedGx;
 }
 #endif
@@ -2257,11 +2647,15 @@ CStreaming::LoadBigBuildingsWhenNeeded(void)
 	if(CCutsceneMgr::IsCutsceneProcessing())
 		return;
 
-	if(CTheZones::m_CurrLevel == LEVEL_GENERIC || 
+	if(CTheZones::m_CurrLevel == LEVEL_GENERIC ||
 	   CTheZones::m_CurrLevel == CGame::currLevel)
 		return;
 
 	const CVector landingPosition = TheCamera.GetPosition();
+	#if WII_STREAM_LIFECYCLE_AUDIT
+	WiiLifecycleAuditHandoffBegin("load_big_buildings", CGame::currLevel,
+	                              CTheZones::m_CurrLevel);
+	#endif
 	CTimer::Suspend();
 	CGame::currLevel = CTheZones::m_CurrLevel;
 	ISLAND_LOADING_IS(LOW)
@@ -2300,6 +2694,9 @@ CStreaming::LoadBigBuildingsWhenNeeded(void)
 	ClearLoadSceneProtection();
 
 	CGame::TidyUpMemory(true, true);
+	#if WII_STREAM_LIFECYCLE_AUDIT
+	WiiLifecycleAuditHandoffEnd();
+	#endif
 	CTimer::Resume();
 
 	ISLAND_LOADING_IS(LOW)
@@ -3468,6 +3865,11 @@ CStreaming::MakeSpaceFor(int32 size)
 	static const uint32 GX_RETENTION_LARGEST_BYTES = 1u * 1024u * 1024u;
 	WiiMemoryPoolSnapshot gxSnapshot;
 	WiiMemoryGetPoolSnapshot(&gxSnapshot);
+	#if WII_STREAM_LIFECYCLE_AUDIT
+	if(gxSnapshot.gxFree >= GX_RETENTION_FREE_BYTES &&
+	   gxSnapshot.gxLargest >= GX_RETENTION_LARGEST_BYTES)
+		gWiiLifecycleAuditGxBlockedEpisode = false;
+	#endif
 	int gxRetireAttempts = 0;
 	while((gxSnapshot.gxFree < GX_RETENTION_FREE_BYTES ||
 	       gxSnapshot.gxLargest < GX_RETENTION_LARGEST_BYTES) &&
@@ -3511,6 +3913,10 @@ CStreaming::LoadScene(const CVector &pos)
 	DeleteAllRwObjects();
 	if(level == LEVEL_GENERIC)
 		level = CGame::currLevel;
+	#if WII_STREAM_LIFECYCLE_AUDIT
+	if(level != CGame::currLevel)
+		WiiLifecycleAuditHandoffBegin("load_scene", CGame::currLevel, level);
+	#endif
 	CGame::currLevel = level;
 	RemoveUnusedBigBuildings(level);
 	RequestBigBuildings(level, pos);
@@ -3534,6 +3940,9 @@ CStreaming::LoadScene(const CVector &pos)
 	InstanceLoadedModels(pos);
 
 	ClearLoadSceneProtection();
+	#if WII_STREAM_LIFECYCLE_AUDIT
+	WiiLifecycleAuditHandoffEnd();
+	#endif
 	debug("End load scene\n");
 }
 

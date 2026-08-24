@@ -17,6 +17,14 @@ MAIN_SOURCE = (REPO_ROOT / "src" / "core" / "main.cpp").read_text(
 GAME_SOURCE = (REPO_ROOT / "src" / "core" / "Game.cpp").read_text(
     encoding="utf-8"
 )
+CMAKE_SOURCE = (REPO_ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+BUILD_SOURCE = (REPO_ROOT / "build.sh").read_text(encoding="utf-8")
+CONFIG_SOURCE = (REPO_ROOT / "src" / "core" / "config.h").read_text(
+    encoding="utf-8"
+)
+TXD_SOURCE = (REPO_ROOT / "src" / "rw" / "TxdStore.cpp").read_text(
+    encoding="utf-8"
+)
 
 
 def function_body(source: str, signature: str) -> str:
@@ -126,6 +134,27 @@ class T1StreamingLifecycleTests(unittest.TestCase):
         )
         self.assertIn("LoadSplash(nil)", loading_screen)
         self.assertNotIn("LoadSplash(islandSplash", loading_screen)
+
+    def test_lifecycle_audit_is_bounded_and_opt_in(self) -> None:
+        self.assertIn(
+            'option(WII_STREAM_LIFECYCLE_AUDIT "Emit bounded Wii streaming lifecycle audit events" OFF)',
+            CMAKE_SOURCE,
+        )
+        self.assertIn('WII_STREAM_LIFECYCLE_AUDIT="${WII_STREAM_LIFECYCLE_AUDIT:-OFF}"', BUILD_SOURCE)
+        self.assertIn('-DWII_STREAM_LIFECYCLE_AUDIT="$WII_STREAM_LIFECYCLE_AUDIT"', BUILD_SOURCE)
+        self.assertIn("#define WII_STREAM_LIFECYCLE_AUDIT 0", CONFIG_SOURCE)
+        for marker in (
+            "event=handoff_begin",
+            "event=handoff_end",
+            "event=gx_scan",
+            "event=gx_blocker",
+            "event=gx_retire",
+            "event=residual",
+        ):
+            self.assertIn(marker, STREAMING_SOURCE)
+        self.assertIn("event=txd_remove_blocked", TXD_SOURCE)
+        self.assertIn("gWiiLifecycleAuditGxBlockedEpisode", STREAMING_SOURCE)
+        self.assertIn("!gWiiLifecycleAuditGxBlockedEpisode", STREAMING_SOURCE)
 
 
 if __name__ == "__main__":
