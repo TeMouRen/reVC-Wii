@@ -871,11 +871,27 @@ CRenderer::SetupEntityVisibility(CEntity *ent)
 	}
 
 	// Object is not loaded, figure out what to do
+	// On Wii, a short-range static building can sit in front of a loaded
+	// world LOD (garage doors and similar facade pieces are common examples).
+	// Admit those visible building entities across the existing world LOD
+	// horizon so their normal RW instance is ready before the camera reaches
+	// the near-model draw distance.  Keep the lookahead bounded to buildings
+	// inside the current frustum; this does not change the streaming queue or
+	// texture/GX policy.
+	bool wiiVisibleBuildingLookahead = false;
+#ifdef WII
+	wiiVisibleBuildingLookahead =
+		ent->IsBuilding() &&
+		ent->GetIsOnScreen() &&
+		dist < LOD_DISTANCE &&
+		mi->GetLargestLodDistance() < LOD_DISTANCE;
+#endif
 
 	if(mi->m_noFade){
 		mi->m_isDamaged = false;
 		// request model
-		if(dist - STREAM_DISTANCE < mi->GetLargestLodDistance() && request)
+		if((dist - STREAM_DISTANCE < mi->GetLargestLodDistance() ||
+		    wiiVisibleBuildingLookahead) && request)
 			return VIS_STREAMME;
 		return VIS_INVISIBLE;
 	}
@@ -886,7 +902,8 @@ CRenderer::SetupEntityVisibility(CEntity *ent)
 	mi->m_isDamaged = false;
 	if(a == nil){
 		// request model
-		if(dist - FADE_DISTANCE - STREAM_DISTANCE < mi->GetLargestLodDistance() && request)
+		if((dist - FADE_DISTANCE - STREAM_DISTANCE < mi->GetLargestLodDistance() ||
+		    wiiVisibleBuildingLookahead) && request)
 			return VIS_STREAMME;
 		return VIS_INVISIBLE;
 	}

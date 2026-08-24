@@ -96,6 +96,13 @@ class T1StreamingLifecycleTests(unittest.TestCase):
         self.assertIn("!m_loadingPriority || ent->GetIsOnScreen()", stream_case)
         self.assertNotIn("CStreaming::ms_numModelsRequested < 10", stream_case)
 
+    def test_visible_building_components_use_bounded_lod_lookahead(self) -> None:
+        setup = function_body(RENDERER_SOURCE, "CRenderer::SetupEntityVisibility(CEntity *ent)")
+        self.assertIn("ent->IsBuilding()", setup)
+        self.assertIn("ent->GetIsOnScreen()", setup)
+        self.assertIn("dist < LOD_DISTANCE", setup)
+        self.assertIn("wiiVisibleBuildingLookahead", setup)
+
     def test_loadscene_protection_is_named_and_reaches_resident_txd(self) -> None:
         self.assertIn("STREAMFLAGS_LOADSCENE_PROTECT = 0x20", STREAMING_HEADER)
         self.assertNotIn("STREAMFLAGS_20", STREAMING_HEADER)
