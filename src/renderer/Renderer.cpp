@@ -1242,6 +1242,23 @@ CRenderer::ScanWorld(void)
 		}else
 #endif
 		{
+			// Big-building LODs are the geometry that closes visible holes in the
+			// distant world. Admit them before ordinary sector priority requests so
+			// the existing bounded priority slots serve the visible proxy first.
+#ifdef NO_ISLAND_LOADING
+			if (FrontEndMenuManager.m_PrefsIslandLoading == CMenuManager::ISLAND_LOADING_HIGH) {
+				ScanBigBuildingList(CWorld::GetBigBuildingList(LEVEL_BEACH));
+				ScanBigBuildingList(CWorld::GetBigBuildingList(LEVEL_MAINLAND));
+			} else
+#endif
+			{
+#ifdef FIX_BUGS
+			if(CCollision::ms_collisionInMemory != LEVEL_GENERIC)
+#endif
+				ScanBigBuildingList(CWorld::GetBigBuildingList(CGame::currLevel));
+			}
+			ScanBigBuildingList(CWorld::GetBigBuildingList(LEVEL_GENERIC));
+
 			if(f > LOD_DISTANCE){
 				// priority
 				poly[0].x = CWorld::GetSectorX(vectors[CORNER_CAM].x);
@@ -1269,20 +1286,6 @@ CRenderer::ScanWorld(void)
 				poly[2].y = CWorld::GetSectorY(vectors[CORNER_FAR_TOPRIGHT].y);
 				ScanSectorPoly(poly, 3, ScanSectorList);
 			}
-			
-#ifdef NO_ISLAND_LOADING
-			if (FrontEndMenuManager.m_PrefsIslandLoading == CMenuManager::ISLAND_LOADING_HIGH) {
-				ScanBigBuildingList(CWorld::GetBigBuildingList(LEVEL_BEACH));
-				ScanBigBuildingList(CWorld::GetBigBuildingList(LEVEL_MAINLAND));
-			} else 
-#endif
-			{
-#ifdef FIX_BUGS
-			if(CCollision::ms_collisionInMemory != LEVEL_GENERIC)
-#endif
-				ScanBigBuildingList(CWorld::GetBigBuildingList(CGame::currLevel));
-			}
-			ScanBigBuildingList(CWorld::GetBigBuildingList(LEVEL_GENERIC));
 		}
 	}
 }

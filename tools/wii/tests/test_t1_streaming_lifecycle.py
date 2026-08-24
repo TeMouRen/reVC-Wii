@@ -81,6 +81,12 @@ class T1StreamingLifecycleTests(unittest.TestCase):
         self.assertIn('"priority_cap"', admission)
         self.assertIn("flags = STREAMFLAGS_PRIORITY", admission)
 
+    def test_big_buildings_are_scanned_before_ordinary_priority_sectors(self) -> None:
+        scan_world = function_body(RENDERER_SOURCE, "CRenderer::ScanWorld(void)")
+        big_building_scan = scan_world.index("ScanBigBuildingList(")
+        priority_scan = scan_world.index("ScanSectorList_Priority")
+        self.assertLess(big_building_scan, priority_scan)
+
     def test_loadscene_protection_is_named_and_reaches_resident_txd(self) -> None:
         self.assertIn("STREAMFLAGS_LOADSCENE_PROTECT = 0x20", STREAMING_HEADER)
         self.assertNotIn("STREAMFLAGS_20", STREAMING_HEADER)
