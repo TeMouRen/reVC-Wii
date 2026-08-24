@@ -1736,7 +1736,7 @@ CRenderer::ScanSectorList(CPtrList *lists)
 				break;
 			case VIS_STREAMME:
 				if(!CStreaming::ms_disableStreaming)
-					if(!m_loadingPriority || CStreaming::ms_numModelsRequested < 10)
+					if(!m_loadingPriority || ent->GetIsOnScreen())
 					CStreaming::RequestModel(ent->GetModelIndex(), 0);
 				break;
 			}

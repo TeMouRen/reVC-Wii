@@ -90,6 +90,12 @@ class T1StreamingLifecycleTests(unittest.TestCase):
         priority_scan = scan_world.index("ScanSectorList_Priority")
         self.assertLess(big_building_scan, priority_scan)
 
+    def test_visible_ordinary_entities_are_not_starved_by_priority_lod_scan(self) -> None:
+        scan = function_body(RENDERER_SOURCE, "CRenderer::ScanSectorList(CPtrList *lists)")
+        stream_case = scan[scan.index("case VIS_STREAMME:") :]
+        self.assertIn("!m_loadingPriority || ent->GetIsOnScreen()", stream_case)
+        self.assertNotIn("CStreaming::ms_numModelsRequested < 10", stream_case)
+
     def test_loadscene_protection_is_named_and_reaches_resident_txd(self) -> None:
         self.assertIn("STREAMFLAGS_LOADSCENE_PROTECT = 0x20", STREAMING_HEADER)
         self.assertNotIn("STREAMFLAGS_20", STREAMING_HEADER)
