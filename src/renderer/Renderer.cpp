@@ -1650,6 +1650,12 @@ CRenderer::ScanBigBuildingList(CPtrList &list)
 				   streamState == STREAMSTATE_READING ||
 				   streamState == STREAMSTATE_STARTED)
 					break;
+				// Once a visible big building is already queued at priority, do
+				// not consume another per-frame admission slot retrying it.
+				// Non-priority queued work still falls through so it can promote.
+				if(streamState == STREAMSTATE_INQUEUE &&
+				   CStreaming::ms_aInfoForModel[ent->GetModelIndex()].IsPriority())
+					break;
 
 				// A visible big building must use the existing priority queue. A
 				// non-priority request would be discarded by CStreaming::Update's

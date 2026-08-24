@@ -68,6 +68,8 @@ class T1StreamingLifecycleTests(unittest.TestCase):
         self.assertIn("streamState == STREAMSTATE_LOADED", admission)
         self.assertIn("streamState == STREAMSTATE_READING", admission)
         self.assertIn("streamState == STREAMSTATE_STARTED", admission)
+        self.assertIn("streamState == STREAMSTATE_INQUEUE", admission)
+        self.assertIn(".IsPriority()", admission)
         self.assertIn("ent->m_rwObject == nil", admission)
         self.assertIn("!m_loadingPriority", admission)
         self.assertNotIn("CStreaming::ms_numPriorityRequests < 4", wii_admission)
