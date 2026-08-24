@@ -1610,7 +1610,16 @@ CRenderer::ScanBigBuildingList(CPtrList &list)
 	int f = CTimer::GetFrameCounter() & 3;
 	for(node = list.first; node; node = node->next){
 		ent = (CEntity*)node->item;
-		if(ent->bOffscreen || (ent->m_randomSeed&3) != f){
+		bool needsVisibilitySetup = ent->bOffscreen || (ent->m_randomSeed&3) != f;
+#ifdef WII
+		// A loaded model resource is not enough for the entity fast path: the
+		// per-entity RW instance must also be bound before it can be visible.
+		if(ent->m_rwObject == nil ||
+		   CStreaming::ms_aInfoForModel[ent->GetModelIndex()].m_loadState !=
+		   STREAMSTATE_LOADED)
+			needsVisibilitySetup = true;
+#endif
+		if(needsVisibilitySetup){
 			ent->bOffscreen = true;
 			vis = SetupBigBuildingVisibility(ent);
 		}else

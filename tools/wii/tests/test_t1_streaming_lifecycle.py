@@ -25,6 +25,9 @@ CONFIG_SOURCE = (REPO_ROOT / "src" / "core" / "config.h").read_text(
 TXD_SOURCE = (REPO_ROOT / "src" / "rw" / "TxdStore.cpp").read_text(
     encoding="utf-8"
 )
+RENDERER_SOURCE = (REPO_ROOT / "src" / "renderer" / "Renderer.cpp").read_text(
+    encoding="utf-8"
+)
 
 
 def function_body(source: str, signature: str) -> str:
@@ -48,6 +51,15 @@ def function_region(source: str, signature: str, next_signature: str) -> str:
 
 
 class T1StreamingLifecycleTests(unittest.TestCase):
+    def test_big_building_fast_path_requires_entity_instance_and_loaded_model(self) -> None:
+        scan = function_body(RENDERER_SOURCE, "CRenderer::ScanBigBuildingList(CPtrList &list)")
+        guard_start = scan.index("bool needsVisibilitySetup")
+        guard_end = scan.index("if(needsVisibilitySetup)", guard_start)
+        guard = scan[guard_start:guard_end]
+        self.assertIn("ent->m_rwObject == nil", guard)
+        self.assertIn("STREAMSTATE_LOADED", guard)
+        self.assertIn("if(needsVisibilitySetup)", scan)
+
     def test_loadscene_protection_is_named_and_reaches_resident_txd(self) -> None:
         self.assertIn("STREAMFLAGS_LOADSCENE_PROTECT = 0x20", STREAMING_HEADER)
         self.assertNotIn("STREAMFLAGS_20", STREAMING_HEADER)
