@@ -64,12 +64,13 @@ class T1StreamingLifecycleTests(unittest.TestCase):
         scan = function_body(RENDERER_SOURCE, "CRenderer::ScanBigBuildingList(CPtrList &list)")
         admission_start = scan.index("case VIS_STREAMME:")
         admission = scan[admission_start:]
+        wii_admission = admission[admission.index("#ifdef WII") : admission.index("#else", admission.index("#ifdef WII"))]
         self.assertIn("streamState == STREAMSTATE_LOADED", admission)
         self.assertIn("streamState == STREAMSTATE_READING", admission)
         self.assertIn("streamState == STREAMSTATE_STARTED", admission)
         self.assertIn("ent->m_rwObject == nil", admission)
         self.assertIn("!m_loadingPriority", admission)
-        self.assertIn("CStreaming::ms_numPriorityRequests < 4", admission)
+        self.assertNotIn("CStreaming::ms_numPriorityRequests < 4", wii_admission)
         self.assertIn("gWiiBigBuildingRequestsThisFrame >= 2", admission)
         self.assertIn("!canPromote", admission)
 

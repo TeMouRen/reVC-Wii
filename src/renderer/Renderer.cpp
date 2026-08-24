@@ -1655,8 +1655,7 @@ CRenderer::ScanBigBuildingList(CPtrList &list)
 				// non-priority request would be discarded by CStreaming::Update's
 				// end-of-frame request cleanup before it can become visible.
 				bool canPromote = ent->m_rwObject == nil &&
-				                  !m_loadingPriority &&
-				                  CStreaming::ms_numPriorityRequests < 4;
+				                  !m_loadingPriority;
 				bool frameCap = gWiiBigBuildingRequestsThisFrame >= 2;
 				bool backlogCap = CStreaming::ms_numModelsRequested >= 24;
 				if(!canPromote || frameCap || backlogCap){
