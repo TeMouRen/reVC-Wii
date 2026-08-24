@@ -155,6 +155,10 @@ class T1StreamingLifecycleTests(unittest.TestCase):
         self.assertIn("event=txd_remove_blocked", TXD_SOURCE)
         self.assertIn("gWiiLifecycleAuditGxBlockedEpisode", STREAMING_SOURCE)
         self.assertIn("!gWiiLifecycleAuditGxBlockedEpisode", STREAMING_SOURCE)
+        self.assertIn("if(gWiiLifecycleAuditHandoff.active)", STREAMING_SOURCE)
+        self.assertIn("for(int rank = 0; rank < 8; rank++)", STREAMING_SOURCE)
+        self.assertIn("scan->topCount < 8", STREAMING_SOURCE)
+        self.assertIn("gxRetireAttempts < 4", STREAMING_SOURCE)
 
 
 if __name__ == "__main__":
