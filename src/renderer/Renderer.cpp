@@ -1617,6 +1617,13 @@ CRenderer::ScanBigBuildingList(CPtrList &list)
 			vis = VIS_VISIBLE;
 		switch(vis){
 		case VIS_VISIBLE:
+#if defined(WII) && WII_STREAM_BIG_BUILDING_PROBE
+			if(ent->m_rwObject == nil ||
+			   CStreaming::ms_aInfoForModel[ent->GetModelIndex()].m_loadState !=
+			   STREAMSTATE_LOADED)
+				CStreaming::ProbeBigBuilding("visible_missing", ent->GetModelIndex(),
+				                             0, "visible_without_rw");
+#endif
 			InsertEntityIntoList(ent);
 			ent->bOffscreen = false;
 			break;
@@ -1625,9 +1632,17 @@ CRenderer::ScanBigBuildingList(CPtrList &list)
 #ifdef WII
 				bool canPromote = !m_loadingPriority &&
 				                  CStreaming::ms_numPriorityRequests < 4;
-				if(gWiiBigBuildingRequestsThisFrame >= 2 ||
-				   (CStreaming::ms_numModelsRequested >= 24 && !canPromote))
+				bool frameCap = gWiiBigBuildingRequestsThisFrame >= 2;
+				bool backlogCap = CStreaming::ms_numModelsRequested >= 24 && !canPromote;
+				if(frameCap || backlogCap){
+				#if WII_STREAM_BIG_BUILDING_PROBE
+					CStreaming::ProbeBigBuilding("scan_skip", ent->GetModelIndex(), 0,
+					                             frameCap && backlogCap ?
+					                             "frame_cap+backlog_cap" :
+					                             frameCap ? "frame_cap" : "backlog_cap");
+				#endif
 					break;
+				}
 #endif
 				int32 flags = 0;
 #ifdef WII
@@ -1638,6 +1653,10 @@ CRenderer::ScanBigBuildingList(CPtrList &list)
 				   CStreaming::ms_numModelsRequested < 10 &&
 				   CStreaming::ms_numPriorityRequests < 4)
 					flags = STREAMFLAGS_PRIORITY;
+#endif
+#if defined(WII) && WII_STREAM_BIG_BUILDING_PROBE
+				CStreaming::ProbeBigBuilding("scan_request", ent->GetModelIndex(),
+				                             flags, "visible_streamme");
 #endif
 				CStreaming::RequestModel(ent->GetModelIndex(), flags);
 #ifdef WII

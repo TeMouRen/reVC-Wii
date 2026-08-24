@@ -163,6 +163,8 @@ public:
 	static bool RemoveLoadedVehicle(void);
 	static bool RemoveLeastUsedModel(uint32 excludeMask);
 #ifdef WII
+	static void ProbeBigBuilding(const char *event, int32 modelId, int32 flags,
+	                             const char *reason);
 	static bool RetireLeastUsedGxTxd(uint32 excludeMask);
 #endif
 	static void RemoveAllUnusedModels(void);

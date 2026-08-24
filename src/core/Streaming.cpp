@@ -410,6 +410,111 @@ WiiStreamStateName(uint8 state)
 	default: return "unknown";
 	}
 }
+
+#if WII_STREAM_BIG_BUILDING_PROBE
+static uint8 gWiiBigProbeLastSkipReason[STREAM_OFFSET_TXD];
+static uint8 gWiiBigProbeVisibleMissing[STREAM_OFFSET_TXD];
+
+static int32
+WiiBigProbeModelForTxd(int32 txdId)
+{
+	if(txdId < 0 || txdId >= TXDSTORESIZE)
+		return -1;
+	for(int32 modelId = 0; modelId < STREAM_OFFSET_TXD; modelId++){
+		CBaseModelInfo *base = CModelInfo::GetModelInfo(modelId);
+		if(base == nil || !base->IsSimple() || base->GetTxdSlot() != txdId)
+			continue;
+		if(((CSimpleModelInfo*)base)->m_isBigBuilding)
+			return modelId;
+	}
+	return -1;
+}
+
+static bool
+WiiBigProbeIsBigModel(int32 modelId)
+{
+	if(modelId < 0 || modelId >= STREAM_OFFSET_TXD)
+		return false;
+	CBaseModelInfo *base = CModelInfo::GetModelInfo(modelId);
+	return base != nil && base->IsSimple() &&
+	       ((CSimpleModelInfo*)base)->m_isBigBuilding;
+}
+#endif
+
+void
+CStreaming::ProbeBigBuilding(const char *event, int32 modelId, int32 flags,
+                              const char *reason)
+{
+#if WII_STREAM_BIG_BUILDING_PROBE
+	int32 txdId = -1;
+	if(modelId >= 0 && modelId < STREAM_OFFSET_TXD){
+		if(!WiiBigProbeIsBigModel(modelId))
+			return;
+		CBaseModelInfo *base = CModelInfo::GetModelInfo(modelId);
+		txdId = base ? base->GetTxdSlot() : -1;
+	}else if(modelId >= STREAM_OFFSET_TXD && modelId < STREAM_OFFSET_COL){
+		txdId = modelId - STREAM_OFFSET_TXD;
+		modelId = WiiBigProbeModelForTxd(txdId);
+		if(modelId < 0)
+			return;
+	}else{
+		return;
+	}
+
+	uint8 skipReason = 0;
+	if(event && !strcmp(event, "scan_skip")){
+		if(reason && strstr(reason, "frame_cap")) skipReason |= 1;
+		if(reason && strstr(reason, "backlog_cap")) skipReason |= 2;
+		if(skipReason == 0) skipReason = 3;
+		if(gWiiBigProbeLastSkipReason[modelId] == skipReason)
+			return;
+		gWiiBigProbeLastSkipReason[modelId] = skipReason;
+	}else if(event && !strcmp(event, "visible_missing")){
+		if(gWiiBigProbeVisibleMissing[modelId])
+			return;
+		gWiiBigProbeVisibleMissing[modelId] = 1;
+	}else if(event && (!strcmp(event, "request") ||
+	                   !strcmp(event, "load_done"))){
+		gWiiBigProbeLastSkipReason[modelId] = 0;
+		gWiiBigProbeVisibleMissing[modelId] = 0;
+	}
+
+	CBaseModelInfo *base = CModelInfo::GetModelInfo(modelId);
+	CSimpleModelInfo *mi = base && base->IsSimple() ?
+	                       (CSimpleModelInfo*)base : nil;
+	uint8 modelState = ms_aInfoForModel[modelId].m_loadState;
+	uint8 txdState = txdId >= 0 && txdId < TXDSTORESIZE ?
+	                 ms_aInfoForModel[txdId + STREAM_OFFSET_TXD].m_loadState :
+	                 0xFF;
+	uint32 txdFlags = txdId >= 0 && txdId < TXDSTORESIZE ?
+	                  ms_aInfoForModel[txdId + STREAM_OFFSET_TXD].m_flags : 0;
+	WiiMemoryPoolSnapshot pools;
+	WiiMemoryGetPoolSnapshot(&pools);
+	const char *modelName = base && base->GetModelName() ? base->GetModelName() : "<unnamed>";
+	const char *txdName = txdId >= 0 && txdId < TXDSTORESIZE && CTxdStore::GetTxdName(txdId) ?
+	                      CTxdStore::GetTxdName(txdId) : "<none>";
+	printf("[WII-BIG] event=%s frame=%u model=%d name='%s' txd='%s' txd_id=%d "
+	       "model_state=%s txd_state=%s call_flags=0x%02X model_flags=0x%02X txd_flags=0x%02X "
+	       "rw=%d refs=%d requested=%d priority=%d lod0=%.1f largest=%.1f "
+	       "gx_free=%uKB gx_largest=%uKB reason=%s\n",
+	       event ? event : "unknown", (unsigned)CTimer::GetFrameCounter(),
+	       modelId, modelName, txdName, txdId,
+	       WiiStreamStateName(modelState), WiiStreamStateName(txdState),
+	       (unsigned)flags,
+	       (unsigned)ms_aInfoForModel[modelId].m_flags, (unsigned)txdFlags,
+	       mi && mi->GetRwObject() ? 1 : 0, base ? base->GetNumRefs() : 0,
+	       ms_numModelsRequested, ms_numPriorityRequests,
+	       mi ? mi->GetLodDistance(0) : 0.0f,
+	       mi ? mi->GetLargestLodDistance() : 0.0f,
+	       (unsigned)(pools.gxFree / 1024u), (unsigned)(pools.gxLargest / 1024u),
+	       reason ? reason : "none");
+#else
+	(void)event;
+	(void)modelId;
+	(void)flags;
+	(void)reason;
+#endif
+}
 #endif
 
 bool CStreaming::ms_disableStreaming;
@@ -981,6 +1086,9 @@ CStreaming::ConvertBufferToObject(int8 *buf, int32 streamId)
 		if(CTxdStore::GetSlot(mi->GetTxdSlot())->texDict == nil ||
 #endif
 		   animId != -1 && !CAnimManager::GetAnimationBlock(animId)->isLoaded){
+		#if defined(WII) && WII_STREAM_BIG_BUILDING_PROBE
+			ProbeBigBuilding("load_fail", streamId, 0, "dependency_missing");
+		#endif
 			                        RemoveModel(streamId);
   #if REAL_GAMECUBE
                         // Real GC: skip ReRequest - anim blocks in separate IFP,
@@ -1036,6 +1144,9 @@ CStreaming::ConvertBufferToObject(int8 *buf, int32 streamId)
 		}
 
 		if(!success){
+		#if defined(WII) && WII_STREAM_BIG_BUILDING_PROBE
+			ProbeBigBuilding("load_fail", streamId, 0, "model_convert_failed");
+		#endif
                                 ((void)0); // [GC-DEBUG-DISABLED]
                                 RemoveModel(streamId);
                                 ReRequestModel(streamId);
@@ -1063,6 +1174,9 @@ CStreaming::ConvertBufferToObject(int8 *buf, int32 streamId)
 
 		if(!success){
 			debug("Failed to load %s.txd\n", CTxdStore::GetTxdName(streamId - STREAM_OFFSET_TXD));
+		#if defined(WII) && WII_STREAM_BIG_BUILDING_PROBE
+			ProbeBigBuilding("load_fail", streamId, 0, "txd_load_failed");
+		#endif
 			RemoveModel(streamId);
 			ReRequestModel(streamId);
 			RwStreamClose(stream, &mem);
@@ -1127,6 +1241,9 @@ CStreaming::ConvertBufferToObject(int8 *buf, int32 streamId)
 		ms_memoryUsed += ms_aInfoForModel[streamId].GetCdSize() * CDSTREAM_SECTOR_SIZE;
 #endif
 	}
+	#if defined(WII) && WII_STREAM_BIG_BUILDING_PROBE
+	ProbeBigBuilding("load_done", streamId, 0, "convert");
+	#endif
 
 	endTime = CTimer::GetCurrentTimeInCycles() / CTimer::GetCyclesPerMillisecond();
 	timeDiff = endTime - startTime;
@@ -1201,6 +1318,9 @@ CStreaming::FinishLoadingLargeFile(int8 *buf, int32 streamId)
 #endif
 
 	if(!success){
+	#if defined(WII) && WII_STREAM_BIG_BUILDING_PROBE
+		ProbeBigBuilding("load_fail", streamId, 0, "finish_failed");
+	#endif
 		RemoveModel(streamId);
 		ReRequestModel(streamId);
 		UpdateMemoryUsed();
@@ -1208,6 +1328,9 @@ CStreaming::FinishLoadingLargeFile(int8 *buf, int32 streamId)
 	}
 
 	UpdateMemoryUsed();
+	#if defined(WII) && WII_STREAM_BIG_BUILDING_PROBE
+	ProbeBigBuilding("load_done", streamId, 0, "finish");
+	#endif
 
 	endTime = CTimer::GetCurrentTimeInCycles() / CTimer::GetCyclesPerMillisecond();
 	timeDiff = endTime - startTime;
@@ -1222,6 +1345,13 @@ CStreaming::RequestModel(int32 id, int32 flags)
 {
 	CSimpleModelInfo *mi;
 	const int32 dependencyFlags = flags;
+#ifdef WII
+	uint8 probeBeforeState = ms_aInfoForModel[id].m_loadState;
+	bool probePriorityUpgrade =
+		(flags & STREAMFLAGS_PRIORITY) != 0 &&
+		probeBeforeState == STREAMSTATE_INQUEUE &&
+		!ms_aInfoForModel[id].IsPriority();
+#endif
 
 	if(ms_aInfoForModel[id].m_loadState == STREAMSTATE_INQUEUE){
 		// updgrade to priority
@@ -1275,6 +1405,13 @@ CStreaming::RequestModel(int32 id, int32 flags)
 		ms_aInfoForModel[id].m_loadState = STREAMSTATE_INQUEUE;
 		ms_aInfoForModel[id].m_flags = flags;
 	}
+#ifdef WII
+	#if WII_STREAM_BIG_BUILDING_PROBE
+	if(probeBeforeState == STREAMSTATE_NOTLOADED || probePriorityUpgrade)
+		ProbeBigBuilding("request", id, flags,
+		                 probePriorityUpgrade ? "priority_upgrade" : "queue");
+	#endif
+#endif
 }
 
 #define BIGBUILDINGFLAGS STREAMFLAGS_DONT_REMOVE
@@ -1695,6 +1832,11 @@ CStreaming::RemoveModel(int32 id)
 	}
 
 	ms_aInfoForModel[id].m_loadState = STREAMSTATE_NOTLOADED;
+#ifdef WII
+	#if WII_STREAM_BIG_BUILDING_PROBE
+	ProbeBigBuilding("remove_done", id, 0, "stream_remove");
+	#endif
+#endif
 }
 
 void
