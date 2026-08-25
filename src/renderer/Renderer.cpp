@@ -59,6 +59,55 @@ WiiDisableDistanceFade(const CSimpleModelInfo *mi)
 	return mi->m_drawLast || mi->m_additive || mi->m_noZwrite;
 }
 
+// Some facades split a visible occlusion surface into an independent
+// short-range building beside the formal near model of a world LOD.  Admit
+// only that semantic companion once its own model is resident; ordinary
+// buildings keep the original distance handoff.
+static bool
+WiiIsLodOcclusionCompanion(CEntity *ent, float dist)
+{
+	if(ent == nil || !ent->IsBuilding() || ent->bIsBIGBuilding ||
+	   !ent->GetIsOnScreen() || dist >= LOD_DISTANCE)
+		return false;
+
+	int32 modelId = ent->GetModelIndex();
+	if(modelId < 0 || modelId >= STREAM_OFFSET_TXD ||
+	   CStreaming::ms_aInfoForModel[modelId].m_loadState != STREAMSTATE_LOADED)
+		return false;
+
+	CSimpleModelInfo *mi = (CSimpleModelInfo*)CModelInfo::GetModelInfo(modelId);
+	if(mi == nil || mi->GetRwObject() == nil ||
+	   mi->GetRelatedModel() != nil ||
+	   mi->GetLargestLodDistance() >= LOD_DISTANCE ||
+	   mi->GetTxdSlot() < 0)
+		return false;
+
+	const float radiusSq = SQR(8.0f);
+	eLevelName levels[2] = { CGame::currLevel, LEVEL_GENERIC };
+	for(int i = 0; i < 2; i++){
+		if(i == 1 && levels[1] == levels[0])
+			continue;
+		CPtrList &list = CWorld::GetBigBuildingList(levels[i]);
+		for(CPtrNode *node = list.first; node; node = node->next){
+			CEntity *big = (CEntity*)node->item;
+			if(big == nil || big == ent || !big->bIsBIGBuilding ||
+			   big->m_level != ent->m_level || big->m_rwObject == nil ||
+			   !big->bIsVisible)
+				continue;
+
+			CSimpleModelInfo *bigMi =
+				(CSimpleModelInfo*)CModelInfo::GetModelInfo(big->GetModelIndex());
+			CSimpleModelInfo *nearMi = bigMi ? bigMi->GetRelatedModel() : nil;
+			if(nearMi == nil || nearMi == mi ||
+			   nearMi->GetTxdSlot() != mi->GetTxdSlot())
+				continue;
+			if((big->GetPosition() - ent->GetPosition()).MagnitudeSqr() <= radiusSq)
+				return true;
+		}
+	}
+	return false;
+}
+
 static uint32 gWiiBigBuildingRequestFrame = UINT32_MAX;
 static int32 gWiiBigBuildingRequestsThisFrame;
 
@@ -951,6 +1000,13 @@ CRenderer::SetupEntityVisibility(CEntity *ent)
 		mi->m_isDamaged = true;
 
 	RpAtomic *a = mi->GetAtomicFromDistance(dist);
+#ifdef WII
+	bool wiiLodOcclusionCompanion = false;
+	if(a == nil && WiiIsLodOcclusionCompanion(ent, dist)){
+		a = mi->GetFirstAtomicFromDistance(0.0f);
+		wiiLodOcclusionCompanion = a != nil;
+	}
+#endif
 	if(a){
 		mi->m_isDamaged = false;
 		if(ent->m_rwObject == nil)
@@ -976,7 +1032,12 @@ CRenderer::SetupEntityVisibility(CEntity *ent)
 		}
 
 		if(mi->m_alpha != 255){
-			CVisibilityPlugins::InsertEntityIntoSortedList(ent, dist);
+			float fadeDist = dist;
+#ifdef WII
+			if(wiiLodOcclusionCompanion && fadeDist > mi->GetLargestLodDistance())
+				fadeDist = mi->GetLargestLodDistance();
+#endif
+			CVisibilityPlugins::InsertEntityIntoSortedList(ent, fadeDist);
 			ent->bDistanceFade = true;
 			return VIS_INVISIBLE;
 		}
