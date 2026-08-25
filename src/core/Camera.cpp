@@ -297,21 +297,6 @@ CCamera::Process(void)
 
 #ifndef MASTER
 #ifdef IMPROVED_CAMERA
-	// Wii uses the primary controller for the debug camera.  Keep the
-	// existing pad-1 toggle for desktop/debug builds, and reserve a chord
-	// that cannot open the pause menu for the console path.
-#ifdef WII
-	if(!FrontEndMenuManager.m_bMenuActive &&
-	   CPad::GetPad(0)->GetLeftShoulder1() &&
-	   CPad::GetPad(0)->GetRightShoulder2() &&
-	   CPad::GetPad(0)->GetTriangleJustDown()){
-		WorldViewerBeingUsed = !WorldViewerBeingUsed;
-		if(WorldViewerBeingUsed)
-			InitialiseCameraForDebugMode();
-		else
-			CPad::m_bMapPadOneToPadTwo = false;
-	}
-#endif
 	if(CPad::GetPad(1)->GetCircleJustDown() || CTRLJUSTDOWN('B')){
 #else
 	if(CPad::GetPad(1)->GetCircleJustDown()){
