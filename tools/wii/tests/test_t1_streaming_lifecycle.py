@@ -108,14 +108,10 @@ class T1StreamingLifecycleTests(unittest.TestCase):
 
     def test_visible_buildings_keep_original_lod_handoff_boundary(self) -> None:
         self.assertNotIn("WiiHasLoadedNearbyBigBuilding", RENDERER_SOURCE)
-        self.assertIn("WiiIsLodOcclusionCompanion", RENDERER_SOURCE)
-        self.assertIn("nearMi->GetTxdSlot() != mi->GetTxdSlot()", RENDERER_SOURCE)
-        self.assertIn("SQR(8.0f)", RENDERER_SOURCE)
 
         setup = function_body(RENDERER_SOURCE, "CRenderer::SetupEntityVisibility(CEntity *ent)")
-        self.assertIn("mi->GetFirstAtomicFromDistance(0.0f)", setup)
-        self.assertIn("wiiLodOcclusionCompanion", setup)
-        self.assertIn("fadeDist = mi->GetLargestLodDistance();", setup)
+        self.assertNotIn("WiiIsLodOcclusionCompanion", setup)
+        self.assertNotIn("wiiLodOcclusionCompanion", setup)
 
         render_one = function_body(RENDERER_SOURCE, "CRenderer::RenderOneBuilding(CEntity *ent, float camdist)")
         self.assertIn("if(lodatm == nil){", render_one)
