@@ -948,7 +948,7 @@ WiiProbeBigBuildingInvisible(CEntity *ent, int visibility)
 	CBaseModelInfo *base = CModelInfo::GetModelInfo(modelId);
 	CSimpleModelInfo *mi = base && base->IsSimple() ?
 	                       (CSimpleModelInfo*)base : nil;
-	float distance = (ms_vecCameraPosition - ent->GetPosition()).Magnitude();
+	float distance = (TheCamera.GetPosition() - ent->GetPosition()).Magnitude();
 	printf("[WII-BIG] event=scan_invisible frame=%u model=%d name='%s' "
 	       "model_state=%s rw=%d visible=%d on_screen=%d on_screen_complex=%d "
 	       "occluded=%d offscreen=%d area=%d dist=%.1f lod0=%.1f "
