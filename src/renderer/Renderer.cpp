@@ -64,7 +64,7 @@ WiiDisableDistanceFade(const CSimpleModelInfo *mi)
 // own first atomic available inside the existing world LOD horizon. The
 // spatial check avoids extending ordinary buildings unrelated to a proxy.
 static bool
-WiiHasLoadedNearbyBigBuilding(const CEntity *ent)
+WiiHasLoadedNearbyBigBuilding(CEntity *ent)
 {
 	const float radiusSq = SQR(32.0f);
 	eLevelName levels[2] = { CGame::currLevel, LEVEL_GENERIC };
@@ -86,6 +86,122 @@ WiiHasLoadedNearbyBigBuilding(const CEntity *ent)
 
 static uint32 gWiiBigBuildingRequestFrame = UINT32_MAX;
 static int32 gWiiBigBuildingRequestsThisFrame;
+
+#if WII_STREAM_BIG_BUILDING_PROBE
+struct WiiLodCompanionProbeCandidate
+{
+	CEntity *entity;
+	float distanceSq;
+};
+
+static uint8 gWiiLodCompanionProbeLastState[STREAM_OFFSET_TXD];
+static uint8 gWiiLodCompanionProbeLastRw[STREAM_OFFSET_TXD];
+static bool gWiiLodCompanionProbeInitialized;
+
+static const char *
+WiiLodCompanionProbeStateName(uint8 state)
+{
+	switch(state){
+	case STREAMSTATE_NOTLOADED: return "notloaded";
+	case STREAMSTATE_LOADED: return "loaded";
+	case STREAMSTATE_INQUEUE: return "inqueue";
+	case STREAMSTATE_READING: return "reading";
+	case STREAMSTATE_STARTED: return "started";
+	default: return "unknown";
+	}
+}
+
+static void
+WiiProbeLodCompanions(CEntity *lod)
+{
+	if(lod == nil || !lod->bIsBIGBuilding || !lod->bIsVisible)
+		return;
+	if(!gWiiLodCompanionProbeInitialized){
+		memset(gWiiLodCompanionProbeLastState, 0xFF,
+		       sizeof(gWiiLodCompanionProbeLastState));
+		memset(gWiiLodCompanionProbeLastRw, 0xFF,
+		       sizeof(gWiiLodCompanionProbeLastRw));
+		gWiiLodCompanionProbeInitialized = true;
+	}
+
+	const float radius = 20.0f;
+	const int maxCandidates = 8;
+	WiiLodCompanionProbeCandidate nearest[maxCandidates];
+	int nearestCount = 0;
+	const CVector &pos = lod->GetPosition();
+	int minX = CWorld::GetSectorIndexX(pos.x - radius);
+	int minY = CWorld::GetSectorIndexY(pos.y - radius);
+	int maxX = CWorld::GetSectorIndexX(pos.x + radius);
+	int maxY = CWorld::GetSectorIndexY(pos.y + radius);
+	if(minX < 0) minX = 0;
+	if(minY < 0) minY = 0;
+	if(maxX >= NUMSECTORS_X) maxX = NUMSECTORS_X - 1;
+	if(maxY >= NUMSECTORS_Y) maxY = NUMSECTORS_Y - 1;
+
+	for(int y = minY; y <= maxY; y++){
+		for(int x = minX; x <= maxX; x++){
+			CSector *sector = CWorld::GetSector(x, y);
+			CPtrList *lists[2] = {
+				&sector->m_lists[ENTITYLIST_BUILDINGS],
+				&sector->m_lists[ENTITYLIST_BUILDINGS_OVERLAP]
+			};
+			for(int listIndex = 0; listIndex < 2; listIndex++){
+				for(CPtrNode *node = lists[listIndex]->first; node; node = node->next){
+					CEntity *candidate = (CEntity*)node->item;
+					if(candidate == nil || candidate == lod || !candidate->IsBuilding() ||
+					   candidate->bIsBIGBuilding)
+						continue;
+					int32 modelId = candidate->GetModelIndex();
+					if(modelId < 0 || modelId >= STREAM_OFFSET_TXD)
+						continue;
+					float distanceSq = (candidate->GetPosition() - pos).MagnitudeSqr();
+					if(distanceSq > SQR(radius))
+						continue;
+
+					int insert = nearestCount;
+					if(insert > maxCandidates)
+						insert = maxCandidates;
+					while(insert > 0 &&
+					      nearest[insert - 1].distanceSq > distanceSq)
+						insert--;
+					if(insert >= maxCandidates)
+						continue;
+					if(nearestCount < maxCandidates)
+						nearestCount++;
+					for(int move = nearestCount - 1; move > insert; move--)
+						nearest[move] = nearest[move - 1];
+					nearest[insert].entity = candidate;
+					nearest[insert].distanceSq = distanceSq;
+				}
+			}
+		}
+	}
+
+	for(int i = 0; i < nearestCount; i++){
+		CEntity *candidate = nearest[i].entity;
+		int32 modelId = candidate->GetModelIndex();
+		uint8 state = CStreaming::ms_aInfoForModel[modelId].m_loadState;
+		uint8 rw = candidate->m_rwObject != nil;
+		if(gWiiLodCompanionProbeLastState[modelId] == state &&
+		   gWiiLodCompanionProbeLastRw[modelId] == rw)
+			continue;
+		gWiiLodCompanionProbeLastState[modelId] = state;
+		gWiiLodCompanionProbeLastRw[modelId] = rw;
+		CBaseModelInfo *candidateInfo = CModelInfo::GetModelInfo(modelId);
+		printf("[WII-LOD-COMPANION] frame=%u lod=%d('%s') candidate=%d('%s') "
+		       "dist=%.3f state=%u(%s) rw=%u visible=%u flags=0x%02X requested=%d priority=%d\n",
+		       (unsigned)CTimer::GetFrameCounter(), lod->GetModelIndex(),
+		       CModelInfo::GetModelInfo(lod->GetModelIndex())->GetModelName(),
+		       modelId, candidateInfo ? candidateInfo->GetModelName() : "<unknown>",
+		       Sqrt(nearest[i].distanceSq), (unsigned)state,
+		       WiiLodCompanionProbeStateName(state), (unsigned)rw,
+		       (unsigned)candidate->bIsVisible,
+		       (unsigned)CStreaming::ms_aInfoForModel[modelId].m_flags,
+		       state != STREAMSTATE_NOTLOADED,
+		       CStreaming::ms_aInfoForModel[modelId].IsPriority());
+	}
+}
+#endif
 #endif
 
 // unused
@@ -1680,6 +1796,7 @@ CRenderer::ScanBigBuildingList(CPtrList &list)
 		switch(vis){
 		case VIS_VISIBLE:
 #if defined(WII) && WII_STREAM_BIG_BUILDING_PROBE
+			WiiProbeLodCompanions(ent);
 			if(ent->m_rwObject == nil ||
 			   CStreaming::ms_aInfoForModel[ent->GetModelIndex()].m_loadState !=
 			   STREAMSTATE_LOADED)
