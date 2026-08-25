@@ -103,6 +103,11 @@ class T1StreamingLifecycleTests(unittest.TestCase):
         self.assertIn("dist < LOD_DISTANCE", setup)
         self.assertIn("wiiVisibleBuildingLookahead", setup)
 
+    def test_loaded_component_can_use_geometry_near_a_loaded_big_lod(self) -> None:
+        self.assertIn("WiiHasLoadedNearbyBigBuilding", RENDERER_SOURCE)
+        self.assertIn("mi->GetFirstAtomicFromDistance(0.0f)", RENDERER_SOURCE)
+        self.assertIn("STREAMSTATE_LOADED", RENDERER_SOURCE)
+
     def test_loadscene_protection_is_named_and_reaches_resident_txd(self) -> None:
         self.assertIn("STREAMFLAGS_LOADSCENE_PROTECT = 0x20", STREAMING_HEADER)
         self.assertNotIn("STREAMFLAGS_20", STREAMING_HEADER)

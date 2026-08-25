@@ -59,6 +59,31 @@ WiiDisableDistanceFade(const CSimpleModelInfo *mi)
 	return mi->m_drawLast || mi->m_additive || mi->m_noZwrite;
 }
 
+// A few world facades are split into a short-range building component and a
+// separate large LOD proxy. Once the proxy is resident, keep the component's
+// own first atomic available inside the existing world LOD horizon. The
+// spatial check avoids extending ordinary buildings unrelated to a proxy.
+static bool
+WiiHasLoadedNearbyBigBuilding(const CEntity *ent)
+{
+	const float radiusSq = SQR(32.0f);
+	eLevelName levels[2] = { CGame::currLevel, LEVEL_GENERIC };
+	for(int i = 0; i < 2; i++){
+		if(i == 1 && levels[1] == levels[0])
+			continue;
+		CPtrList &list = CWorld::GetBigBuildingList(levels[i]);
+		for(CPtrNode *node = list.first; node; node = node->next){
+			CEntity *big = (CEntity*)node->item;
+			if(big == ent || !big->bIsBIGBuilding ||
+			   big->m_rwObject == nil || !big->bIsVisible)
+				continue;
+			if((big->GetPosition() - ent->GetPosition()).MagnitudeSqr() <= radiusSq)
+				return true;
+		}
+	}
+	return false;
+}
+
 static uint32 gWiiBigBuildingRequestFrame = UINT32_MAX;
 static int32 gWiiBigBuildingRequestsThisFrame;
 #endif
@@ -831,6 +856,14 @@ CRenderer::SetupEntityVisibility(CEntity *ent)
 		mi->m_isDamaged = true;
 
 	RpAtomic *a = mi->GetAtomicFromDistance(dist);
+#ifdef WII
+	if(a == nil && ent->IsBuilding() && !ent->bIsBIGBuilding &&
+	   ent->GetIsOnScreen() && dist < LOD_DISTANCE &&
+	   CStreaming::ms_aInfoForModel[ent->GetModelIndex()].m_loadState ==
+	   STREAMSTATE_LOADED && mi->GetRwObject() != nil &&
+	   WiiHasLoadedNearbyBigBuilding(ent))
+		a = mi->GetFirstAtomicFromDistance(0.0f);
+#endif
 	if(a){
 		mi->m_isDamaged = false;
 		if(ent->m_rwObject == nil)
