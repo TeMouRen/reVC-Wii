@@ -578,9 +578,7 @@ setMaterialSkin(Material *mat, bool32 vertexAlpha, uint32 passIndex)
 {
     // ★ Reload projection every mesh — Im2D/clearCamera overwrite it with ortho
     GX_LoadProjectionMtx(gxProjMtx, gxProjType);
-    const bool freeCamDebug = gxFreeCamDebugActive();
     const bool fullbrightDebug = gxFullbrightDebugActive();
-    const bool freeCamXray = gxFreeCamCpuSceneActive();
     const char *texName = (mat && mat->texture) ? mat->texture->name : nil;
 
     bool hasTexAlpha = false;
@@ -608,28 +606,25 @@ setMaterialSkin(Material *mat, bool32 vertexAlpha, uint32 passIndex)
     bool usesAlpha = hasTexAlpha || vertexAlpha || hasMatAlpha;
     bool doBlend = !fullbrightDebug && usesAlpha;
     bool doAlphaTest = !fullbrightDebug && usesAlpha;
-    bool dualPass = !freeCamXray && gxState.gsAlpha && usesAlpha &&
+    bool dualPass = gxState.gsAlpha && usesAlpha &&
                     !fullbrightDebug && gxState.zWrite;
     bool zWriteEnable = dualPass ? (passIndex == 0) : gxState.zWrite;
     bool zAfterTexturing = usesAlpha;
     GX_SetZCompLoc(zAfterTexturing ? GX_FALSE : GX_TRUE);
 
-    if(freeCamXray)
-        GX_SetZMode(GX_FALSE, GX_ALWAYS, GX_FALSE);
-    else
-        GX_SetZMode(gxState.zTest ? GX_TRUE : GX_FALSE,
-                    GX_LEQUAL,
-                    zWriteEnable ? GX_TRUE : GX_FALSE);
+    GX_SetZMode(gxState.zTest ? GX_TRUE : GX_FALSE,
+                GX_LEQUAL,
+                zWriteEnable ? GX_TRUE : GX_FALSE);
     GX_SetBlendMode(doBlend ? GX_BM_BLEND : GX_BM_NONE,
                     (u8)gxState.srcBlend,
                     (u8)gxState.dstBlend,
                     GX_LO_CLEAR);
-    GX_SetCullMode((freeCamDebug || fullbrightDebug) ? GX_CULL_NONE : gxCullFromState());
+    GX_SetCullMode(fullbrightDebug ? GX_CULL_NONE : gxCullFromState());
 
     // GX_FALSE bypasses dynamic lighting; GX_SRC_VTX keeps VC's prelit colors.
     // The material register is still populated for state fallback/debug paths.
     GXColor matCol = {255, 255, 255, 255};
-    if (mat && !freeCamDebug && !fullbrightDebug) {
+    if (mat && !fullbrightDebug) {
         matCol.r = mat->color.red;
         matCol.g = mat->color.green;
         matCol.b = mat->color.blue;
@@ -638,7 +633,7 @@ setMaterialSkin(Material *mat, bool32 vertexAlpha, uint32 passIndex)
     GX_SetChanMatColor(GX_COLOR0A0, matCol);
     GX_SetChanCtrl(GX_COLOR0A0, GX_FALSE,
                    GX_SRC_REG,
-                   (freeCamDebug || fullbrightDebug) ? GX_SRC_REG : GX_SRC_VTX,
+                   fullbrightDebug ? GX_SRC_REG : GX_SRC_VTX,
                    GX_LIGHTNULL, GX_DF_NONE, GX_AF_NONE);
     GX_SetNumChans(1);
     u8 effectiveAlphaRef = 0;
@@ -746,7 +741,7 @@ submitSkinVertex(const uint8 *vtx, bool hasNrm, bool hasCol, uint32 numTex)
             *(const float*)(vtx + off + 8));
         off += 12;
     }
-    if (gxFreeCamDebugActive() || gxFullbrightDebugActive()) {
+    if (gxFullbrightDebugActive()) {
         GX_Color4u8(255, 255, 255, 255);
         if(hasCol)
             off += 4;

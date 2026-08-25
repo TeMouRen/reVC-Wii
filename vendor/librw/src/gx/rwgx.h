@@ -142,12 +142,7 @@ extern GxState gxState;
 
 void gxSetTexture(void *tex, int32_t unit);
 void gxGetFramebufferSize(uint16_t *fbWidth, uint16_t *efbHeight);
-int gxGetInputMode(void);
-bool gxFreeCamDebugActive(void);
-bool gxFreeCamCpuSceneActive(void);
 bool gxFullbrightDebugActive(void);
-bool gxGetFreeCamPosition(float *x, float *y, float *z);
-bool gxGetFreeCamFrame(float *out12);
 void rwMatToGxMtx(Mtx dst, const void *rwMat);
 void convertRGBA8_to_GX(void *dst, const void *src, int w, int h, int srcStride = 0);
 uint32_t rgba8TiledSize(int w, int h);

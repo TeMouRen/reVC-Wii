@@ -66,208 +66,7 @@ static float32 s_fogEnd   = 1000.0f;
 static GXColor s_fogColor = { 0, 0, 0, 0 };
 static GXColor s_clearColor = { 0, 0, 0, 255 };
 
-enum {
-    GX_INPUT_GAME = 1,
-    GX_INPUT_FREECAM = 2
-};
-
-static int     s_inputMode = GX_INPUT_GAME;
-static bool    s_freeCamEnabled = false;
-static bool    s_freeCamCpuScene = false;
-static bool    s_freeCamValid = false;
-static bool    s_freeCamViewActive = false;
 static bool    s_fullbrightDebug = true;
-static V3d     s_freeCamPos = { 0.0f, 0.0f, 0.0f };
-static float32 s_freeCamYaw = 0.0f;
-static float32 s_freeCamPitch = 0.0f;
-static u16     s_freeCamLastButtons = 0;
-
-static float32
-gxClampF32(float32 v, float32 lo, float32 hi)
-{
-    if(v < lo)
-        return lo;
-    if(v > hi)
-        return hi;
-    return v;
-}
-
-static float32
-gxStickUnit(s8 v)
-{
-    const int32 iv = (int32)v;
-    if(iv > -10 && iv < 10)
-        return 0.0f;
-    return gxClampF32((float32)iv / 80.0f, -1.0f, 1.0f);
-}
-
-static void
-snapFreeCamToRwCamera(Camera *cam)
-{
-    const Matrix *ltm = (const Matrix*)cam->getFrame()->getLTM();
-    s_freeCamPos = ltm->pos;
-
-    const float32 ax = ltm->at.x;
-    const float32 ay = ltm->at.y;
-    const float32 az = gxClampF32(ltm->at.z, -1.0f, 1.0f);
-    s_freeCamYaw = atan2f(ax, ay);
-    s_freeCamPitch = asinf(az);
-    s_freeCamValid = true;
-}
-
-static void
-buildFreeCamMatrix(Mtx dst)
-{
-    Matrix mtx;
-    const float32 sy = sinf(s_freeCamYaw);
-    const float32 cy = cosf(s_freeCamYaw);
-    const float32 sp = sinf(s_freeCamPitch);
-    const float32 cp = cosf(s_freeCamPitch);
-
-    mtx.right.x = -cy;
-    mtx.right.y = sy;
-    mtx.right.z = 0.0f;
-    mtx.flags = Matrix::TYPEORTHONORMAL;
-
-    mtx.up.x = -sy * sp;
-    mtx.up.y = -cy * sp;
-    mtx.up.z = cp;
-    mtx.pad1 = 0;
-
-    mtx.at.x = sy * cp;
-    mtx.at.y = cy * cp;
-    mtx.at.z = sp;
-    mtx.pad2 = 0;
-
-    mtx.pos = s_freeCamPos;
-    mtx.pad3 = 0;
-
-    rwMatToGxMtx(dst, &mtx);
-}
-
-static void
-buildFreeCamRwMatrix(Matrix *mtx)
-{
-    const float32 sy = sinf(s_freeCamYaw);
-    const float32 cy = cosf(s_freeCamYaw);
-    const float32 sp = sinf(s_freeCamPitch);
-    const float32 cp = cosf(s_freeCamPitch);
-
-    mtx->right.x = -cy;
-    mtx->right.y = sy;
-    mtx->right.z = 0.0f;
-    mtx->flags = Matrix::TYPEORTHONORMAL;
-
-    mtx->up.x = -sy * sp;
-    mtx->up.y = -cy * sp;
-    mtx->up.z = cp;
-    mtx->pad1 = 0;
-
-    mtx->at.x = sy * cp;
-    mtx->at.y = cy * cp;
-    mtx->at.z = sp;
-    mtx->pad2 = 0;
-
-    mtx->pos = s_freeCamPos;
-    mtx->pad3 = 0;
-}
-
-static bool
-updateFreeCam(Camera *cam, Mtx dst)
-{
-    const u16 buttons = PAD_ButtonsHeld(0);
-    const bool debugChord = (buttons & PAD_TRIGGER_L) &&
-                            (buttons & PAD_TRIGGER_Z);
-    const bool zHeld = (buttons & PAD_TRIGGER_Z) != 0;
-    const bool togglePressed = zHeld &&
-        debugChord &&
-        (buttons & PAD_BUTTON_X) &&
-        !(s_freeCamLastButtons & PAD_BUTTON_X);
-    const bool snapPressed = zHeld &&
-        debugChord &&
-        (buttons & PAD_BUTTON_Y) &&
-        !(s_freeCamLastButtons & PAD_BUTTON_Y);
-    const bool cpuScenePressed = zHeld &&
-        debugChord &&
-        (buttons & PAD_BUTTON_A) &&
-        !(s_freeCamLastButtons & PAD_BUTTON_A);
-    const bool fullbrightPressed = zHeld &&
-        debugChord &&
-        (buttons & PAD_BUTTON_B) &&
-        !(s_freeCamLastButtons & PAD_BUTTON_B);
-
-    if(togglePressed) {
-        if(!s_freeCamEnabled && !s_freeCamValid)
-            snapFreeCamToRwCamera(cam);
-        s_freeCamEnabled = !s_freeCamEnabled;
-        if(!s_freeCamEnabled)
-            s_freeCamCpuScene = false;
-        s_inputMode = s_freeCamEnabled ? GX_INPUT_FREECAM : GX_INPUT_GAME;
-        printf("[GX-FREECAM] %s pos=(%.3f,%.3f,%.3f) yaw=%.3f pitch=%.3f\n",
-               s_freeCamEnabled ? "enabled" : "disabled",
-               s_freeCamPos.x, s_freeCamPos.y, s_freeCamPos.z,
-               s_freeCamYaw, s_freeCamPitch);
-    }
-
-    if(snapPressed) {
-        snapFreeCamToRwCamera(cam);
-        printf("[GX-FREECAM] snapped pos=(%.3f,%.3f,%.3f) yaw=%.3f pitch=%.3f\n",
-               s_freeCamPos.x, s_freeCamPos.y, s_freeCamPos.z,
-               s_freeCamYaw, s_freeCamPitch);
-    }
-
-    if(cpuScenePressed && s_freeCamEnabled) {
-        s_freeCamCpuScene = !s_freeCamCpuScene;
-        printf("[GX-FREECAM] cpu-scene+xray %s\n",
-               s_freeCamCpuScene ? "enabled" : "disabled");
-    }
-
-    if(fullbrightPressed) {
-        s_fullbrightDebug = !s_fullbrightDebug;
-        printf("[GX-FULLBRIGHT] %s\n",
-               s_fullbrightDebug ? "enabled" : "disabled");
-    }
-
-    s_freeCamLastButtons = buttons;
-
-    if(!s_freeCamEnabled) {
-        s_inputMode = GX_INPUT_GAME;
-        s_freeCamCpuScene = false;
-        return false;
-    }
-
-    if(!s_freeCamValid)
-        snapFreeCamToRwCamera(cam);
-
-    const float32 moveSpeed = (buttons & PAD_BUTTON_B) ? 0.62f : 0.18f;
-    const float32 lookSpeed = 0.032f;
-
-    const float32 strafe = -gxStickUnit(PAD_StickX(0));
-    const float32 forward = gxStickUnit(PAD_StickY(0));
-    const float32 lookX = gxStickUnit(PAD_SubStickX(0));
-    const float32 lookY = gxStickUnit(PAD_SubStickY(0));
-    const float32 lift = ((float32)PAD_TriggerR(0) -
-                          (float32)PAD_TriggerL(0)) / 255.0f;
-
-    s_freeCamYaw += lookX * lookSpeed;
-    s_freeCamPitch = gxClampF32(s_freeCamPitch + lookY * lookSpeed,
-                                -1.45f, 1.45f);
-
-    const float32 sy = sinf(s_freeCamYaw);
-    const float32 cy = cosf(s_freeCamYaw);
-    const float32 sp = sinf(s_freeCamPitch);
-    const float32 cp = cosf(s_freeCamPitch);
-
-    const V3d right = { -cy, sy, 0.0f };
-    const V3d at = { sy * cp, cy * cp, sp };
-
-    s_freeCamPos.x += (right.x * strafe + at.x * forward) * moveSpeed;
-    s_freeCamPos.y += (right.y * strafe + at.y * forward) * moveSpeed;
-    s_freeCamPos.z += (right.z * strafe + at.z * forward + lift) * moveSpeed;
-
-    buildFreeCamMatrix(dst);
-    return true;
-}
 
 static void
 load2DProjection(void)
@@ -306,62 +105,10 @@ gxGetFramebufferSize(uint16_t *fbWidth, uint16_t *efbHeight)
         *efbHeight = s_efbHeight;
 }
 
-int
-gxGetInputMode(void)
-{
-    return s_inputMode;
-}
-
-bool
-gxFreeCamDebugActive(void)
-{
-    return s_freeCamViewActive;
-}
-
-bool
-gxFreeCamCpuSceneActive(void)
-{
-    return s_freeCamViewActive && s_freeCamCpuScene;
-}
-
 bool
 gxFullbrightDebugActive(void)
 {
     return s_fullbrightDebug;
-}
-
-bool
-gxGetFreeCamPosition(float *x, float *y, float *z)
-{
-    if(!s_freeCamViewActive)
-        return false;
-    if(x) *x = s_freeCamPos.x;
-    if(y) *y = s_freeCamPos.y;
-    if(z) *z = s_freeCamPos.z;
-    return true;
-}
-
-bool
-gxGetFreeCamFrame(float *out12)
-{
-    if(!s_freeCamViewActive || !out12)
-        return false;
-
-    Matrix mtx;
-    buildFreeCamRwMatrix(&mtx);
-    out12[0] = mtx.right.x;
-    out12[1] = mtx.right.y;
-    out12[2] = mtx.right.z;
-    out12[3] = mtx.up.x;
-    out12[4] = mtx.up.y;
-    out12[5] = mtx.up.z;
-    out12[6] = mtx.at.x;
-    out12[7] = mtx.at.y;
-    out12[8] = mtx.at.z;
-    out12[9] = mtx.pos.x;
-    out12[10] = mtx.pos.y;
-    out12[11] = mtx.pos.z;
-    return true;
 }
 
 static void
@@ -386,8 +133,7 @@ loadCameraProjection(Camera *cam)
     float32 fp = cam->farPlane;
 
     if(cam->projection == Camera::PERSPECTIVE) {
-        float32 fovY   = s_freeCamViewActive ? 60.0f :
-                         2.0f * atanf(vh) * (180.0f / 3.14159265f);
+        float32 fovY   = 2.0f * atanf(vh) * (180.0f / 3.14159265f);
         // RenderWare viewWindow keeps the gameplay camera shape, but the Wii
         // output aspect must come from the active GX framebuffer/video mode.
         float32 aspect = getCameraAspect(cam, (s_efbHeight > 0) ?
@@ -475,10 +221,10 @@ static void
 beginUpdate(Camera *cam)
 {
     gxFrameNum++;   // 鈻?璇婃柇: 甯ц竟鐣屾爣璁?
-    static bool s_freeCamBuildLogged = false;
-    if(!s_freeCamBuildLogged) {
+    static bool s_gxBuildLogged = false;
+    if(!s_gxBuildLogged) {
     printf("[GX-BUILD] gxdevice-global-cull-v4\n");
-        s_freeCamBuildLogged = true;
+        s_gxBuildLogged = true;
     }
     GX_SetCullMode(GX_CULL_NONE);  // ensure no culling for full quad and tests
     // 鈹€鈹€ DIAG: 姣忓抚鎵撳嵃涓€娆″抚棣栨棩蹇?(disabled) 鈹€鈹€
@@ -529,9 +275,7 @@ beginUpdate(Camera *cam)
 
     // 鈹€鈹€ 瑙嗗浘鐭╅樀 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     Mtx camMtx;
-    s_freeCamViewActive = updateFreeCam(cam, camMtx);
-    if(!s_freeCamViewActive)
-        rwMatToGxMtx(camMtx, cam->getFrame()->getLTM());
+    rwMatToGxMtx(camMtx, cam->getFrame()->getLTM());
     guMtxInverse(camMtx, gxInvCamLTM);
 
     // Handedness Z flip stays in view matrix.
@@ -551,8 +295,7 @@ beginUpdate(Camera *cam)
     float32 fp = cam->farPlane;
 
     if(cam->projection == Camera::PERSPECTIVE) {
-        float32 fovY   = s_freeCamViewActive ? 60.0f :
-                         2.0f * atanf(vh) * (180.0f / 3.14159265f);
+        float32 fovY   = 2.0f * atanf(vh) * (180.0f / 3.14159265f);
         float32 aspect = getCameraAspect(cam, (s_efbHeight > 0) ?
                                               ((float32)s_fbWidth / (float32)s_efbHeight) :
                                               1.333f);
@@ -584,18 +327,10 @@ beginUpdate(Camera *cam)
     }
     memcpy(gxProjMtx, proj, sizeof(Mtx44));
 
-    if(s_fullbrightDebug || s_freeCamViewActive) {
+    if(s_fullbrightDebug) {
         GXColor noFog = { 0, 0, 0, 0 };
         GX_SetFog(GX_FOG_NONE, 0.0f, 0.0f, 0.0f, 0.0f, noFog);
         gxState.fog = false;
-    }
-
-    if(s_freeCamViewActive) {
-        s_clearColor.r = 120;
-        s_clearColor.g = 132;
-        s_clearColor.b = 148;
-        s_clearColor.a = 255;
-        GX_SetCopyClear(s_clearColor, GX_MAX_Z24);
     }
 
     // 姣忓抚娓呯┖绾圭悊缁戝畾缂撳瓨, 闃叉璺ㄥ抚娈嬬暀
@@ -952,12 +687,6 @@ setRenderState(int32 state, void *pParam)
             GX_SetFog(GX_FOG_NONE, 0.0f, 0.0f, 0.0f, 0.0f, nf);
             break;
         }
-        if(s_freeCamViewActive) {
-            gxState.fog = false;
-            GXColor nf = { 0, 0, 0, 0 };
-            GX_SetFog(GX_FOG_NONE, 0.0f, 0.0f, 0.0f, 0.0f, nf);
-            break;
-        }
         gxState.fog = (v != 0);
         if(!gxState.fog) {
             GXColor nf = { 0, 0, 0, 0 };
@@ -974,11 +703,6 @@ setRenderState(int32 state, void *pParam)
     {
         RGBA *c = (RGBA*)pParam;
         if(s_fullbrightDebug) {
-            GXColor nf = { 0, 0, 0, 0 };
-            GX_SetFog(GX_FOG_NONE, 0.0f, 0.0f, 0.0f, 0.0f, nf);
-            break;
-        }
-        if(s_freeCamViewActive) {
             GXColor nf = { 0, 0, 0, 0 };
             GX_SetFog(GX_FOG_NONE, 0.0f, 0.0f, 0.0f, 0.0f, nf);
             break;

@@ -3,9 +3,6 @@
 
 #if GX_CONSOLE
 #include <gccore.h>        // PAD_ButtonsHeld, PAD_StickX, etc.
-#ifdef RW_GX
-#include "../../vendor/librw/src/gx/rwgx.h"
-#endif
 
 static inline int16
 GcScaleStickAxis(s8 value, bool invert)
@@ -1941,24 +1938,12 @@ void CPad::UpdatePads(void)
 #if GX_CONSOLE
 	// GameCube PAD -> reVC control semantics.
 	// PAD_ScanPads() already called by gamecube.cpp main loop
-	const bool freeCamOwnsInput =
-#ifdef RW_GX
-		rw::gx::gxGetInputMode() == 2;
-#else
-		false;
-#endif
 	for (int p = 0; p < 2; p++) {
 		CPad *pad = &Pads[p];
 		pad->OldState = pad->NewState;
 		pad->NewState.Clear();
 
 		u16 held  = PAD_ButtonsHeld(p);
-		if(freeCamOwnsInput ||
-		   (p == 0 && (held & PAD_BUTTON_START) && (held & PAD_TRIGGER_Z))) {
-			GcFinishPadFrame(pad);
-			continue;
-		}
-
 		s8  sx    = PAD_StickX(p);
 		s8  sy    = PAD_StickY(p);
 		s8  csx   = PAD_SubStickX(p);

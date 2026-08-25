@@ -25,9 +25,6 @@
 #include "Renderer.h"
 #include "custompipes.h"
 #include "Frontend.h"
-#if GX_CONSOLE && defined(RW_GX)
-#include "../../vendor/librw/src/gx/rwgx.h"
-#endif
 
 bool gbShowPedRoadGroups;
 bool gbShowCarRoadGroups;
@@ -214,49 +211,6 @@ bool CRenderer::m_loadingPriority;
 float CRenderer::ms_lodDistScale = 1.1f;
 #else
 float CRenderer::ms_lodDistScale = 1.2f;
-#endif
-
-#if GX_CONSOLE && defined(RW_GX)
-static bool
-GxFreeCamDebugPosition(CVector &pos)
-{
-	float x, y, z;
-	if(!rw::gx::gxFreeCamCpuSceneActive() ||
-	   !rw::gx::gxGetFreeCamPosition(&x, &y, &z))
-		return false;
-	pos.x = x;
-	pos.y = y;
-	pos.z = z;
-	return true;
-}
-
-static bool
-GxFreeCamDebugFrame(RwMatrix &mtx)
-{
-	float frame[12];
-	if(!rw::gx::gxFreeCamCpuSceneActive() ||
-	   !rw::gx::gxGetFreeCamFrame(frame))
-		return false;
-
-	mtx.right.x = frame[0];
-	mtx.right.y = frame[1];
-	mtx.right.z = frame[2];
-	mtx.flags = rw::Matrix::TYPEORTHONORMAL;
-	mtx.up.x = frame[3];
-	mtx.up.y = frame[4];
-	mtx.up.z = frame[5];
-	mtx.pad1 = 0;
-	mtx.at.x = frame[6];
-	mtx.at.y = frame[7];
-	mtx.at.z = frame[8];
-	mtx.pad2 = 0;
-	mtx.pos.x = frame[9];
-	mtx.pos.y = frame[10];
-	mtx.pos.z = frame[11];
-	mtx.pad3 = 0;
-	return true;
-}
-
 #endif
 
 // unused
@@ -1358,9 +1312,6 @@ CRenderer::ConstructRenderList(void)
 	ms_nNoOfInVisibleEntities = 0;
 }
 	ms_vecCameraPosition = TheCamera.GetPosition();
-#if GX_CONSOLE && defined(RW_GX)
-	GxFreeCamDebugPosition(ms_vecCameraPosition);
-#endif
 
 	// unused
 	pFullBlockedRanges = nil;
@@ -1409,7 +1360,6 @@ CRenderer::ScanWorld(void)
 	RwV2d vw = *RwCameraGetViewWindow(TheCamera.m_pRwCamera);
 	CVector vectors[9];
 	RwMatrix *cammatrix;
-	RwMatrix freeCamMatrix;
 	RwV2d poly[3];
 
 	memset(vectors, 0, sizeof(vectors));
@@ -1427,10 +1377,6 @@ CRenderer::ScanWorld(void)
 	vectors[CORNER_FAR_BOTLEFT].z = f;
 
 	cammatrix = RwFrameGetMatrix(RwCameraGetFrame(TheCamera.m_pRwCamera));
-#if GX_CONSOLE && defined(RW_GX)
-	if(GxFreeCamDebugFrame(freeCamMatrix))
-		cammatrix = &freeCamMatrix;
-#endif
 
 	m_pFirstPersonVehicle = nil;
 	CVisibilityPlugins::InitAlphaEntityList();
