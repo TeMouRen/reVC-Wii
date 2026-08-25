@@ -4061,11 +4061,18 @@ CCam::Process_Debug(const CVector&, float, float, float)
 	static float PanSpeedX = 0.0f;
 	static float PanSpeedY = 0.0f;
 	CVector TargetCoors;
+	// A Wii build has one physical controller in the normal gameplay path;
+	// pad 1 is reserved for the desktop/world-viewer debug path.
+#ifdef WII
+	CPad *debugPad = CPad::GetPad(0);
+#else
+	CPad *debugPad = CPad::GetPad(1);
+#endif
 
 	RwCameraSetNearClipPlane(Scene.camera, DEFAULT_NEAR);
 	FOV = DefaultFOV;
-	Alpha += DEGTORAD(CPad::GetPad(1)->GetLeftStickY()) / 50.0f;
-	Beta  += DEGTORAD(CPad::GetPad(1)->GetLeftStickX()*1.5f) / 19.0f;
+	Alpha += DEGTORAD(debugPad->GetLeftStickY()) / 50.0f;
+	Beta  += DEGTORAD(debugPad->GetLeftStickX()*1.5f) / 19.0f;
 	if(CPad::GetPad(0)->GetLeftMouse()){
 		Alpha += DEGTORAD(CPad::GetPad(0)->GetMouseY()/2.0f);
 		Beta += DEGTORAD(CPad::GetPad(0)->GetMouseX()/2.0f);
@@ -4078,9 +4085,9 @@ CCam::Process_Debug(const CVector&, float, float, float)
 	if(Alpha > DEGTORAD(89.5f)) Alpha = DEGTORAD(89.5f);
 	else if(Alpha < DEGTORAD(-89.5f)) Alpha = DEGTORAD(-89.5f);
 
-	if(CPad::GetPad(1)->GetSquare() || KEYDOWN('W'))
+	if(debugPad->GetSquare() || KEYDOWN('W'))
 		Speed += 0.1f;
-	else if(CPad::GetPad(1)->GetCross() || KEYDOWN('S'))
+	else if(debugPad->GetCross() || KEYDOWN('S'))
 		Speed -= 0.1f;
 	else
 		Speed = 0.0f;
@@ -4120,7 +4127,7 @@ CCam::Process_Debug(const CVector&, float, float, float)
 	if(Source.z < -450.0f)
 		Source.z = -450.0f;
 
-	if(CPad::GetPad(1)->GetRightShoulder2JustDown() || KEYJUSTDOWN(rsENTER)){
+	if(debugPad->GetRightShoulder2JustDown() || KEYJUSTDOWN(rsENTER)){
 		if(FindPlayerVehicle())
 			FindPlayerVehicle()->Teleport(Source);
 		else
@@ -4144,7 +4151,7 @@ CCam::Process_Debug(const CVector&, float, float, float)
 	CPad::GetPad(0)->DisablePlayerControls = PLAYERCONTROL_CAMERA;
 #endif
 
-	if(CPad::GetPad(1)->GetLeftShockJustDown() && gbBigWhiteDebugLightSwitchedOn)
+	if(debugPad->GetLeftShockJustDown() && gbBigWhiteDebugLightSwitchedOn)
 		CShadows::StoreShadowToBeRendered(SHADOWTYPE_ADDITIVE, gpShadowExplosionTex, &Source,
 			12.0f, 0.0f, 0.0f, -12.0f,
 			128, 128, 128, 128, 1000.0f, false, 1.0f, nil, false);
