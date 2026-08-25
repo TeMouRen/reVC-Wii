@@ -28,6 +28,9 @@ TXD_SOURCE = (REPO_ROOT / "src" / "rw" / "TxdStore.cpp").read_text(
 RENDERER_SOURCE = (REPO_ROOT / "src" / "renderer" / "Renderer.cpp").read_text(
     encoding="utf-8"
 )
+VISIBILITY_SOURCE = (REPO_ROOT / "src" / "rw" / "VisibilityPlugins.cpp").read_text(
+    encoding="utf-8"
+)
 
 
 def function_body(source: str, signature: str) -> str:
@@ -103,10 +106,19 @@ class T1StreamingLifecycleTests(unittest.TestCase):
         self.assertIn("dist < LOD_DISTANCE", setup)
         self.assertIn("wiiVisibleBuildingLookahead", setup)
 
-    def test_loaded_component_can_use_geometry_near_a_loaded_big_lod(self) -> None:
-        self.assertIn("WiiHasLoadedNearbyBigBuilding", RENDERER_SOURCE)
-        self.assertIn("mi->GetFirstAtomicFromDistance(0.0f)", RENDERER_SOURCE)
-        self.assertIn("STREAMSTATE_LOADED", RENDERER_SOURCE)
+    def test_visible_buildings_keep_original_lod_handoff_boundary(self) -> None:
+        self.assertNotIn("WiiHasLoadedNearbyBigBuilding", RENDERER_SOURCE)
+        self.assertNotIn("mi->GetFirstAtomicFromDistance(0.0f)", RENDERER_SOURCE)
+
+        render_one = function_body(RENDERER_SOURCE, "CRenderer::RenderOneBuilding(CEntity *ent, float camdist)")
+        self.assertIn("if(lodatm == nil){", render_one)
+        self.assertIn("ent->bImBeingRendered = false;", render_one)
+        self.assertLess(
+            render_one.index("ent->bImBeingRendered = false;"),
+            render_one.index("fadefactor ="),
+        )
+
+        self.assertIn("if(lodatm == nil)\n\t\treturn atomic;", VISIBILITY_SOURCE)
 
     def test_loadscene_protection_is_named_and_reaches_resident_txd(self) -> None:
         self.assertIn("STREAMFLAGS_LOADSCENE_PROTECT = 0x20", STREAMING_HEADER)
@@ -208,7 +220,7 @@ class T1StreamingLifecycleTests(unittest.TestCase):
             CMAKE_SOURCE,
         )
         self.assertIn('WII_STREAM_LIFECYCLE_AUDIT="${WII_STREAM_LIFECYCLE_AUDIT:-OFF}"', BUILD_SOURCE)
-        self.assertIn('WII_STREAM_BIG_BUILDING_PROBE="${WII_STREAM_BIG_BUILDING_PROBE:-ON}"', BUILD_SOURCE)
+        self.assertIn('WII_STREAM_BIG_BUILDING_PROBE="${WII_STREAM_BIG_BUILDING_PROBE:-OFF}"', BUILD_SOURCE)
         self.assertIn('-DWII_STREAM_LIFECYCLE_AUDIT="$WII_STREAM_LIFECYCLE_AUDIT"', BUILD_SOURCE)
         self.assertIn("#define WII_STREAM_LIFECYCLE_AUDIT 0", CONFIG_SOURCE)
         for marker in (
