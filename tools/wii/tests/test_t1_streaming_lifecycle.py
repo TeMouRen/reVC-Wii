@@ -223,7 +223,7 @@ class T1StreamingLifecycleTests(unittest.TestCase):
             CMAKE_SOURCE,
         )
         self.assertIn('WII_STREAM_LIFECYCLE_AUDIT="${WII_STREAM_LIFECYCLE_AUDIT:-OFF}"', BUILD_SOURCE)
-        self.assertIn('WII_STREAM_BIG_BUILDING_PROBE="${WII_STREAM_BIG_BUILDING_PROBE:-OFF}"', BUILD_SOURCE)
+        self.assertIn('WII_STREAM_BIG_BUILDING_PROBE="${WII_STREAM_BIG_BUILDING_PROBE:-ON}"', BUILD_SOURCE)
         self.assertIn('-DWII_STREAM_LIFECYCLE_AUDIT="$WII_STREAM_LIFECYCLE_AUDIT"', BUILD_SOURCE)
         self.assertIn("#define WII_STREAM_LIFECYCLE_AUDIT 0", CONFIG_SOURCE)
         for marker in (
