@@ -75,6 +75,7 @@ static bool gWiiLodCompanionProbeInitialized;
 static uint8 gWiiNearLodEntityProbeLastState[STREAM_OFFSET_TXD];
 static uint8 gWiiNearLodEntityProbeLastVis[STREAM_OFFSET_TXD];
 static bool gWiiNearLodEntityProbeSeen[STREAM_OFFSET_TXD];
+static uint8 gWiiBigProbeInvisibleSeen[STREAM_OFFSET_TXD];
 
 static const char *
 WiiLodCompanionProbeStateName(uint8 state)
@@ -178,6 +179,38 @@ WiiProbeLodCompanions(CEntity *lod)
 		       state != STREAMSTATE_NOTLOADED,
 		       CStreaming::ms_aInfoForModel[modelId].IsPriority());
 	}
+}
+
+static void
+WiiProbeBigBuildingInvisible(CEntity *ent, int visibility)
+{
+	if(ent == nil || visibility != VIS_INVISIBLE || !ent->bIsBIGBuilding)
+		return;
+	int32 modelId = ent->GetModelIndex();
+	if(modelId < 0 || modelId >= STREAM_OFFSET_TXD)
+		return;
+	CStreamingInfo &stream = CStreaming::ms_aInfoForModel[modelId];
+	if(stream.m_loadState != STREAMSTATE_NOTLOADED ||
+	   gWiiBigProbeInvisibleSeen[modelId])
+		return;
+	gWiiBigProbeInvisibleSeen[modelId] = 1;
+	CBaseModelInfo *base = CModelInfo::GetModelInfo(modelId);
+	CSimpleModelInfo *mi = base && base->IsSimple() ?
+	                       (CSimpleModelInfo*)base : nil;
+	float distance = (ms_vecCameraPosition - ent->GetPosition()).Magnitude();
+	printf("[WII-BIG] event=scan_invisible frame=%u model=%d name='%s' "
+	       "model_state=%s rw=%d visible=%d on_screen=%d on_screen_complex=%d "
+	       "occluded=%d offscreen=%d area=%d dist=%.1f lod0=%.1f "
+	       "requested=%d priority=%d flags=0x%02X reason=visibility\n",
+	       (unsigned)CTimer::GetFrameCounter(), modelId,
+	       base && base->GetModelName() ? base->GetModelName() : "<unnamed>",
+	       WiiLodCompanionProbeStateName(stream.m_loadState),
+	       ent->m_rwObject ? 1 : 0, ent->IsVisible() ? 1 : 0,
+	       ent->GetIsOnScreen() ? 1 : 0, ent->GetIsOnScreenComplex() ? 1 : 0,
+	       ent->IsEntityOccluded() ? 1 : 0, ent->bOffscreen ? 1 : 0,
+	       (int)ent->m_area, distance, mi ? mi->GetLodDistance(0) : 0.0f,
+	       stream.m_loadState != STREAMSTATE_NOTLOADED ? 1 : 0,
+	       stream.IsPriority() ? 1 : 0, (unsigned)stream.m_flags);
 }
 
 #endif
@@ -1853,6 +1886,9 @@ CRenderer::ScanBigBuildingList(CPtrList &list)
 		if(needsVisibilitySetup){
 			ent->bOffscreen = true;
 			vis = SetupBigBuildingVisibility(ent);
+		#if defined(WII) && WII_STREAM_BIG_BUILDING_PROBE
+			WiiProbeBigBuildingInvisible(ent, vis);
+		#endif
 		}else
 			vis = VIS_VISIBLE;
 		switch(vis){
