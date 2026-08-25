@@ -72,6 +72,9 @@ struct WiiLodCompanionProbeCandidate
 static uint8 gWiiLodCompanionProbeLastState[STREAM_OFFSET_TXD];
 static uint8 gWiiLodCompanionProbeLastRw[STREAM_OFFSET_TXD];
 static bool gWiiLodCompanionProbeInitialized;
+static uint8 gWiiNearLodEntityProbeLastState[STREAM_OFFSET_TXD];
+static uint8 gWiiNearLodEntityProbeLastVis[STREAM_OFFSET_TXD];
+static bool gWiiNearLodEntityProbeSeen[STREAM_OFFSET_TXD];
 
 static const char *
 WiiLodCompanionProbeStateName(uint8 state)
@@ -176,6 +179,7 @@ WiiProbeLodCompanions(CEntity *lod)
 		       CStreaming::ms_aInfoForModel[modelId].IsPriority());
 	}
 }
+
 #endif
 #endif
 
@@ -840,6 +844,93 @@ enum Visbility
 	VIS_OFFSCREEN,
 	VIS_STREAMME
 };
+
+#if WII_STREAM_BIG_BUILDING_PROBE
+static const char *
+WiiVisibilityProbeName(int32 visibility)
+{
+	switch(visibility){
+	case VIS_VISIBLE: return "visible";
+	case VIS_INVISIBLE: return "invisible";
+	case VIS_OFFSCREEN: return "offscreen";
+	case VIS_STREAMME: return "streamme";
+	default: return "unknown";
+	}
+}
+
+static bool
+WiiProbeEntityNearVisibleLod(CEntity *candidate)
+{
+	if(candidate == nil || candidate->bIsBIGBuilding || !candidate->bIsVisible)
+		return false;
+
+	const float radius = 20.0f;
+	const CVector &pos = candidate->GetPosition();
+	int minX = CWorld::GetSectorIndexX(pos.x - radius);
+	int minY = CWorld::GetSectorIndexY(pos.y - radius);
+	int maxX = CWorld::GetSectorIndexX(pos.x + radius);
+	int maxY = CWorld::GetSectorIndexY(pos.y + radius);
+	if(minX < 0) minX = 0;
+	if(minY < 0) minY = 0;
+	if(maxX >= NUMSECTORS_X) maxX = NUMSECTORS_X - 1;
+	if(maxY >= NUMSECTORS_Y) maxY = NUMSECTORS_Y - 1;
+
+	for(int y = minY; y <= maxY; y++)
+		for(int x = minX; x <= maxX; x++){
+			CSector *sector = CWorld::GetSector(x, y);
+			CPtrList *lists[2] = {
+				&sector->m_lists[ENTITYLIST_BUILDINGS],
+				&sector->m_lists[ENTITYLIST_BUILDINGS_OVERLAP]
+			};
+			for(int listIndex = 0; listIndex < 2; listIndex++)
+				for(CPtrNode *node = lists[listIndex]->first; node; node = node->next){
+					CEntity *lod = (CEntity*)node->item;
+					if(lod == nil || !lod->bIsBIGBuilding || !lod->bIsVisible)
+						continue;
+					if((lod->GetPosition() - pos).MagnitudeSqr() <= radius * radius)
+						return true;
+				}
+		}
+	return false;
+}
+
+static void
+WiiProbeNearLodEntityVisibility(CEntity *ent, int32 visibility, const char *phase)
+{
+	if(ent == nil || ent->bIsBIGBuilding || !ent->IsBuilding() ||
+	   !WiiProbeEntityNearVisibleLod(ent))
+		return;
+
+	int32 modelId = ent->GetModelIndex();
+	if(modelId < 0 || modelId >= STREAM_OFFSET_TXD)
+		return;
+	uint8 state = CStreaming::ms_aInfoForModel[modelId].m_loadState;
+	uint8 vis = (uint8)visibility;
+	if(gWiiNearLodEntityProbeSeen[modelId] &&
+	   gWiiNearLodEntityProbeLastState[modelId] == state &&
+	   gWiiNearLodEntityProbeLastVis[modelId] == vis)
+		return;
+	gWiiNearLodEntityProbeSeen[modelId] = true;
+	gWiiNearLodEntityProbeLastState[modelId] = state;
+	gWiiNearLodEntityProbeLastVis[modelId] = vis;
+
+	CBaseModelInfo *modelInfo = CModelInfo::GetModelInfo(modelId);
+	float cameraDist = (ent->GetPosition() - TheCamera.GetPosition()).Magnitude();
+	printf("[WII-LOD-ENTITY] phase=%s frame=%u model=%d name='%s' "
+	       "state=%u(%s) rw=%u visible=%u onscreen=%u occluded=%u "
+	       "vis=%u(%s) dist=%.3f flags=0x%02X requested=%d priority=%d\n",
+	       phase ? phase : "unknown", (unsigned)CTimer::GetFrameCounter(),
+	       modelId, modelInfo && modelInfo->GetModelName() ?
+	       modelInfo->GetModelName() : "<unknown>",
+	       (unsigned)state, WiiLodCompanionProbeStateName(state),
+	       ent->m_rwObject != nil ? 1u : 0u, ent->bIsVisible ? 1u : 0u,
+	       ent->GetIsOnScreen() ? 1u : 0u, ent->IsEntityOccluded() ? 1u : 0u,
+	       (unsigned)vis, WiiVisibilityProbeName(visibility), cameraDist,
+	       (unsigned)CStreaming::ms_aInfoForModel[modelId].m_flags,
+	       CStreaming::ms_aInfoForModel[modelId].m_loadState != STREAMSTATE_NOTLOADED,
+	       CStreaming::ms_aInfoForModel[modelId].IsPriority());
+}
+#endif
 
 // Time Objects can be time culled if
 //   other == -1 || CModelInfo::GetModelInfo(other)->GetRwObject()
@@ -1855,7 +1946,11 @@ CRenderer::ScanSectorList(CPtrList *lists)
 			ent->m_scanCode = CWorld::GetCurrentScanCode();
 			ent->bOffscreen = false;
 
-			switch(SetupEntityVisibility(ent)){
+			int32 visibility = SetupEntityVisibility(ent);
+#if defined(WII) && WII_STREAM_BIG_BUILDING_PROBE
+			WiiProbeNearLodEntityVisibility(ent, visibility, "normal");
+#endif
+			switch(visibility){
 			case VIS_VISIBLE:
 				InsertEntityIntoList(ent);
 				break;
@@ -1900,7 +1995,11 @@ CRenderer::ScanSectorList_Priority(CPtrList *lists)
 			ent->m_scanCode = CWorld::GetCurrentScanCode();
 			ent->bOffscreen = false;
 
-			switch(SetupEntityVisibility(ent)){
+			int32 visibility = SetupEntityVisibility(ent);
+#if defined(WII) && WII_STREAM_BIG_BUILDING_PROBE
+			WiiProbeNearLodEntityVisibility(ent, visibility, "priority");
+#endif
+			switch(visibility){
 			case VIS_VISIBLE:
 				InsertEntityIntoList(ent);
 				break;
