@@ -568,6 +568,8 @@ CVisibilityPlugins::RenderFadingAtomic(RpAtomic *atomic, float camdist)
 
 	mi = GetAtomicModelInfo(atomic);
 	lodatm = mi->GetAtomicFromDistance(camdist - FADE_DISTANCE);
+	if(lodatm == nil)
+		lodatm = atomic;
 	if(mi->m_additive)
 		RwRenderStateSet(rwRENDERSTATEDESTBLEND, (void*)rwBLENDONE);
 

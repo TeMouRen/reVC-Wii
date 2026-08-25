@@ -635,6 +635,8 @@ CRenderer::RenderOneBuilding(CEntity *ent, float camdist)
 		uint32 alpha;
 
 		lodatm = mi->GetAtomicFromDistance(camdist - FADE_DISTANCE);
+		if(lodatm == nil)
+			lodatm = atomic;
 		fadefactor = (mi->GetLargestLodDistance() - (camdist - FADE_DISTANCE))/FADE_DISTANCE;
 		if(fadefactor > 1.0f)
 			fadefactor = 1.0f;
