@@ -74,6 +74,94 @@ class StaticWorldClassificationTests(unittest.TestCase):
         self.assertEqual(names, ["bridge_a", "bridge_b"])
         self.assertEqual(errors, [])
 
+    def test_finds_independent_companion_near_lod_instance(self) -> None:
+        metadata = {
+            827: {
+                "id": 827,
+                "model": "dk_paynspray",
+                "section": "objs",
+                "runtime_big_building": False,
+                "related_model": None,
+                "related_by": [],
+                "lod_role": "ordinary_world_model",
+                "first_lod_distance": 100.0,
+            },
+            828: {
+                "id": 828,
+                "model": "dk_paynspraydoor",
+                "section": "objs",
+                "runtime_big_building": False,
+                "related_model": None,
+                "related_by": [],
+                "lod_role": "ordinary_world_model",
+                "first_lod_distance": 100.0,
+            },
+            839: {
+                "id": 839,
+                "model": "LODpaynspray",
+                "section": "objs",
+                "runtime_big_building": True,
+                "related_model": "dk_paynspray",
+                "related_by": [],
+                "lod_role": "runtime_big_building_with_near_model",
+                "first_lod_distance": 750.0,
+            },
+        }
+        rows = [
+            {
+                "instance_id": 1,
+                "source": "maps/docks/docks.ipl",
+                "line": 10,
+                "model_id": 839,
+                "model": "LODpaynspray",
+                "position": [0.0, 0.0, 0.0],
+                "x": 0.0,
+                "y": 0.0,
+                "z": 0.0,
+            },
+            {
+                "instance_id": 2,
+                "source": "maps/docks/docks.ipl",
+                "line": 11,
+                "model_id": 827,
+                "model": "dk_paynspray",
+                "position": [0.0, 0.0, 0.0],
+                "x": 0.0,
+                "y": 0.0,
+                "z": 0.0,
+            },
+            {
+                "instance_id": 3,
+                "source": "maps/docks/docks.ipl",
+                "line": 12,
+                "model_id": 828,
+                "model": "dk_paynspraydoor",
+                "position": [1.0, 0.0, 0.0],
+                "x": 1.0,
+                "y": 0.0,
+                "z": 0.0,
+            },
+        ]
+        dependency = {
+            "models": [
+                {"model": "dk_paynspray", "dff": "dk_paynspray.dff", "dff_bytes": 10, "txd": "docks.txd"},
+                {"model": "dk_paynspraydoor", "dff": "dk_paynspraydoor.dff", "dff_bytes": 2, "txd": "docks.txd"},
+                {"model": "LODpaynspray", "dff": "LODpaynspray.dff", "dff_bytes": 20, "txd": "lod_docks.txd"},
+            ],
+            "txds": [
+                {"name": "docks.txd", "resident_bytes": 8192, "resident_mib": 0.008, "texture_count": 1, "classification": "model_backed_txd"},
+                {"name": "lod_docks.txd", "resident_bytes": 4096, "resident_mib": 0.004, "texture_count": 1, "classification": "model_backed_txd"},
+            ],
+        }
+        audit = REPORT.build_lod_companion_audit(rows, metadata, dependency)
+        candidates = audit["candidates"]
+        self.assertEqual(audit["lod_instance_count"], 1)
+        self.assertEqual(audit["related_candidate_count"], 1)
+        self.assertEqual(audit["independent_candidate_count"], 1)
+        door = next(row for row in candidates if row["candidate_model_id"] == 828)
+        self.assertEqual(door["candidate_role"], "same_anchor_independent_world_model")
+        self.assertEqual(door["candidate_txd"], "docks.txd")
+
     def test_static_world_scope_distinguishes_shared_and_empty(self) -> None:
         self.assertEqual(REPORT.static_world_scope(set()), "no_world_instance")
         self.assertEqual(REPORT.static_world_scope({"BEACH"}), "beach_only")

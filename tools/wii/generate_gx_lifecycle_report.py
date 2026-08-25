@@ -57,6 +57,8 @@ GLOBAL_TXD_NAMES = {
 LEVEL_NAMES = {0: "GENERIC", 1: "BEACH", 2: "MAINLAND"}
 WORLD_MODEL_SECTIONS = {"objs", "tobj"}
 LOD_DISTANCE = 300.0
+LOD_COMPANION_RADIUS = 20.0
+LOD_SAME_ANCHOR_RADIUS = 2.0
 
 
 def sha256_file(path: Path) -> str:
@@ -292,6 +294,7 @@ def parse_ipl_instances(
     data_root: Path, zones: list[dict[str, Any]], model_info_by_id: dict[int, dict[str, Any]]
 ) -> dict[str, Any]:
     aggregates: dict[int, dict[str, Any]] = {}
+    instance_rows: list[dict[str, Any]] = []
     errors: list[str] = []
     total_instances = 0
     model_info_misses: Counter[str] = Counter()
@@ -356,6 +359,24 @@ def parse_ipl_instances(
                 aggregate["sources"][
                     path.resolve().relative_to(data_root.resolve()).as_posix()
                 ] += 1
+                relative_source = path.resolve().relative_to(data_root.resolve()).as_posix()
+                instance_rows.append(
+                    {
+                        "instance_id": total_instances + 1,
+                        "source": relative_source,
+                        "line": line_number,
+                        "model_id": model_id,
+                        "model": model_name,
+                        "area": area,
+                        "position": [position[0], position[1], position[2]],
+                        "x": position[0],
+                        "y": position[1],
+                        "z": position[2],
+                        "spatial_level": spatial_level,
+                        "runtime_level": runtime_level,
+                        "model_info_found": model_info is not None,
+                    }
+                )
                 total_instances += 1
             except (IndexError, ValueError) as exc:
                 errors.append(f"{path}:{line_number}: {exc}")
@@ -372,11 +393,227 @@ def parse_ipl_instances(
         }
     return {
         "by_model_id": serializable,
+        "rows": instance_rows,
         "total_instances": total_instances,
         "model_info_miss_count": sum(model_info_misses.values()),
         "model_info_misses": dict(sorted(model_info_misses.items())),
         "id_name_mismatch_count": id_name_mismatches,
         "errors": errors,
+    }
+
+
+def _world_model_asset(
+    model_name: str,
+    dependency: dict[str, Any],
+    txd_by_name: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    model_key = model_name.casefold()
+    model_row = next(
+        (
+            row
+            for row in dependency["models"]
+            if str(row["model"]).casefold() == model_key
+        ),
+        None,
+    )
+    if model_row is None:
+        return {
+            "dff": None,
+            "dff_bytes": None,
+            "txd": None,
+            "txd_resident_bytes": None,
+            "txd_resident_mib": None,
+            "txd_texture_count": None,
+            "txd_classification": None,
+        }
+    txd_name = model_row.get("txd") or model_row.get("inferred_txd")
+    txd_key = str(txd_name).casefold() if txd_name else ""
+    if txd_key and not txd_key.endswith(".txd"):
+        txd_key += ".txd"
+    txd_row = txd_by_name.get(txd_key) if txd_key else None
+    txd_display = txd_row.get("name") if txd_row else txd_name
+    return {
+        "dff": model_row.get("dff"),
+        "dff_bytes": model_row.get("dff_bytes"),
+        "txd": txd_display,
+        "txd_resident_bytes": txd_row.get("resident_bytes") if txd_row else None,
+        "txd_resident_mib": txd_row.get("resident_mib") if txd_row else None,
+        "txd_texture_count": txd_row.get("texture_count") if txd_row else None,
+        "txd_classification": txd_row.get("classification") if txd_row else None,
+    }
+
+
+def build_lod_companion_audit(
+    instance_rows: list[dict[str, Any]],
+    model_info_by_id: dict[int, dict[str, Any]],
+    dependency: dict[str, Any],
+    radius: float = LOD_COMPANION_RADIUS,
+) -> dict[str, Any]:
+    """Find spatially nearby ordinary world instances for every LOD instance.
+
+    This is a conservative offline candidate list. It does not assert that every
+    nearby model is a true visual child; runtime visibility and occlusion still
+    decide whether a candidate should be requested.
+    """
+    if radius <= 0.0:
+        raise ValueError("LOD companion radius must be positive")
+
+    txd_by_name = {
+        str(row["name"]).casefold(): row for row in dependency["txds"]
+    }
+    asset_cache: dict[str, dict[str, Any]] = {}
+
+    def asset_for(model_name: str) -> dict[str, Any]:
+        key = model_name.casefold()
+        if key not in asset_cache:
+            asset_cache[key] = _world_model_asset(model_name, dependency, txd_by_name)
+        return asset_cache[key]
+
+    world_rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    lod_rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    grid: dict[tuple[int, int, int], list[tuple[dict[str, Any], dict[str, Any]]]] = defaultdict(list)
+
+    def cell_for(row: dict[str, Any]) -> tuple[int, int, int]:
+        return (
+            int(row["x"] // radius),
+            int(row["y"] // radius),
+            int(row["z"] // radius),
+        )
+
+    for row in instance_rows:
+        metadata = model_info_by_id.get(int(row["model_id"]))
+        if metadata is None or metadata["section"] not in WORLD_MODEL_SECTIONS:
+            continue
+        item = (row, metadata)
+        world_rows.append(item)
+        grid[cell_for(row)].append(item)
+        if metadata["runtime_big_building"]:
+            lod_rows.append(item)
+
+    candidate_rows: list[dict[str, Any]] = []
+    lod_summaries: list[dict[str, Any]] = []
+    radius_sq = radius * radius
+    for lod_row, lod_metadata in lod_rows:
+        lod_x, lod_y, lod_z = lod_row["x"], lod_row["y"], lod_row["z"]
+        lod_cell = cell_for(lod_row)
+        related_name = lod_metadata.get("related_model")
+        candidates: list[dict[str, Any]] = []
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    for candidate_row, candidate_metadata in grid.get(
+                        (lod_cell[0] + dx, lod_cell[1] + dy, lod_cell[2] + dz), []
+                    ):
+                        if candidate_row["instance_id"] == lod_row["instance_id"]:
+                            continue
+                        if candidate_metadata["runtime_big_building"]:
+                            continue
+                        delta_x = candidate_row["x"] - lod_x
+                        delta_y = candidate_row["y"] - lod_y
+                        delta_z = candidate_row["z"] - lod_z
+                        distance_sq = (
+                            delta_x * delta_x
+                            + delta_y * delta_y
+                            + delta_z * delta_z
+                        )
+                        if distance_sq > radius_sq:
+                            continue
+                        distance = distance_sq**0.5
+                        candidate_name = str(candidate_metadata["model"])
+                        if (
+                            related_name
+                            and candidate_name.casefold() == str(related_name).casefold()
+                        ):
+                            candidate_role = "related_near_model"
+                        elif distance <= LOD_SAME_ANCHOR_RADIUS:
+                            candidate_role = "same_anchor_independent_world_model"
+                        else:
+                            candidate_role = "nearby_independent_world_model"
+                        asset = asset_for(candidate_name)
+                        candidate = {
+                            "lod_instance_id": lod_row["instance_id"],
+                            "lod_model_id": lod_row["model_id"],
+                            "lod_model": lod_row["model"],
+                            "lod_source": lod_row["source"],
+                            "lod_line": lod_row["line"],
+                            "lod_position": lod_row["position"],
+                            "lod_related_model": related_name,
+                            "candidate_instance_id": candidate_row["instance_id"],
+                            "candidate_model_id": candidate_row["model_id"],
+                            "candidate_model": candidate_name,
+                            "candidate_source": candidate_row["source"],
+                            "candidate_line": candidate_row["line"],
+                            "candidate_position": candidate_row["position"],
+                            "candidate_section": candidate_metadata["section"],
+                            "candidate_lod_role": candidate_metadata["lod_role"],
+                            "candidate_first_lod_distance": candidate_metadata[
+                                "first_lod_distance"
+                            ],
+                            "candidate_role": candidate_role,
+                            "distance": round(distance, 4),
+                            **{f"candidate_{key}": value for key, value in asset.items()},
+                        }
+                        candidates.append(candidate)
+
+        candidates.sort(
+            key=lambda item: (
+                float(item["distance"]),
+                str(item["candidate_model"]).casefold(),
+                int(item["candidate_instance_id"]),
+            )
+        )
+        candidate_rows.extend(candidates)
+        lod_summaries.append(
+            {
+                "lod_instance_id": lod_row["instance_id"],
+                "lod_model_id": lod_row["model_id"],
+                "lod_model": lod_row["model"],
+                "source": lod_row["source"],
+                "line": lod_row["line"],
+                "position": lod_row["position"],
+                "related_model": related_name,
+                "candidate_count": len(candidates),
+                "related_candidate_count": sum(
+                    item["candidate_role"] == "related_near_model" for item in candidates
+                ),
+                "independent_candidate_count": sum(
+                    item["candidate_role"] != "related_near_model" for item in candidates
+                ),
+            }
+        )
+
+    candidate_model_counts = Counter(
+        str(row["candidate_model"]) for row in candidate_rows
+    )
+    return {
+        "schema": "wii-lod-companion-audit-v1",
+        "radius": radius,
+        "same_anchor_radius": LOD_SAME_ANCHOR_RADIUS,
+        "world_instance_count": len(world_rows),
+        "lod_instance_count": len(lod_rows),
+        "lod_with_candidates_count": sum(
+            summary["candidate_count"] > 0 for summary in lod_summaries
+        ),
+        "lod_without_related_candidate_count": sum(
+            summary["related_candidate_count"] == 0 for summary in lod_summaries
+        ),
+        "candidate_count": len(candidate_rows),
+        "related_candidate_count": sum(
+            row["candidate_role"] == "related_near_model" for row in candidate_rows
+        ),
+        "independent_candidate_count": sum(
+            row["candidate_role"] != "related_near_model" for row in candidate_rows
+        ),
+        "candidate_model_counts": dict(
+            sorted(candidate_model_counts.items(), key=lambda item: (-item[1], item[0].casefold()))
+        ),
+        "lod_instances": lod_summaries,
+        "candidates": candidate_rows,
+        "interpretation": (
+            "Nearby independent world models are candidate companions only. This report "
+            "does not prove visual occlusion or authorize permanent retention; runtime "
+            "frustum visibility and a ready model/RwObject handoff remain authoritative."
+        ),
     }
 
 
@@ -865,6 +1102,9 @@ def build_static_world_report(
     instanced_world_ids = {
         model_id for model_id in by_model_id if model_id in ide["by_id"]
     }
+    lod_companions = build_lod_companion_audit(
+        instances["rows"], ide["by_id"], dependency
+    )
     return {
         "runtime_rules": {
             "zone_assignment": (
@@ -900,6 +1140,7 @@ def build_static_world_report(
         "ipl_model_info_misses": instances["model_info_misses"],
         "ipl_id_name_mismatch_count": instances["id_name_mismatch_count"],
         "ipl_parse_errors": instances["errors"],
+        "lod_companion_audit": lod_companions,
         "txd_cost_by_static_world_scope": {
             scope: {
                 "txd_count": scope_txd_count[scope],
@@ -1547,6 +1788,7 @@ def markdown_report(report: dict[str, Any]) -> str:
     unknown = report["unknown_owner_classification"]
     graph = report["dependency_graph"]
     runtime = report["runtime_evidence"]
+    companions = world["lod_companion_audit"]
     lines = [
         "# Wii GX Lifecycle Audit",
         "",
@@ -1611,6 +1853,14 @@ def markdown_report(report: dict[str, Any]) -> str:
             f"- Map zones: **{world['zone_count']}**; IPL instances: **{world['ipl_instance_count']}**.",
             f"- IDE world models: **{world['world_model_info_count']}**; runtime big-building/LOD models: **{world['runtime_big_building_count']}**.",
             f"- Big-building models without a related near model: **{world['big_building_without_near_model_count']}**.",
+            "",
+            "## Instance-Level LOD Companion Audit",
+            "",
+            f"- Spatial radius: **{companions['radius']} m**; same-anchor threshold: **{companions['same_anchor_radius']} m**.",
+            f"- LOD instances: **{companions['lod_instance_count']}**; with candidates: **{companions['lod_with_candidates_count']}**.",
+            f"- Candidate links: **{companions['candidate_count']}**; related near-model links: **{companions['related_candidate_count']}**; independent component candidates: **{companions['independent_candidate_count']}**.",
+            f"- LOD instances without a same-name related near-model candidate: **{companions['lod_without_related_candidate_count']}**.",
+            "- Full candidate rows are emitted as `lod-companion-audit.json` and `lod-companion-audit.csv`.",
             f"- IPL parse errors: **{len(world['ipl_parse_errors'])}**; IDE parse errors: **{len(world['ide_parse_errors'])}**; IPL model-info misses: **{world['ipl_model_info_miss_count']}**.",
             "",
             "TXD GX cost by runtime island scope:",
@@ -1705,6 +1955,7 @@ def write_lifecycle_matrices(report: dict[str, Any], output: Path) -> dict[str, 
     txd_path = output / "txd-lifecycle-matrix.csv"
     collision_path = output / "collision-lifecycle-matrix.csv"
     unknown_path = output / "unknown-owner-matrix.csv"
+    companion_path = output / "lod-companion-audit.csv"
 
     with txd_path.open("w", encoding="utf-8", newline="") as handle:
         fieldnames = [
@@ -1793,10 +2044,52 @@ def write_lifecycle_matrices(report: dict[str, Any], output: Path) -> dict[str, 
                     for key in fieldnames
                 }
             )
+    companion_fields = [
+        "lod_instance_id",
+        "lod_model_id",
+        "lod_model",
+        "lod_source",
+        "lod_line",
+        "lod_position",
+        "lod_related_model",
+        "candidate_instance_id",
+        "candidate_model_id",
+        "candidate_model",
+        "candidate_source",
+        "candidate_line",
+        "candidate_position",
+        "candidate_section",
+        "candidate_lod_role",
+        "candidate_first_lod_distance",
+        "candidate_role",
+        "distance",
+        "candidate_dff",
+        "candidate_dff_bytes",
+        "candidate_txd",
+        "candidate_txd_resident_bytes",
+        "candidate_txd_resident_mib",
+        "candidate_txd_texture_count",
+        "candidate_txd_classification",
+    ]
+    with companion_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=companion_fields)
+        writer.writeheader()
+        for row in report["static_world_lifecycle"]["lod_companion_audit"]["candidates"]:
+            writer.writerow(
+                {
+                    key: (
+                        json.dumps(row.get(key), sort_keys=True)
+                        if isinstance(row.get(key), (dict, list))
+                        else row.get(key)
+                    )
+                    for key in companion_fields
+                }
+            )
     return {
         "txd_lifecycle_csv": str(txd_path),
         "collision_lifecycle_csv": str(collision_path),
         "unknown_owner_csv": str(unknown_path),
+        "lod_companion_csv": str(companion_path),
     }
 
 
@@ -1819,12 +2112,23 @@ def main() -> int:
     graph_json_path = args.output / "dependency-graph.json"
     graph_dot_path = args.output / "dependency-graph.dot"
     graph_md_path = args.output / "dependency-graph.md"
+    companion_json_path = args.output / "lod-companion-audit.json"
     report["matrix_files"] = write_lifecycle_matrices(report, args.output)
     report["dependency_graph"]["files"] = {
         "json": str(graph_json_path),
         "dot": str(graph_dot_path),
         "markdown": str(graph_md_path),
     }
+    companion_json_path.write_text(
+        json.dumps(
+            report["static_world_lifecycle"]["lod_companion_audit"],
+            indent=2,
+            ensure_ascii=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    report["matrix_files"]["lod_companion_json"] = str(companion_json_path)
     json_path.write_text(json.dumps(report, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
     md_path.write_text(markdown_report(report), encoding="utf-8")
     graph_json_path.write_text(json.dumps(graph, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
@@ -1848,6 +2152,9 @@ def main() -> int:
         "graph_edges": graph["edge_count"],
         "graph_unresolved_texture_nodes": graph["summary"]["unresolved_texture_nodes"],
         "graph_orphan_archive_textures": graph["summary"]["archive_textures_without_direct_model_reference"],
+        "lod_companion_candidates": report["static_world_lifecycle"]["lod_companion_audit"]["candidate_count"],
+        "lod_companion_related": report["static_world_lifecycle"]["lod_companion_audit"]["related_candidate_count"],
+        "lod_companion_independent": report["static_world_lifecycle"]["lod_companion_audit"]["independent_candidate_count"],
     }, sort_keys=True))
     return 0
 
