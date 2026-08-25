@@ -176,7 +176,7 @@ static bool
 updateFreeCam(Camera *cam, Mtx dst)
 {
     const u16 buttons = PAD_ButtonsHeld(0);
-    const bool debugChord = (buttons & PAD_BUTTON_START) &&
+    const bool debugChord = (buttons & PAD_TRIGGER_L) &&
                             (buttons & PAD_TRIGGER_Z);
     const bool zHeld = (buttons & PAD_TRIGGER_Z) != 0;
     const bool togglePressed = zHeld &&
