@@ -74,6 +74,38 @@ static uint8 gWiiNearLodEntityProbeLastVis[STREAM_OFFSET_TXD];
 static bool gWiiNearLodEntityProbeSeen[STREAM_OFFSET_TXD];
 static uint8 gWiiBigProbeInvisibleSeen[STREAM_OFFSET_TXD];
 
+struct WiiCamJonesDrawProbeState
+{
+	bool valid;
+	int32 visibility;
+	uint8 modelAlpha;
+	uint8 distanceFade;
+	uint8 rw;
+	const void *nearAtomic;
+	const void *fadeAtomic;
+	const void *selectedAtomic;
+	const void *selectedGeometry;
+	const void *entityGeometry;
+	uint8 relatedAlpha;
+	uint8 relatedRw;
+};
+
+static WiiCamJonesDrawProbeState gWiiCamJonesScanProbeState[2];
+static WiiCamJonesDrawProbeState gWiiCamJonesRenderProbeState[2];
+
+static int
+WiiCamJonesProbeSlot(int32 modelId)
+{
+	if(modelId == 775)
+		return 0;
+	if(modelId == 720)
+		return 1;
+	return -1;
+}
+
+static void WiiProbeCamJonesRender(CEntity *ent, RpAtomic *drawAtomic,
+	RpAtomic *lodAtomic, uint32 drawAlpha, const char *reason);
+
 static const char *
 WiiLodCompanionProbeStateName(uint8 state)
 {
@@ -577,6 +609,9 @@ CRenderer::RenderOneBuilding(CEntity *ent, float camdist)
 
 		lodatm = mi->GetAtomicFromDistance(camdist - FADE_DISTANCE);
 		if(lodatm == nil){
+		#if WII_STREAM_BIG_BUILDING_PROBE
+			WiiProbeCamJonesRender(ent, atomic, nil, 0, "fade_lod_nil");
+		#endif
 			ent->bImBeingRendered = false;
 			return;
 		}
@@ -584,6 +619,9 @@ CRenderer::RenderOneBuilding(CEntity *ent, float camdist)
 		if(fadefactor > 1.0f)
 			fadefactor = 1.0f;
 		alpha = mi->m_alpha * fadefactor;
+	#if WII_STREAM_BIG_BUILDING_PROBE
+		WiiProbeCamJonesRender(ent, atomic, lodatm, alpha, "distance_fade");
+	#endif
 
 		if(alpha == 255)
 			WorldRender::AtomicFirstPass(atomic, pass);
@@ -594,8 +632,12 @@ CRenderer::RenderOneBuilding(CEntity *ent, float camdist)
 				RpAtomicSetGeometry(atomic, geo, rpATOMICSAMEBOUNDINGSPHERE);
 			WorldRender::AtomicFullyTransparent(atomic, pass, alpha);
 		}
-	}else
+	}else{
+	#if WII_STREAM_BIG_BUILDING_PROBE
+		WiiProbeCamJonesRender(ent, atomic, nil, 255, "opaque");
+	#endif
 		WorldRender::AtomicFirstPass(atomic, pass);
+	}
 
 	ent->bImBeingRendered = false;	// TODO: this seems wrong, but do we even need it?
 }
@@ -896,6 +938,133 @@ WiiProbeNearLodEntityVisibility(CEntity *ent, int32 visibility, const char *phas
 	       (unsigned)CStreaming::ms_aInfoForModel[modelId].m_flags,
 	       CStreaming::ms_aInfoForModel[modelId].m_loadState != STREAMSTATE_NOTLOADED,
 	       CStreaming::ms_aInfoForModel[modelId].IsPriority());
+}
+
+static void
+WiiProbeCamJonesScan(CEntity *ent, int32 visibility, const char *phase)
+{
+	if(ent == nil)
+		return;
+	int32 modelId = ent->GetModelIndex();
+	int slot = WiiCamJonesProbeSlot(modelId);
+	if(slot < 0)
+		return;
+
+	CBaseModelInfo *base = CModelInfo::GetModelInfo(modelId);
+	if(base == nil || !base->IsSimple())
+		return;
+	CSimpleModelInfo *mi = (CSimpleModelInfo*)base;
+	float distance = (TheCamera.GetPosition() - ent->GetPosition()).Magnitude();
+	RpAtomic *nearAtomic = modelId == 775 ?
+		mi->GetFirstAtomicFromDistance(distance) :
+		mi->GetAtomicFromDistance(distance);
+	RpAtomic *fadeAtomic = modelId == 775 ?
+		mi->GetFirstAtomicFromDistance(distance - FADE_DISTANCE) :
+		mi->GetAtomicFromDistance(distance - FADE_DISTANCE);
+	RpAtomic *selectedAtomic = nearAtomic ? nearAtomic : fadeAtomic;
+	RpGeometry *selectedGeometry = selectedAtomic ?
+		RpAtomicGetGeometry(selectedAtomic) : nil;
+	RpGeometry *entityGeometry = ent->m_rwObject ?
+		RpAtomicGetGeometry((RpAtomic*)ent->m_rwObject) : nil;
+	CSimpleModelInfo *related = modelId == 775 ? mi->GetRelatedModel() : nil;
+
+	WiiCamJonesDrawProbeState state;
+	state.valid = true;
+	state.visibility = visibility;
+	state.modelAlpha = mi->m_alpha;
+	state.distanceFade = ent->bDistanceFade ? 1 : 0;
+	state.rw = ent->m_rwObject ? 1 : 0;
+	state.nearAtomic = nearAtomic;
+	state.fadeAtomic = fadeAtomic;
+	state.selectedAtomic = selectedAtomic;
+	state.selectedGeometry = selectedGeometry;
+	state.entityGeometry = entityGeometry;
+	state.relatedAlpha = related ? related->m_alpha : 0;
+	state.relatedRw = related && related->GetRwObject() ? 1 : 0;
+
+	WiiCamJonesDrawProbeState &last = gWiiCamJonesScanProbeState[slot];
+	if(last.valid &&
+	   last.visibility == state.visibility &&
+	   last.modelAlpha == state.modelAlpha &&
+	   last.distanceFade == state.distanceFade &&
+	   last.rw == state.rw &&
+	   last.nearAtomic == state.nearAtomic &&
+	   last.fadeAtomic == state.fadeAtomic &&
+	   last.selectedAtomic == state.selectedAtomic &&
+	   last.selectedGeometry == state.selectedGeometry &&
+	   last.entityGeometry == state.entityGeometry &&
+	   last.relatedAlpha == state.relatedAlpha &&
+	   last.relatedRw == state.relatedRw)
+		return;
+	last = state;
+
+	CStreamingInfo &stream = CStreaming::ms_aInfoForModel[modelId];
+	printf("[WII-CAMJONES-DRAW] stage=scan phase=%s frame=%u "
+	       "model=%d name='%s' vis=%u(%s) dist=%.3f "
+	       "m_alpha=%u bDistanceFade=%u rw=%u "
+	       "near_atomic=%p fade_atomic=%p selected_atomic=%p "
+	       "selected_source=%s selected_geo=%p entity_geo=%p "
+	       "related=%p('%s') related_alpha=%u related_rw=%u "
+	       "stream=%u(%s)\n",
+	       phase ? phase : "unknown", (unsigned)CTimer::GetFrameCounter(),
+	       modelId, base->GetModelName() ? base->GetModelName() : "<unknown>",
+	       (unsigned)visibility, WiiVisibilityProbeName(visibility), distance,
+	       (unsigned)mi->m_alpha, ent->bDistanceFade ? 1u : 0u,
+	       ent->m_rwObject ? 1u : 0u,
+	       (void*)nearAtomic, (void*)fadeAtomic, (void*)selectedAtomic,
+	       nearAtomic ? "near" : fadeAtomic ? "fade" : "none",
+	       (void*)selectedGeometry, (void*)entityGeometry,
+	       (void*)related,
+	       related && related->GetModelName() ? related->GetModelName() : "<none>",
+	       related ? (unsigned)related->m_alpha : 0u,
+	       related && related->GetRwObject() ? 1u : 0u,
+	       (unsigned)stream.m_loadState, WiiLodCompanionProbeStateName(stream.m_loadState));
+}
+
+static void
+WiiProbeCamJonesRender(CEntity *ent, RpAtomic *drawAtomic, RpAtomic *lodAtomic,
+	uint32 drawAlpha, const char *reason)
+{
+	if(ent == nil)
+		return;
+	int slot = WiiCamJonesProbeSlot(ent->GetModelIndex());
+	if(slot < 0)
+		return;
+	CBaseModelInfo *base = CModelInfo::GetModelInfo(ent->GetModelIndex());
+	if(base == nil || !base->IsSimple())
+		return;
+	CSimpleModelInfo *mi = (CSimpleModelInfo*)base;
+	RpGeometry *drawGeometry = drawAtomic ? RpAtomicGetGeometry(drawAtomic) : nil;
+	RpGeometry *lodGeometry = lodAtomic ? RpAtomicGetGeometry(lodAtomic) : nil;
+	WiiCamJonesDrawProbeState &last = gWiiCamJonesRenderProbeState[slot];
+	if(last.valid && last.modelAlpha == mi->m_alpha &&
+	   last.distanceFade == (ent->bDistanceFade ? 1 : 0) &&
+	   last.rw == (ent->m_rwObject ? 1 : 0) &&
+	   last.selectedAtomic == drawAtomic &&
+	   last.selectedGeometry == drawGeometry &&
+	   last.nearAtomic == lodAtomic &&
+	   last.fadeAtomic == lodGeometry &&
+	   last.relatedAlpha == (uint8)drawAlpha)
+		return;
+	last.valid = true;
+	last.modelAlpha = mi->m_alpha;
+	last.distanceFade = ent->bDistanceFade ? 1 : 0;
+	last.rw = ent->m_rwObject ? 1 : 0;
+	last.selectedAtomic = drawAtomic;
+	last.selectedGeometry = drawGeometry;
+	last.nearAtomic = lodAtomic;
+	last.fadeAtomic = lodGeometry;
+	last.relatedAlpha = (uint8)drawAlpha;
+
+	printf("[WII-CAMJONES-DRAW] stage=render frame=%u model=%d name='%s' "
+	       "m_alpha=%u bDistanceFade=%u rw=%u draw_alpha=%u "
+	       "draw_atomic=%p draw_geo=%p lod_atomic=%p lod_geo=%p reason=%s\n",
+	       (unsigned)CTimer::GetFrameCounter(), ent->GetModelIndex(),
+	       base->GetModelName() ? base->GetModelName() : "<unknown>",
+	       (unsigned)mi->m_alpha, ent->bDistanceFade ? 1u : 0u,
+	       ent->m_rwObject ? 1u : 0u, (unsigned)drawAlpha,
+	       (void*)drawAtomic, (void*)drawGeometry, (void*)lodAtomic,
+	       (void*)lodGeometry, reason ? reason : "unknown");
 }
 
 static void
@@ -1851,9 +2020,14 @@ CRenderer::ScanBigBuildingList(CPtrList &list)
 			vis = SetupBigBuildingVisibility(ent);
 		#if defined(WII) && WII_STREAM_BIG_BUILDING_PROBE
 			WiiProbeBigBuildingInvisible(ent, vis);
+			WiiProbeCamJonesScan(ent, vis, "big");
 		#endif
-		}else
+		}else{
 			vis = VIS_VISIBLE;
+		#if defined(WII) && WII_STREAM_BIG_BUILDING_PROBE
+			WiiProbeCamJonesScan(ent, vis, "big_fast");
+		#endif
+		}
 		switch(vis){
 		case VIS_VISIBLE:
 #if defined(WII) && WII_STREAM_BIG_BUILDING_PROBE
@@ -1948,6 +2122,7 @@ CRenderer::ScanSectorList(CPtrList *lists)
 			int32 visibility = SetupEntityVisibility(ent);
 #if defined(WII) && WII_STREAM_BIG_BUILDING_PROBE
 			WiiProbeNearLodEntityVisibility(ent, visibility, "normal");
+			WiiProbeCamJonesScan(ent, visibility, "normal");
 #endif
 			switch(visibility){
 			case VIS_VISIBLE:
@@ -1997,6 +2172,7 @@ CRenderer::ScanSectorList_Priority(CPtrList *lists)
 			int32 visibility = SetupEntityVisibility(ent);
 #if defined(WII) && WII_STREAM_BIG_BUILDING_PROBE
 			WiiProbeNearLodEntityVisibility(ent, visibility, "priority");
+			WiiProbeCamJonesScan(ent, visibility, "priority");
 #endif
 			switch(visibility){
 			case VIS_VISIBLE:
