@@ -25,6 +25,7 @@
 #include "Renderer.h"
 #include "custompipes.h"
 #include "Frontend.h"
+#include "Garages.h"
 
 bool gbShowPedRoadGroups;
 bool gbShowCarRoadGroups;
@@ -105,6 +106,17 @@ WiiIsLoadedRelatedLodEntity(CEntity *ent)
 		}
 	}
 	return false;
+}
+
+static bool
+WiiIsVisibleGarageDoorOccluder(CEntity *ent, CSimpleModelInfo *mi, float dist)
+{
+	return ent != nil && mi != nil &&
+	       (ent->IsObject() || ent->IsDummy()) &&
+	       ent->bIsVisible && ent->GetIsOnScreen() &&
+	       dist < LOD_DISTANCE &&
+	       mi->GetLargestLodDistance() < LOD_DISTANCE &&
+	       CGarages::IsModelIndexADoor(ent->GetModelIndex());
 }
 
 static uint32 gWiiBigBuildingRequestFrame = UINT32_MAX;
@@ -1266,6 +1278,13 @@ CRenderer::SetupEntityVisibility(CEntity *ent)
 		mi->m_isDamaged = true;
 
 	RpAtomic *a = mi->GetAtomicFromDistance(dist);
+#ifdef WII
+	// Garage doors are independent two-triangle occluders rather than part of
+	// their building LOD. Keep that surface available inside the world LOD
+	// horizon without extending the full near building past its draw distance.
+	if(a == nil && WiiIsVisibleGarageDoorOccluder(ent, mi, dist))
+		a = mi->GetFirstAtomicFromDistance(0.0f);
+#endif
 	if(a){
 		mi->m_isDamaged = false;
 		if(ent->m_rwObject == nil)
@@ -1320,19 +1339,23 @@ CRenderer::SetupEntityVisibility(CEntity *ent)
 	// inside the current frustum; this does not change the streaming queue or
 	// texture/GX policy.
 	bool wiiVisibleBuildingLookahead = false;
+	bool wiiVisibleGarageDoorLookahead = false;
 #ifdef WII
 	wiiVisibleBuildingLookahead =
 		ent->IsBuilding() &&
 		ent->GetIsOnScreen() &&
 		dist < LOD_DISTANCE &&
 		mi->GetLargestLodDistance() < LOD_DISTANCE;
+	wiiVisibleGarageDoorLookahead =
+		WiiIsVisibleGarageDoorOccluder(ent, mi, dist);
 #endif
 
 	if(mi->m_noFade){
 		mi->m_isDamaged = false;
 		// request model
 		if((dist - STREAM_DISTANCE < mi->GetLargestLodDistance() ||
-		    wiiVisibleBuildingLookahead) && request)
+		    wiiVisibleBuildingLookahead ||
+		    wiiVisibleGarageDoorLookahead) && request)
 			return VIS_STREAMME;
 		return VIS_INVISIBLE;
 	}
@@ -1344,7 +1367,8 @@ CRenderer::SetupEntityVisibility(CEntity *ent)
 	if(a == nil){
 		// request model
 		if((dist - FADE_DISTANCE - STREAM_DISTANCE < mi->GetLargestLodDistance() ||
-		    wiiVisibleBuildingLookahead) && request)
+		    wiiVisibleBuildingLookahead ||
+		    wiiVisibleGarageDoorLookahead) && request)
 			return VIS_STREAMME;
 		return VIS_INVISIBLE;
 	}

@@ -123,6 +123,23 @@ class T1StreamingLifecycleTests(unittest.TestCase):
 
         self.assertIn("if(lodatm == nil)\n\t\treturn atomic;", VISIBILITY_SOURCE)
 
+    def test_garage_door_occluders_do_not_extend_full_near_buildings(self) -> None:
+        helper = function_body(
+            RENDERER_SOURCE,
+            "WiiIsVisibleGarageDoorOccluder(CEntity *ent, CSimpleModelInfo *mi, float dist)",
+        )
+        self.assertIn("CGarages::IsModelIndexADoor", helper)
+        self.assertIn("ent->IsObject() || ent->IsDummy()", helper)
+        self.assertIn("ent->GetIsOnScreen()", helper)
+        self.assertIn("dist < LOD_DISTANCE", helper)
+
+        setup = function_body(RENDERER_SOURCE, "CRenderer::SetupEntityVisibility(CEntity *ent)")
+        self.assertIn("WiiIsVisibleGarageDoorOccluder(ent, mi, dist)", setup)
+        self.assertIn("a = mi->GetFirstAtomicFromDistance(0.0f);", setup)
+        self.assertIn("wiiVisibleGarageDoorLookahead", setup)
+        self.assertNotIn("WiiHasLoadedNearbyBigBuilding", setup)
+        self.assertNotIn("WiiIsLodOcclusionCompanion", setup)
+
     def test_loadscene_protection_is_named_and_reaches_resident_txd(self) -> None:
         self.assertIn("STREAMFLAGS_LOADSCENE_PROTECT = 0x20", STREAMING_HEADER)
         self.assertNotIn("STREAMFLAGS_20", STREAMING_HEADER)
