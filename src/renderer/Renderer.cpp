@@ -56,6 +56,57 @@ WiiDisableDistanceFade(const CSimpleModelInfo *mi)
 	return mi->m_drawLast || mi->m_additive || mi->m_noZwrite;
 }
 
+/*
+ * A loaded near model can be rejected by the occlusion pass while its
+ * related big-building LOD is still on screen.  That leaves the open LOD
+ * proxy as the only drawable surface during the handoff.  Permit the normal
+ * near model to finish its existing alpha transition in that case; this does
+ * not force an entity to load or draw outside its normal distance range.
+ */
+static bool
+WiiIsLoadedRelatedLodEntity(CEntity *ent)
+{
+	if(ent == nil || !ent->IsBuilding() || ent->bIsBIGBuilding ||
+	   !ent->bIsVisible)
+		return false;
+
+	int32 modelId = ent->GetModelIndex();
+	if(modelId < 0 || modelId >= STREAM_OFFSET_TXD ||
+	   CStreaming::ms_aInfoForModel[modelId].m_loadState != STREAMSTATE_LOADED)
+		return false;
+
+	CBaseModelInfo *base = CModelInfo::GetModelInfo(modelId);
+	if(base == nil || !base->IsSimple())
+		return false;
+	CSimpleModelInfo *nearMi = (CSimpleModelInfo*)base;
+	if(nearMi->GetRwObject() == nil)
+		return false;
+
+	eLevelName levels[2] = { CGame::currLevel, LEVEL_GENERIC };
+	for(int i = 0; i < 2; i++){
+		if(i == 1 && levels[1] == levels[0])
+			continue;
+		CPtrList &list = CWorld::GetBigBuildingList(levels[i]);
+		for(CPtrNode *node = list.first; node; node = node->next){
+			CEntity *lod = (CEntity*)node->item;
+			if(lod == nil || lod == ent || !lod->bIsBIGBuilding ||
+			   !lod->bIsVisible || lod->m_rwObject == nil ||
+			   lod->m_level != ent->m_level)
+				continue;
+
+			CBaseModelInfo *lodBase = CModelInfo::GetModelInfo(lod->GetModelIndex());
+			if(lodBase == nil || !lodBase->IsSimple())
+				continue;
+			CSimpleModelInfo *lodMi = (CSimpleModelInfo*)lodBase;
+			if(lodMi->GetRelatedModel() != nearMi)
+				continue;
+			if((lod->GetPosition() - ent->GetPosition()).MagnitudeSqr() <= SQR(32.0f))
+				return true;
+		}
+	}
+	return false;
+}
+
 static uint32 gWiiBigBuildingRequestFrame = UINT32_MAX;
 static int32 gWiiBigBuildingRequestsThisFrame;
 
@@ -1234,7 +1285,13 @@ CRenderer::SetupEntityVisibility(CEntity *ent)
 		if(ent->m_rwObject == nil || !ent->bIsVisible)
 			return VIS_INVISIBLE;
 
-		if(!ent->GetIsOnScreen() || ent->IsEntityOccluded()){
+		bool wiiLodHandoff = false;
+#ifdef WII
+		wiiLodHandoff = (ent->bDistanceFade || mi->m_alpha != 255) &&
+			WiiIsLoadedRelatedLodEntity(ent);
+#endif
+		if(!ent->GetIsOnScreen() ||
+		   (ent->IsEntityOccluded() && !wiiLodHandoff)){
 			mi->m_alpha = 255;
 			return VIS_OFFSCREEN;
 		}
@@ -1307,7 +1364,13 @@ CRenderer::SetupEntityVisibility(CEntity *ent)
 	if(ent->m_rwObject == nil || !ent->bIsVisible)
 		return VIS_INVISIBLE;
 
-	if(!ent->GetIsOnScreen() || ent->IsEntityOccluded()){
+	bool wiiLodHandoff = false;
+#ifdef WII
+	wiiLodHandoff = (ent->bDistanceFade || mi->m_alpha != 255) &&
+		WiiIsLoadedRelatedLodEntity(ent);
+#endif
+	if(!ent->GetIsOnScreen() ||
+	   (ent->IsEntityOccluded() && !wiiLodHandoff)){
 		mi->m_alpha = 255;
 		return VIS_OFFSCREEN;
 	}else{
