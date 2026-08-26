@@ -25,7 +25,6 @@
 #include "Renderer.h"
 #include "custompipes.h"
 #include "Frontend.h"
-#include "Garages.h"
 
 bool gbShowPedRoadGroups;
 bool gbShowCarRoadGroups;
@@ -57,66 +56,28 @@ WiiDisableDistanceFade(const CSimpleModelInfo *mi)
 	return mi->m_drawLast || mi->m_additive || mi->m_noZwrite;
 }
 
-/*
- * A loaded near model can be rejected by the occlusion pass while its
- * related big-building LOD is still on screen.  That leaves the open LOD
- * proxy as the only drawable surface during the handoff.  Permit the normal
- * near model to finish its existing alpha transition in that case; this does
- * not force an entity to load or draw outside its normal distance range.
- */
+// Diagnostic baseline from ec50046: keep a loaded short-range building
+// component available while a nearby world LOD is resident. This intentionally
+// restores the pre-flicker-fix behavior so the full handoff can be audited.
 static bool
-WiiIsLoadedRelatedLodEntity(CEntity *ent)
+WiiHasLoadedNearbyBigBuilding(CEntity *ent)
 {
-	if(ent == nil || !ent->IsBuilding() || ent->bIsBIGBuilding ||
-	   !ent->bIsVisible)
-		return false;
-
-	int32 modelId = ent->GetModelIndex();
-	if(modelId < 0 || modelId >= STREAM_OFFSET_TXD ||
-	   CStreaming::ms_aInfoForModel[modelId].m_loadState != STREAMSTATE_LOADED)
-		return false;
-
-	CBaseModelInfo *base = CModelInfo::GetModelInfo(modelId);
-	if(base == nil || !base->IsSimple())
-		return false;
-	CSimpleModelInfo *nearMi = (CSimpleModelInfo*)base;
-	if(nearMi->GetRwObject() == nil)
-		return false;
-
+	const float radiusSq = SQR(32.0f);
 	eLevelName levels[2] = { CGame::currLevel, LEVEL_GENERIC };
 	for(int i = 0; i < 2; i++){
 		if(i == 1 && levels[1] == levels[0])
 			continue;
 		CPtrList &list = CWorld::GetBigBuildingList(levels[i]);
 		for(CPtrNode *node = list.first; node; node = node->next){
-			CEntity *lod = (CEntity*)node->item;
-			if(lod == nil || lod == ent || !lod->bIsBIGBuilding ||
-			   !lod->bIsVisible || lod->m_rwObject == nil ||
-			   lod->m_level != ent->m_level)
+			CEntity *big = (CEntity*)node->item;
+			if(big == ent || !big->bIsBIGBuilding ||
+			   big->m_rwObject == nil || !big->bIsVisible)
 				continue;
-
-			CBaseModelInfo *lodBase = CModelInfo::GetModelInfo(lod->GetModelIndex());
-			if(lodBase == nil || !lodBase->IsSimple())
-				continue;
-			CSimpleModelInfo *lodMi = (CSimpleModelInfo*)lodBase;
-			if(lodMi->GetRelatedModel() != nearMi)
-				continue;
-			if((lod->GetPosition() - ent->GetPosition()).MagnitudeSqr() <= SQR(32.0f))
+			if((big->GetPosition() - ent->GetPosition()).MagnitudeSqr() <= radiusSq)
 				return true;
 		}
 	}
 	return false;
-}
-
-static bool
-WiiIsVisibleGarageDoorOccluder(CEntity *ent, CSimpleModelInfo *mi, float dist)
-{
-	return ent != nil && mi != nil &&
-	       (ent->IsObject() || ent->IsDummy()) &&
-	       ent->bIsVisible && ent->GetIsOnScreen() &&
-	       dist < LOD_DISTANCE &&
-	       mi->GetLargestLodDistance() < LOD_DISTANCE &&
-	       CGarages::IsModelIndexADoor(ent->GetModelIndex());
 }
 
 static uint32 gWiiBigBuildingRequestFrame = UINT32_MAX;
@@ -151,10 +112,11 @@ struct WiiCamJonesDrawProbeState
 	const void *entityGeometry;
 	uint8 relatedAlpha;
 	uint8 relatedRw;
+	uint8 extendedNear;
 };
 
-static WiiCamJonesDrawProbeState gWiiCamJonesScanProbeState[2];
-static WiiCamJonesDrawProbeState gWiiCamJonesRenderProbeState[2];
+static WiiCamJonesDrawProbeState gWiiCamJonesScanProbeState[3];
+static WiiCamJonesDrawProbeState gWiiCamJonesRenderProbeState[3];
 
 static int
 WiiCamJonesProbeSlot(int32 modelId)
@@ -163,6 +125,8 @@ WiiCamJonesProbeSlot(int32 modelId)
 		return 0;
 	if(modelId == 720)
 		return 1;
+	if(modelId == 826)
+		return 2;
 	return -1;
 }
 
@@ -669,21 +633,20 @@ CRenderer::RenderOneBuilding(CEntity *ent, float camdist)
 		RpAtomic *lodatm;
 		float fadefactor;
 		uint32 alpha;
+		bool usedCurrentAtomic = false;
 
 		lodatm = mi->GetAtomicFromDistance(camdist - FADE_DISTANCE);
 		if(lodatm == nil){
-		#if WII_STREAM_BIG_BUILDING_PROBE
-			WiiProbeCamJonesRender(ent, atomic, nil, 0, "fade_lod_nil");
-		#endif
-			ent->bImBeingRendered = false;
-			return;
+			lodatm = atomic;
+			usedCurrentAtomic = true;
 		}
 		fadefactor = (mi->GetLargestLodDistance() - (camdist - FADE_DISTANCE))/FADE_DISTANCE;
 		if(fadefactor > 1.0f)
 			fadefactor = 1.0f;
 		alpha = mi->m_alpha * fadefactor;
 	#if WII_STREAM_BIG_BUILDING_PROBE
-		WiiProbeCamJonesRender(ent, atomic, lodatm, alpha, "distance_fade");
+		WiiProbeCamJonesRender(ent, atomic, lodatm, alpha,
+			usedCurrentAtomic ? "distance_fade_current_atomic" : "distance_fade");
 	#endif
 
 		if(alpha == 255)
@@ -1030,6 +993,11 @@ WiiProbeCamJonesScan(CEntity *ent, int32 visibility, const char *phase)
 	RpGeometry *entityGeometry = ent->m_rwObject ?
 		RpAtomicGetGeometry((RpAtomic*)ent->m_rwObject) : nil;
 	CSimpleModelInfo *related = modelId == 775 ? mi->GetRelatedModel() : nil;
+	RpAtomic *firstAtomic = mi->GetFirstAtomicFromDistance(0.0f);
+	bool extendedNear = modelId == 720 && nearAtomic == nil &&
+		ent->m_rwObject != nil && firstAtomic != nil &&
+		entityGeometry == RpAtomicGetGeometry(firstAtomic) &&
+		distance < LOD_DISTANCE;
 
 	WiiCamJonesDrawProbeState state;
 	state.valid = true;
@@ -1044,6 +1012,7 @@ WiiProbeCamJonesScan(CEntity *ent, int32 visibility, const char *phase)
 	state.entityGeometry = entityGeometry;
 	state.relatedAlpha = related ? related->m_alpha : 0;
 	state.relatedRw = related && related->GetRwObject() ? 1 : 0;
+	state.extendedNear = extendedNear ? 1 : 0;
 
 	WiiCamJonesDrawProbeState &last = gWiiCamJonesScanProbeState[slot];
 	if(last.valid &&
@@ -1057,21 +1026,27 @@ WiiProbeCamJonesScan(CEntity *ent, int32 visibility, const char *phase)
 	   last.selectedGeometry == state.selectedGeometry &&
 	   last.entityGeometry == state.entityGeometry &&
 	   last.relatedAlpha == state.relatedAlpha &&
-	   last.relatedRw == state.relatedRw)
+	   last.relatedRw == state.relatedRw &&
+	   last.extendedNear == state.extendedNear)
 		return;
 	last = state;
 
 	CStreamingInfo &stream = CStreaming::ms_aInfoForModel[modelId];
+	const CVector &entityPos = ent->GetPosition();
+	const CVector &cameraPos = TheCamera.GetPosition();
 	printf("[WII-CAMJONES-DRAW] stage=scan phase=%s frame=%u "
 	       "model=%d name='%s' vis=%u(%s) dist=%.3f "
+	       "ent=(%.3f,%.3f,%.3f) cam=(%.3f,%.3f,%.3f) "
 	       "m_alpha=%u bDistanceFade=%u rw=%u "
 	       "near_atomic=%p fade_atomic=%p selected_atomic=%p "
 	       "selected_source=%s selected_geo=%p entity_geo=%p "
 	       "related=%p('%s') related_alpha=%u related_rw=%u "
-	       "stream=%u(%s)\n",
+	       "extended_near=%u stream=%u(%s)\n",
 	       phase ? phase : "unknown", (unsigned)CTimer::GetFrameCounter(),
 	       modelId, base->GetModelName() ? base->GetModelName() : "<unknown>",
 	       (unsigned)visibility, WiiVisibilityProbeName(visibility), distance,
+	       entityPos.x, entityPos.y, entityPos.z,
+	       cameraPos.x, cameraPos.y, cameraPos.z,
 	       (unsigned)mi->m_alpha, ent->bDistanceFade ? 1u : 0u,
 	       ent->m_rwObject ? 1u : 0u,
 	       (void*)nearAtomic, (void*)fadeAtomic, (void*)selectedAtomic,
@@ -1081,6 +1056,7 @@ WiiProbeCamJonesScan(CEntity *ent, int32 visibility, const char *phase)
 	       related && related->GetModelName() ? related->GetModelName() : "<none>",
 	       related ? (unsigned)related->m_alpha : 0u,
 	       related && related->GetRwObject() ? 1u : 0u,
+	       extendedNear ? 1u : 0u,
 	       (unsigned)stream.m_loadState, WiiLodCompanionProbeStateName(stream.m_loadState));
 }
 
@@ -1279,10 +1255,11 @@ CRenderer::SetupEntityVisibility(CEntity *ent)
 
 	RpAtomic *a = mi->GetAtomicFromDistance(dist);
 #ifdef WII
-	// Garage doors are independent two-triangle occluders rather than part of
-	// their building LOD. Keep that surface available inside the world LOD
-	// horizon without extending the full near building past its draw distance.
-	if(a == nil && WiiIsVisibleGarageDoorOccluder(ent, mi, dist))
+	if(a == nil && ent->IsBuilding() && !ent->bIsBIGBuilding &&
+	   ent->GetIsOnScreen() && dist < LOD_DISTANCE &&
+	   CStreaming::ms_aInfoForModel[ent->GetModelIndex()].m_loadState ==
+	   STREAMSTATE_LOADED && mi->GetRwObject() != nil &&
+	   WiiHasLoadedNearbyBigBuilding(ent))
 		a = mi->GetFirstAtomicFromDistance(0.0f);
 #endif
 	if(a){
@@ -1304,13 +1281,7 @@ CRenderer::SetupEntityVisibility(CEntity *ent)
 		if(ent->m_rwObject == nil || !ent->bIsVisible)
 			return VIS_INVISIBLE;
 
-		bool wiiLodHandoff = false;
-#ifdef WII
-		wiiLodHandoff = (ent->bDistanceFade || mi->m_alpha != 255) &&
-			WiiIsLoadedRelatedLodEntity(ent);
-#endif
-		if(!ent->GetIsOnScreen() ||
-		   (ent->IsEntityOccluded() && !wiiLodHandoff)){
+		if(!ent->GetIsOnScreen() || ent->IsEntityOccluded()){
 			mi->m_alpha = 255;
 			return VIS_OFFSCREEN;
 		}
@@ -1339,23 +1310,19 @@ CRenderer::SetupEntityVisibility(CEntity *ent)
 	// inside the current frustum; this does not change the streaming queue or
 	// texture/GX policy.
 	bool wiiVisibleBuildingLookahead = false;
-	bool wiiVisibleGarageDoorLookahead = false;
 #ifdef WII
 	wiiVisibleBuildingLookahead =
 		ent->IsBuilding() &&
 		ent->GetIsOnScreen() &&
 		dist < LOD_DISTANCE &&
 		mi->GetLargestLodDistance() < LOD_DISTANCE;
-	wiiVisibleGarageDoorLookahead =
-		WiiIsVisibleGarageDoorOccluder(ent, mi, dist);
 #endif
 
 	if(mi->m_noFade){
 		mi->m_isDamaged = false;
 		// request model
 		if((dist - STREAM_DISTANCE < mi->GetLargestLodDistance() ||
-		    wiiVisibleBuildingLookahead ||
-		    wiiVisibleGarageDoorLookahead) && request)
+		    wiiVisibleBuildingLookahead) && request)
 			return VIS_STREAMME;
 		return VIS_INVISIBLE;
 	}
@@ -1367,8 +1334,7 @@ CRenderer::SetupEntityVisibility(CEntity *ent)
 	if(a == nil){
 		// request model
 		if((dist - FADE_DISTANCE - STREAM_DISTANCE < mi->GetLargestLodDistance() ||
-		    wiiVisibleBuildingLookahead ||
-		    wiiVisibleGarageDoorLookahead) && request)
+		    wiiVisibleBuildingLookahead) && request)
 			return VIS_STREAMME;
 		return VIS_INVISIBLE;
 	}
@@ -1388,13 +1354,7 @@ CRenderer::SetupEntityVisibility(CEntity *ent)
 	if(ent->m_rwObject == nil || !ent->bIsVisible)
 		return VIS_INVISIBLE;
 
-	bool wiiLodHandoff = false;
-#ifdef WII
-	wiiLodHandoff = (ent->bDistanceFade || mi->m_alpha != 255) &&
-		WiiIsLoadedRelatedLodEntity(ent);
-#endif
-	if(!ent->GetIsOnScreen() ||
-	   (ent->IsEntityOccluded() && !wiiLodHandoff)){
+	if(!ent->GetIsOnScreen() || ent->IsEntityOccluded()){
 		mi->m_alpha = 255;
 		return VIS_OFFSCREEN;
 	}else{

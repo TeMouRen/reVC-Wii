@@ -107,38 +107,22 @@ class T1StreamingLifecycleTests(unittest.TestCase):
         self.assertIn("wiiVisibleBuildingLookahead", setup)
 
     def test_visible_buildings_keep_original_lod_handoff_boundary(self) -> None:
-        self.assertNotIn("WiiHasLoadedNearbyBigBuilding", RENDERER_SOURCE)
-
         setup = function_body(RENDERER_SOURCE, "CRenderer::SetupEntityVisibility(CEntity *ent)")
-        self.assertNotIn("WiiIsLodOcclusionCompanion", setup)
-        self.assertNotIn("wiiLodOcclusionCompanion", setup)
+        self.assertIn("WiiHasLoadedNearbyBigBuilding(ent)", setup)
+        self.assertIn("STREAMSTATE_LOADED", setup)
+        self.assertIn("mi->GetFirstAtomicFromDistance(0.0f)", setup)
 
         render_one = function_body(RENDERER_SOURCE, "CRenderer::RenderOneBuilding(CEntity *ent, float camdist)")
         self.assertIn("if(lodatm == nil){", render_one)
-        self.assertIn("ent->bImBeingRendered = false;", render_one)
-        self.assertLess(
-            render_one.index("ent->bImBeingRendered = false;"),
-            render_one.index("fadefactor ="),
-        )
+        self.assertIn("lodatm = atomic;", render_one)
+        self.assertIn("usedCurrentAtomic", render_one)
 
-        self.assertIn("if(lodatm == nil)\n\t\treturn atomic;", VISIBILITY_SOURCE)
+        self.assertIn("if(lodatm == nil)\n\t\tlodatm = atomic;", VISIBILITY_SOURCE)
 
-    def test_garage_door_occluders_do_not_extend_full_near_buildings(self) -> None:
-        helper = function_body(
-            RENDERER_SOURCE,
-            "WiiIsVisibleGarageDoorOccluder(CEntity *ent, CSimpleModelInfo *mi, float dist)",
-        )
-        self.assertIn("CGarages::IsModelIndexADoor", helper)
-        self.assertIn("ent->IsObject() || ent->IsDummy()", helper)
-        self.assertIn("ent->GetIsOnScreen()", helper)
-        self.assertIn("dist < LOD_DISTANCE", helper)
-
-        setup = function_body(RENDERER_SOURCE, "CRenderer::SetupEntityVisibility(CEntity *ent)")
-        self.assertIn("WiiIsVisibleGarageDoorOccluder(ent, mi, dist)", setup)
-        self.assertIn("a = mi->GetFirstAtomicFromDistance(0.0f);", setup)
-        self.assertIn("wiiVisibleGarageDoorLookahead", setup)
-        self.assertNotIn("WiiHasLoadedNearbyBigBuilding", setup)
-        self.assertNotIn("WiiIsLodOcclusionCompanion", setup)
+    def test_cam_jones_probe_covers_near_door_and_extended_facade(self) -> None:
+        self.assertIn("if(modelId == 826)", RENDERER_SOURCE)
+        self.assertIn("extended_near", RENDERER_SOURCE)
+        self.assertIn("ent=(%.3f,%.3f,%.3f) cam=(%.3f,%.3f,%.3f)", RENDERER_SOURCE)
 
     def test_loadscene_protection_is_named_and_reaches_resident_txd(self) -> None:
         self.assertIn("STREAMFLAGS_LOADSCENE_PROTECT = 0x20", STREAMING_HEADER)
