@@ -490,13 +490,14 @@ CStreaming::ProbeBigBuilding(const char *event, int32 modelId, int32 flags,
 	                  ms_aInfoForModel[txdId + STREAM_OFFSET_TXD].m_flags : 0;
 	WiiMemoryPoolSnapshot pools;
 	WiiMemoryGetPoolSnapshot(&pools);
+	const CVector &cameraPos = TheCamera.GetPosition();
 	const char *modelName = base && base->GetModelName() ? base->GetModelName() : "<unnamed>";
 	const char *txdName = txdId >= 0 && txdId < TXDSTORESIZE && CTxdStore::GetTxdName(txdId) ?
 	                      CTxdStore::GetTxdName(txdId) : "<none>";
 	printf("[WII-BIG] event=%s frame=%u model=%d name='%s' txd='%s' txd_id=%d "
 	       "model_state=%s txd_state=%s call_flags=0x%02X model_flags=0x%02X txd_flags=0x%02X "
 	       "rw=%d refs=%d requested=%d priority=%d lod0=%.1f largest=%.1f "
-	       "gx_free=%uKB gx_largest=%uKB reason=%s\n",
+	       "gx_free=%uKB gx_largest=%uKB cam=(%.3f,%.3f,%.3f) reason=%s\n",
 	       event ? event : "unknown", (unsigned)CTimer::GetFrameCounter(),
 	       modelId, modelName, txdName, txdId,
 	       WiiStreamStateName(modelState), WiiStreamStateName(txdState),
@@ -507,6 +508,7 @@ CStreaming::ProbeBigBuilding(const char *event, int32 modelId, int32 flags,
 	       mi ? mi->GetLodDistance(0) : 0.0f,
 	       mi ? mi->GetLargestLodDistance() : 0.0f,
 	       (unsigned)(pools.gxFree / 1024u), (unsigned)(pools.gxLargest / 1024u),
+	       cameraPos.x, cameraPos.y, cameraPos.z,
 	       reason ? reason : "none");
 #else
 	(void)event;

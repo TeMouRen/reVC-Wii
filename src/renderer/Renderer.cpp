@@ -164,11 +164,18 @@ WiiProbeLodCompanions(CEntity *lod)
 		gWiiLodCompanionProbeLastState[modelId] = state;
 		gWiiLodCompanionProbeLastRw[modelId] = rw;
 		CBaseModelInfo *candidateInfo = CModelInfo::GetModelInfo(modelId);
+		const CVector &cameraPos = TheCamera.GetPosition();
+		const CVector &candidatePos = candidate->GetPosition();
 		printf("[WII-LOD-COMPANION] frame=%u lod=%d('%s') candidate=%d('%s') "
-		       "dist=%.3f state=%u(%s) rw=%u visible=%u flags=0x%02X requested=%d priority=%d\n",
+		       "lod_pos=(%.3f,%.3f,%.3f) candidate_pos=(%.3f,%.3f,%.3f) "
+		       "cam=(%.3f,%.3f,%.3f) dist=%.3f state=%u(%s) rw=%u visible=%u "
+		       "flags=0x%02X requested=%d priority=%d\n",
 		       (unsigned)CTimer::GetFrameCounter(), lod->GetModelIndex(),
 		       CModelInfo::GetModelInfo(lod->GetModelIndex())->GetModelName(),
 		       modelId, candidateInfo ? candidateInfo->GetModelName() : "<unknown>",
+		       pos.x, pos.y, pos.z,
+		       candidatePos.x, candidatePos.y, candidatePos.z,
+		       cameraPos.x, cameraPos.y, cameraPos.z,
 		       Sqrt(nearest[i].distanceSq), (unsigned)state,
 		       WiiLodCompanionProbeStateName(state), (unsigned)rw,
 		       (unsigned)candidate->bIsVisible,
@@ -870,9 +877,12 @@ WiiProbeNearLodEntityVisibility(CEntity *ent, int32 visibility, const char *phas
 	gWiiNearLodEntityProbeLastVis[modelId] = vis;
 
 	CBaseModelInfo *modelInfo = CModelInfo::GetModelInfo(modelId);
-	float cameraDist = (ent->GetPosition() - TheCamera.GetPosition()).Magnitude();
+	const CVector &entityPos = ent->GetPosition();
+	const CVector &cameraPos = TheCamera.GetPosition();
+	float cameraDist = (entityPos - cameraPos).Magnitude();
 	printf("[WII-LOD-ENTITY] phase=%s frame=%u model=%d name='%s' "
 	       "state=%u(%s) rw=%u visible=%u onscreen=%u occluded=%u "
+	       "ent=(%.3f,%.3f,%.3f) cam=(%.3f,%.3f,%.3f) "
 	       "vis=%u(%s) dist=%.3f flags=0x%02X requested=%d priority=%d\n",
 	       phase ? phase : "unknown", (unsigned)CTimer::GetFrameCounter(),
 	       modelId, modelInfo && modelInfo->GetModelName() ?
@@ -880,6 +890,8 @@ WiiProbeNearLodEntityVisibility(CEntity *ent, int32 visibility, const char *phas
 	       (unsigned)state, WiiLodCompanionProbeStateName(state),
 	       ent->m_rwObject != nil ? 1u : 0u, ent->bIsVisible ? 1u : 0u,
 	       ent->GetIsOnScreen() ? 1u : 0u, ent->IsEntityOccluded() ? 1u : 0u,
+	       entityPos.x, entityPos.y, entityPos.z,
+	       cameraPos.x, cameraPos.y, cameraPos.z,
 	       (unsigned)vis, WiiVisibilityProbeName(visibility), cameraDist,
 	       (unsigned)CStreaming::ms_aInfoForModel[modelId].m_flags,
 	       CStreaming::ms_aInfoForModel[modelId].m_loadState != STREAMSTATE_NOTLOADED,
@@ -902,10 +914,13 @@ WiiProbeBigBuildingInvisible(CEntity *ent, int visibility)
 	CBaseModelInfo *base = CModelInfo::GetModelInfo(modelId);
 	CSimpleModelInfo *mi = base && base->IsSimple() ?
 	                       (CSimpleModelInfo*)base : nil;
-	float distance = (TheCamera.GetPosition() - ent->GetPosition()).Magnitude();
+	const CVector &entityPos = ent->GetPosition();
+	const CVector &cameraPos = TheCamera.GetPosition();
+	float distance = (cameraPos - entityPos).Magnitude();
 	printf("[WII-BIG] event=scan_invisible frame=%u model=%d name='%s' "
 	       "model_state=%s rw=%d visible=%d on_screen=%d on_screen_complex=%d "
 	       "occluded=%d offscreen=%d area=%d dist=%.1f lod0=%.1f "
+	       "ent=(%.3f,%.3f,%.3f) cam=(%.3f,%.3f,%.3f) "
 	       "requested=%d priority=%d flags=0x%02X reason=visibility\n",
 	       (unsigned)CTimer::GetFrameCounter(), modelId,
 	       base && base->GetModelName() ? base->GetModelName() : "<unnamed>",
@@ -914,6 +929,8 @@ WiiProbeBigBuildingInvisible(CEntity *ent, int visibility)
 	       ent->GetIsOnScreen() ? 1 : 0, ent->GetIsOnScreenComplex() ? 1 : 0,
 	       ent->IsEntityOccluded() ? 1 : 0, ent->bOffscreen ? 1 : 0,
 	       (int)ent->m_area, distance, mi ? mi->GetLodDistance(0) : 0.0f,
+	       entityPos.x, entityPos.y, entityPos.z,
+	       cameraPos.x, cameraPos.y, cameraPos.z,
 	       stream.m_loadState != STREAMSTATE_NOTLOADED ? 1 : 0,
 	       stream.IsPriority() ? 1 : 0, (unsigned)stream.m_flags);
 }
