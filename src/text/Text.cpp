@@ -35,18 +35,18 @@ static wchar ChineseFreeCamText[] = { 0x81EA, 0x7531, 0x955C, 0x5934, '\0' };
 static wchar ChineseCutsceneBordersText[] = { 0x8FC7, 0x573A, 0x9ED1, 0x8FB9, '\0' };
 static wchar ChineseAntiAliasingText[] = { 0x6297, 0x952F, 0x9F7F, '\0' };
 static wchar ChinesePs2AlphaTestText[] = { 'P', 'S', '2', ' ', 'A', 'l', 'p', 'h', 'a', ' ', 0x6D4B, 0x8BD5, '\0' };
-static wchar ChineseColourFilterText[] = { 0x8272, 0x5F69, 0x6EE4, 0x955C, '\0' };
+static wchar ChineseColourFilterText[] = { 0x6EE4, 0x8272, 0x5668, '\0' };
 static wchar ChineseNoneText[] = { 0x65E0, '\0' };
 static wchar ChineseSimpleText[] = { 0x7B80, 0x5355, '\0' };
 static wchar ChineseNormalText[] = { 0x6807, 0x51C6, '\0' };
 static wchar ChineseMobileText[] = { 0x79FB, 0x52A8, 0x7248, '\0' };
-static wchar ChineseTrailsText[] = { 0x62D6, 0x5F71, '\0' };
+static wchar ChineseTrailsText[] = { 0x52A8, 0x6001, 0x6A21, 0x7CCA, '\0' };
 static wchar ChineseVehiclePipelineText[] = { 0x8F66, 0x8F86, 0x7BA1, 0x7EBF, '\0' };
 static wchar ChineseMatFxText[] = { 'M', 'a', 't', 'F', 'X', '\0' };
 static wchar ChineseNeoText[] = { 'N', 'e', 'o', '\0' };
-static wchar ChinesePedRimLightText[] = { 0x884C, 0x4EBA, 0x8FB9, 0x7F18, 0x5149, '\0' };
-static wchar ChineseWorldLightingText[] = { 0x4E16, 0x754C, 0x5149, 0x7167, '\0' };
-static wchar ChineseRoadGlossText[] = { 0x9053, 0x8DEF, 0x9AD8, 0x5149, '\0' };
+static wchar ChinesePedRimLightText[] = { 'r', 'i', 'm', ' ', 'l', 'i', 'g', 'h', 't', 0x8FB9, 0x7F18, 0x5149, '\0' };
+static wchar ChineseWorldLightingText[] = { 0x4E16, 0x754C, 0x5149, 0x7167, 0x8D34, 0x56FE, '\0' };
+static wchar ChineseRoadGlossText[] = { 0x8DEF, 0x9762, 0x5149, 0x6CFD, '\0' };
 
 static ChineseBuiltinTextEntry gChineseBuiltinMenuTexts[] = {
 	{ "FET_GFX", ChineseGraphicsMenuText },
