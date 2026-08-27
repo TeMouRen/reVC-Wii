@@ -151,6 +151,10 @@ WiiPrepareRelatedNearEntity(CEntity *lod)
 	if(RpAtomicGetGeometry(nearAtomic) != RpAtomicGetGeometry(entityAtomic))
 		RpAtomicSetGeometry(entityAtomic, RpAtomicGetGeometry(nearAtomic),
 		                    rpATOMICSAMEBOUNDINGSPHERE);
+	// This model was loaded before its normal draw range, so finish the
+	// load-time alpha ramp before using it as the LOD replacement. Distance
+	// fading still applies when the entity reaches its configured range.
+	nearMi->m_alpha = 255;
 	return nearest;
 }
 
@@ -173,7 +177,7 @@ WiiQueueLodHoleFill(CEntity *lod)
 	if(lod->GetModelIndex() == 775 && frame - gWiiLodHoleFillProbeFrame >= 120){
 		gWiiLodHoleFillProbeFrame = frame;
 		printf("[WII-LOD-HOLE-FILL] frame=%u lod=%d('%s') near=%d('%s') "
-		       "dist=%.3f mode=near-color-then-lod-depth\n",
+		       "dist=%.3f mode=loaded-near-replaces-lod\n",
 		       (unsigned)frame, lod->GetModelIndex(),
 		       CModelInfo::GetModelInfo(lod->GetModelIndex())->GetModelName(),
 		       nearEntity->GetModelIndex(),
@@ -648,18 +652,13 @@ CRenderer::RenderEverythingBarRoads(void)
 			RenderOneNonRoad(e);
 	}
 #ifdef WII
-	// Composite these pairs after the opaque list. The LOD establishes the
-	// authoritative depth first; the loaded near entity then supplies detail
-	// wherever it is in front of that proxy or where the proxy has no surface.
-	// Keeping depth testing enabled prevents later transparent passes from
-	// treating the near fill as an unoccluding color overlay.
+	// The loaded related model replaces its coarse LOD while it is outside the
+	// normal draw range. Drawing only one geometry avoids both the brightness
+	// change from overlapping fades and the LOD covering the sharper facade.
 	for(i = 0; i < gWiiLodHoleFillPairCount; i++){
 		RwRenderStateSet(rwRENDERSTATEZTESTENABLE, (void*)TRUE);
 		RwRenderStateSet(rwRENDERSTATEZWRITEENABLE, (void*)TRUE);
-		RenderOneNonRoad(gWiiLodHoleFillPairs[i].lod);
-		RwRenderStateSet(rwRENDERSTATEZWRITEENABLE, (void*)FALSE);
 		RenderOneNonRoad(gWiiLodHoleFillPairs[i].nearEntity);
-		RwRenderStateSet(rwRENDERSTATEZWRITEENABLE, (void*)TRUE);
 	}
 #endif
 	POP_RENDERGROUP();

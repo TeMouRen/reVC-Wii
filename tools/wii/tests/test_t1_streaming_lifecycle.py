@@ -128,14 +128,15 @@ class T1StreamingLifecycleTests(unittest.TestCase):
         self.assertIn("SQR(0.25f)", prepare)
         self.assertIn("nearMi->GetAtomicFromDistance(cameraDistance - FADE_DISTANCE)", prepare)
         self.assertIn("nearest->CreateRwObject()", prepare)
+        self.assertIn("nearMi->m_alpha = 255", prepare)
 
         render = function_body(RENDERER_SOURCE, "CRenderer::RenderEverythingBarRoads(void)")
         self.assertIn("WiiIsLodHoleFillQueued(e)", render)
         self.assertNotIn("WiiPrepareRelatedNearEntity", render)
-        self.assertIn("rwRENDERSTATEZWRITEENABLE, (void*)FALSE", render)
-        self.assertIn("RenderOneNonRoad(gWiiLodHoleFillPairs[i].nearEntity)", render)
+        self.assertIn("rwRENDERSTATEZTESTENABLE, (void*)TRUE", render)
         self.assertIn("rwRENDERSTATEZWRITEENABLE, (void*)TRUE", render)
-        self.assertIn("RenderOneNonRoad(gWiiLodHoleFillPairs[i].lod)", render)
+        self.assertIn("RenderOneNonRoad(gWiiLodHoleFillPairs[i].nearEntity)", render)
+        self.assertNotIn("RenderOneNonRoad(gWiiLodHoleFillPairs[i].lod)", render)
         self.assertIn("[WII-LOD-HOLE-FILL]", RENDERER_SOURCE)
 
     def test_cam_jones_probe_covers_near_door_and_extended_facade(self) -> None:
