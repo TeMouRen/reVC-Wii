@@ -23,6 +23,8 @@
 #include "../rwobjects.h"
 #include "../rwengine.h"
 #include "../rwrender.h"
+#include "../rwanim.h"
+#include "../rwplugins.h"
 #include "rwgx.h"
 #ifdef GX_PIPELINE_DIAGNOSTICS
 #include "gxmemory.h"
@@ -1587,6 +1589,42 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
             GxRaster *baseRaster = PLUGINOFFSET(
                 GxRaster, md->material->texture->raster, nativeRasterOffset);
             matFXBaseTextured = baseRaster != nil && baseRaster->texObjValid;
+        }
+        if(matFXEnvReady){
+            static uint32 s_matFxMeshTraceCount = 0;
+            if(s_matFxMeshTraceCount < 96u){
+                MatFX *meshMatFx = MatFX::get(md->material);
+                int32 envIndex = meshMatFx ?
+                    meshMatFx->getEffectIndex(MatFX::ENVMAP) : -1;
+                const MatFX::Env *meshEnv =
+                    envIndex >= 0 ? &meshMatFx->fx[envIndex].env : nil;
+                const char *envName = meshEnv && meshEnv->tex ?
+                    meshEnv->tex->name : "<none>";
+                fprintf(stdout,
+                        "[GX-MATFX-TRACE] mesh atomic=%p geo=%p mesh=%u "
+                        "mat=%p baseTex=%s envTex=%s coef=%.5f "
+                        "normals=%d texCoords=%u baseTextured=%d "
+                        "vtxAlpha=%d effVtxAlpha=%d matAlpha=%u "
+                        "usesAlpha=%d envFbAlpha=%d envFrame=%p indices=%u\n",
+                        (void*)atomic,
+                        (void*)geo,
+                        (unsigned)m,
+                        (void*)md->material,
+                        meshTexName ? meshTexName : "<none>",
+                        envName ? envName : "<none>",
+                        meshEnv ? (double)meshEnv->coefficient : 0.0,
+                        inst->hasNormals ? 1 : 0,
+                        (unsigned)inst->numTexCoords,
+                        matFXBaseTextured ? 1 : 0,
+                        md->vertexAlpha ? 1 : 0,
+                        effectiveVertexAlpha ? 1 : 0,
+                        md->material ? (unsigned)md->material->color.alpha : 255u,
+                        matFXEnvUsesAlpha ? 1 : 0,
+                        meshEnv && meshEnv->fbAlpha ? 1 : 0,
+                        meshEnv ? (void*)meshEnv->frame : nil,
+                        (unsigned)mesh->numIndices);
+                s_matFxMeshTraceCount++;
+            }
         }
         uint32 passCount = setMaterial(md->material, effectiveVertexAlpha, inst->hasColors,
                     (geo->flags & Geometry::MODULATE) != 0, lights, 0,

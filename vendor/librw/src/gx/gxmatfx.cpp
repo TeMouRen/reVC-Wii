@@ -24,8 +24,109 @@
 #define printf(...) ((void)sizeof((::printf)(__VA_ARGS__)))
 #endif
 
+// MatFX diagnostics stay enabled for the Wii build, but are capped so a
+// material rendered every frame does not flood the serial/debug console.
+#ifndef GX_MATFX_TRACE_LIMIT
+#define GX_MATFX_TRACE_LIMIT 96u
+#endif
+
 namespace rw {
 namespace gx {
+
+struct MatFxTraceKey
+{
+    const Material *mat;
+    const Texture *envTex;
+};
+
+static MatFxTraceKey s_matFxReadyTrace[GX_MATFX_TRACE_LIMIT];
+static uint32 s_matFxReadyTraceCount = 0;
+static uint32 s_matFxSetupTraceCount = 0;
+static uint32 s_matFxMatrixTraceCount = 0;
+
+static bool
+matFxTraceReadyOnce(const Material *mat, const Texture *envTex)
+{
+    for(uint32 i = 0; i < s_matFxReadyTraceCount; i++)
+        if(s_matFxReadyTrace[i].mat == mat &&
+           s_matFxReadyTrace[i].envTex == envTex)
+            return false;
+
+    if(s_matFxReadyTraceCount >= GX_MATFX_TRACE_LIMIT)
+        return false;
+
+    s_matFxReadyTrace[s_matFxReadyTraceCount].mat = mat;
+    s_matFxReadyTrace[s_matFxReadyTraceCount].envTex = envTex;
+    s_matFxReadyTraceCount++;
+    return true;
+}
+
+static const char*
+matFxTypeName(uint32 type)
+{
+    switch(type){
+    case MatFX::NOTHING:      return "nothing";
+    case MatFX::BUMPMAP:      return "bump";
+    case MatFX::ENVMAP:       return "envmap";
+    case MatFX::BUMPENVMAP:   return "bump+env";
+    case MatFX::DUAL:         return "dual";
+    case MatFX::UVTRANSFORM:  return "uv-transform";
+    case MatFX::DUALUVTRANSFORM: return "dual-uv-transform";
+    default:                  return "unknown";
+    }
+}
+
+static void
+matFxTraceRaster(const char *slot, Texture *texture, GxRaster *raster)
+{
+    fprintf(stdout,
+            "[GX-MATFX-TRACE] raster slot=%s tex=%p name=%s raster=%p "
+            "valid=%d gxData=%p data=%u wh=%ux%u fmt=0x%02X "
+            "alpha=%u kind=%u wrap=%u/%u filter=%u/%u ownSampler=%u\n",
+            slot,
+            (void*)texture,
+            texture && texture->name[0] ? texture->name : "<unnamed>",
+            (void*)raster,
+            raster && raster->texObjValid ? 1 : 0,
+            raster ? raster->gxData : nil,
+            raster ? (unsigned)raster->dataSize : 0u,
+            raster ? (unsigned)raster->w : 0u,
+            raster ? (unsigned)raster->h : 0u,
+            raster ? (unsigned)raster->gxFmt : 0xFFu,
+            raster ? (unsigned)raster->hasAlpha : 0u,
+            raster ? (unsigned)raster->alphaKind : 0u,
+            raster ? (unsigned)raster->wrapS : 0u,
+            raster ? (unsigned)raster->wrapT : 0u,
+            raster ? (unsigned)raster->minFilter : 0u,
+            raster ? (unsigned)raster->magFilter : 0u,
+            raster ? (unsigned)raster->preferOwnSampler : 0u);
+}
+
+static bool
+matFxTraceMatrixOnce(const MatFX::Env *env)
+{
+    // Matrix setup is called once per mesh. A small global cap is enough to
+    // capture the first effect-frame variants without logging every draw.
+    return env != nil && s_matFxMatrixTraceCount++ < GX_MATFX_TRACE_LIMIT;
+}
+
+static void
+matFxTraceMatrix(const char *mode, const MatFX::Env *env, const Mtx matrix)
+{
+    fprintf(stdout,
+            "[GX-MATFX-TRACE] texmtx mode=%s env=%p frame=%p "
+            "m=[%.5f %.5f %.5f %.5f; %.5f %.5f %.5f %.5f; "
+            "%.5f %.5f %.5f %.5f]\n",
+            mode,
+            (void*)env,
+            env ? (void*)env->frame : nil,
+            (double)matrix[0][0], (double)matrix[0][1],
+            (double)matrix[0][2], (double)matrix[0][3],
+            (double)matrix[1][0], (double)matrix[1][1],
+            (double)matrix[1][2], (double)matrix[1][3],
+            (double)matrix[2][0], (double)matrix[2][1],
+            (double)matrix[2][2], (double)matrix[2][3]);
+}
 
 static GxRaster*
 getNativeRaster(Texture *texture)
@@ -53,15 +154,58 @@ getEnvMap(Material *mat)
 bool
 gxMatFXEnvReady(Material *mat, bool hasNormals)
 {
-    if(mat == nil || !hasNormals)
+    if(mat == nil)
+        return false;
+
+    MatFX *matfx = MatFX::get(mat);
+    if(matfx == nil || matfx->type != MatFX::ENVMAP)
         return false;
 
     const MatFX::Env *env = getEnvMap(mat);
-    if(env == nil || env->tex == nil || env->coefficient <= 0.0f)
-        return false;
+    Texture *envTex = env ? env->tex : nil;
+    GxRaster *raster = envTex ? getNativeRaster(envTex) : nil;
+    bool ready = hasNormals && env != nil && envTex != nil &&
+                 env->coefficient > 0.0f && raster != nil &&
+                 raster->texObjValid;
 
-    GxRaster *raster = getNativeRaster(env->tex);
-    return raster != nil && raster->texObjValid;
+    if(matFxTraceReadyOnce(mat, envTex)){
+        const char *reason = ready ? "ready" :
+            !hasNormals ? "no-normals" :
+            env == nil ? "no-env-record" :
+            envTex == nil ? "no-env-texture" :
+            env->coefficient <= 0.0f ? "nonpositive-coefficient" :
+            raster == nil ? "no-native-raster" : "invalid-texobj";
+        fprintf(stdout,
+                "[GX-MATFX-TRACE] ready=%d reason=%s mat=%p matfx=%p "
+                "type=%s hasNormals=%d env=%p envTex=%p envName=%s "
+                "coef=%.5f fbAlpha=%d frame=%p matRGBA=%u,%u,%u,%u "
+                "globals=light:%d matColor:%d flipU:%d\n",
+                ready ? 1 : 0,
+                reason,
+                (void*)mat,
+                (void*)matfx,
+                matFxTypeName(matfx->type),
+                hasNormals ? 1 : 0,
+                (void*)env,
+                (void*)envTex,
+                envTex && envTex->name[0] ? envTex->name : "<none>",
+                env ? (double)env->coefficient : 0.0,
+                env && env->fbAlpha ? 1 : 0,
+                env ? (void*)env->frame : nil,
+                (unsigned)mat->color.red,
+                (unsigned)mat->color.green,
+                (unsigned)mat->color.blue,
+                (unsigned)mat->color.alpha,
+                MatFX::envMapApplyLight ? 1 : 0,
+                MatFX::envMapUseMatColor ? 1 : 0,
+                MatFX::envMapFlipU ? 1 : 0);
+        matFxTraceRaster("env", envTex, raster);
+        if(mat->texture)
+            matFxTraceRaster("base", mat->texture,
+                             getNativeRaster(mat->texture));
+    }
+
+    return ready;
 }
 
 bool
@@ -93,6 +237,7 @@ static void
 loadEnvTexMatrix(const MatFX::Env *env)
 {
     Mtx mapMtx;
+    bool trace = matFxTraceMatrixOnce(env);
 
     guMtxIdentity(mapMtx);
     mapMtx[0][0] = MatFX::envMapFlipU ? -0.5f : 0.5f;
@@ -104,6 +249,8 @@ loadEnvTexMatrix(const MatFX::Env *env)
         // A nil frame means the camera frame in the reference backends.
         // GX_NRM is already in that frame, so only apply the reflection map.
         GX_LoadTexMtxImm(mapMtx, GX_TEXMTX0, GX_MTX3x4);
+        if(trace)
+            matFxTraceMatrix("camera-normal", env, mapMtx);
         return;
     }
 
@@ -117,6 +264,8 @@ loadEnvTexMatrix(const MatFX::Env *env)
         // GX already receives normals in view space. A singular effect
         // frame falls back to the plain normal-to-UV map.
         GX_LoadTexMtxImm(mapMtx, GX_TEXMTX0, GX_MTX3x4);
+        if(trace)
+            matFxTraceMatrix("singular-frame-fallback", env, mapMtx);
         return;
     }
 
@@ -131,6 +280,8 @@ loadEnvTexMatrix(const MatFX::Env *env)
     guMtxConcat(invFrame, invView, normalMtx);
     guMtxConcat(mapMtx, normalMtx, envMtx);
     GX_LoadTexMtxImm(envMtx, GX_TEXMTX0, GX_MTX3x4);
+    if(trace)
+        matFxTraceMatrix("frame-normal", env, envMtx);
 }
 
 static GXColor
@@ -259,14 +410,29 @@ gxMatFXSetupEnv(Material *mat, bool baseTextured, bool vertexAlpha)
     }
     GX_SetNumTevStages(stageCount);
 
-    printf("[GX-MATFX] env tex=%s coef=%.3f applyLight=%d matColor=%d flipU=%d fbAlpha=%d stages=%u\n",
-           env->tex->name ? env->tex->name : "<unnamed>",
-           (double)env->coefficient,
-           MatFX::envMapApplyLight ? 1 : 0,
-           MatFX::envMapUseMatColor ? 1 : 0,
-           MatFX::envMapFlipU ? 1 : 0,
-           env->fbAlpha ? 1 : 0,
-           (unsigned)stageCount);
+    if(s_matFxSetupTraceCount < GX_MATFX_TRACE_LIMIT){
+        s_matFxSetupTraceCount++;
+        fprintf(stdout,
+                "[GX-MATFX-TRACE] setup mat=%p envTex=%p name=%s "
+                "baseTextured=%d vertexAlpha=%d envColor=%u,%u,%u,%u "
+                "applyLight=%d matColor=%d flipU=%d fbAlpha=%d usesAlpha=%d "
+                "stages=%u\n",
+                (void*)mat,
+                (void*)env->tex,
+                env->tex->name[0] ? env->tex->name : "<unnamed>",
+                baseTextured ? 1 : 0,
+                vertexAlpha ? 1 : 0,
+                (unsigned)envColor.r,
+                (unsigned)envColor.g,
+                (unsigned)envColor.b,
+                (unsigned)envColor.a,
+                MatFX::envMapApplyLight ? 1 : 0,
+                MatFX::envMapUseMatColor ? 1 : 0,
+                MatFX::envMapFlipU ? 1 : 0,
+                env->fbAlpha ? 1 : 0,
+                gxMatFXEnvUsesAlpha(mat) ? 1 : 0,
+                (unsigned)stageCount);
+    }
     return true;
 }
 
