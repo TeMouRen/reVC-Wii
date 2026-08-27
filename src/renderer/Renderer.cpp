@@ -648,15 +648,18 @@ CRenderer::RenderEverythingBarRoads(void)
 			RenderOneNonRoad(e);
 	}
 #ifdef WII
-	// Composite these pairs after the opaque list. The near entity first fills
-	// color without changing depth; the normal LOD draw then covers every pixel
-	// it owns. Existing foreground depth remains authoritative, while only real
-	// holes in the LOD retain the near geometry.
+	// Composite these pairs after the opaque list. The LOD establishes the
+	// authoritative depth first; the loaded near entity then supplies detail
+	// wherever it is in front of that proxy or where the proxy has no surface.
+	// Keeping depth testing enabled prevents later transparent passes from
+	// treating the near fill as an unoccluding color overlay.
 	for(i = 0; i < gWiiLodHoleFillPairCount; i++){
+		RwRenderStateSet(rwRENDERSTATEZTESTENABLE, (void*)TRUE);
+		RwRenderStateSet(rwRENDERSTATEZWRITEENABLE, (void*)TRUE);
+		RenderOneNonRoad(gWiiLodHoleFillPairs[i].lod);
 		RwRenderStateSet(rwRENDERSTATEZWRITEENABLE, (void*)FALSE);
 		RenderOneNonRoad(gWiiLodHoleFillPairs[i].nearEntity);
 		RwRenderStateSet(rwRENDERSTATEZWRITEENABLE, (void*)TRUE);
-		RenderOneNonRoad(gWiiLodHoleFillPairs[i].lod);
 	}
 #endif
 	POP_RENDERGROUP();
