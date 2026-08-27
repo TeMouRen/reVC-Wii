@@ -676,10 +676,6 @@ CMenuManager::CMenuManager()
 	m_PrefsStereoMono = 1;
 	m_PrefsBrightness = 256;
 	m_PrefsLOD = CRenderer::ms_lodDistScale;
-#ifdef WII
-	m_PrefsLOD = 1.10f;
-	CRenderer::ms_lodDistScale = m_PrefsLOD;
-#endif
 	m_KeyPressedCode = -1;
 	m_bFrontEnd_ReloadObrTxtGxt = false;
 	m_PrefsMP3BoostVolume = 0;
@@ -701,9 +697,6 @@ CMenuManager::CMenuManager()
 	m_PrefsUseVibration = 0;
 	m_PrefsShowHud = 1;
 	m_PrefsRadarMode = 0;
-#ifdef WII
-	CMBlur::BlurOn = false;
-#endif
 	m_DisplayControllerOnFoot = false;
 	m_bShutDownFrontEndRequested = false;
 	m_bStartUpFrontEndRequested = false;
@@ -5327,11 +5320,7 @@ CMenuManager::ProcessUserInput(uint8 goDown, uint8 goUp, uint8 optionSelected, u
 					SaveSettings();
 				} else if (m_nCurrScreen == MENUPAGE_DISPLAY_SETTINGS) {
 					m_PrefsBrightness = 256;
-#ifdef WII
-					m_PrefsLOD = 1.10f;
-#else
 					m_PrefsLOD = 1.2f;
-#endif
 #ifdef LEGACY_MENU_OPTIONS
 					m_PrefsVsync = true;
 #endif

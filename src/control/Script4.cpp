@@ -1068,10 +1068,12 @@ int8 CRunningScript::ProcessCommands800To899(int32 command)
 	case COMMAND_SET_CAMERA_BEHIND_PLAYER:
 		TheCamera.SetCameraDirectlyBehindForFollowPed_CamOnAString();
 		return 0;
+	/*
 	case COMMAND_SET_MOTION_BLUR:
 		CollectParameters(&m_nIp, 1);
 		TheCamera.SetMotionBlur(0, 0, 0, 0, ScriptParams[0]);
 		return 0;
+	*/
 	/*
 	case COMMAND_PRINT_STRING_IN_STRING:
 	{

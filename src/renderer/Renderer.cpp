@@ -41,170 +41,6 @@ bool gbDontRenderObjects;
 bool gbDontRenderVehicles;
 
 #ifdef WII
-static inline bool
-WiiDisableDistanceFade(const CSimpleModelInfo *mi)
-{
-	if(mi == nil)
-		return false;
-	if(TheCamera.Cams[TheCamera.ActiveCam].Mode != CCam::MODE_1STPERSON)
-		return false;
-	CVehicle *veh = FindPlayerVehicle();
-	if(veh == nil)
-		return false;
-	if(veh->m_vecMoveSpeed.Magnitude2D() < 0.03f)
-		return false;
-	return mi->m_drawLast || mi->m_additive || mi->m_noZwrite;
-}
-
-struct WiiLodHoleFillPair
-{
-	CEntity *lod;
-	CEntity *nearEntity;
-};
-
-static WiiLodHoleFillPair gWiiLodHoleFillPairs[NUMVISIBLEENTITIES];
-static int32 gWiiLodHoleFillPairCount;
-#if WII_STREAM_BIG_BUILDING_PROBE
-static uint32 gWiiLodHoleFillProbeFrame;
-#endif
-
-// Find the actual near entity referenced by this world LOD. The near model is
-// used only outside its normal draw range and only after its streamed resource
-// is already loaded; this does not extend the streaming or GX admission policy.
-static CEntity *
-WiiPrepareRelatedNearEntity(CEntity *lod)
-{
-	if(lod == nil || !lod->IsBuilding() || !lod->bIsBIGBuilding ||
-	   !lod->bIsVisible || lod->m_rwObject == nil)
-		return nil;
-
-	CBaseModelInfo *lodBase = CModelInfo::GetModelInfo(lod->GetModelIndex());
-	if(lodBase == nil || !lodBase->IsSimple())
-		return nil;
-	CSimpleModelInfo *lodMi = (CSimpleModelInfo*)lodBase;
-	CSimpleModelInfo *nearMi = lodMi->GetRelatedModel();
-	if(nearMi == nil || nearMi->GetRwObject() == nil ||
-	   nearMi->m_drawLast || nearMi->m_additive || nearMi->m_noZwrite)
-		return nil;
-
-	const float radius = 32.0f;
-	const CVector &lodPos = lod->GetPosition();
-	int minX = CWorld::GetSectorIndexX(lodPos.x - radius);
-	int minY = CWorld::GetSectorIndexY(lodPos.y - radius);
-	int maxX = CWorld::GetSectorIndexX(lodPos.x + radius);
-	int maxY = CWorld::GetSectorIndexY(lodPos.y + radius);
-	if(minX < 0) minX = 0;
-	if(minY < 0) minY = 0;
-	if(maxX >= NUMSECTORS_X) maxX = NUMSECTORS_X - 1;
-	if(maxY >= NUMSECTORS_Y) maxY = NUMSECTORS_Y - 1;
-
-	CEntity *nearest = nil;
-	float nearestDistanceSq = SQR(0.25f);
-	for(int y = minY; y <= maxY; y++)
-		for(int x = minX; x <= maxX; x++){
-			CSector *sector = CWorld::GetSector(x, y);
-			CPtrList *lists[2] = {
-				&sector->m_lists[ENTITYLIST_BUILDINGS],
-				&sector->m_lists[ENTITYLIST_BUILDINGS_OVERLAP]
-			};
-			for(int listIndex = 0; listIndex < 2; listIndex++)
-				for(CPtrNode *node = lists[listIndex]->first; node; node = node->next){
-					CEntity *candidate = (CEntity*)node->item;
-					if(candidate == nil || candidate == lod || !candidate->IsBuilding() ||
-					   candidate->bIsBIGBuilding || !candidate->bIsVisible ||
-					   candidate->m_area != lod->m_area ||
-					   candidate->m_level != lod->m_level ||
-					   !candidate->GetIsOnScreen() ||
-					   CModelInfo::GetModelInfo(candidate->GetModelIndex()) != nearMi)
-						continue;
-					float distanceSq = (candidate->GetPosition() - lodPos).MagnitudeSqr();
-					if(distanceSq <= nearestDistanceSq &&
-					   DotProduct(candidate->GetForward(), lod->GetForward()) > 0.999f &&
-					   DotProduct(candidate->GetUp(), lod->GetUp()) > 0.999f){
-						nearest = candidate;
-						nearestDistanceSq = distanceSq;
-					}
-				}
-		}
-
-	if(nearest == nil || nearest->bDrawLast)
-		return nil;
-	int32 modelId = nearest->GetModelIndex();
-	if(modelId < 0 || modelId >= STREAM_OFFSET_TXD ||
-	   CStreaming::ms_aInfoForModel[modelId].m_loadState != STREAMSTATE_LOADED)
-		return nil;
-
-	float cameraDistance = (nearest->GetPosition() - TheCamera.GetPosition()).Magnitude();
-	if(cameraDistance >= LOD_DISTANCE ||
-	   nearMi->GetAtomicFromDistance(cameraDistance) != nil)
-		return nil;
-
-	if(nearest->m_rwObject == nil)
-		nearest->CreateRwObject();
-	if(nearest->m_rwObject == nil || RwObjectGetType(nearest->m_rwObject) != rpATOMIC)
-		return nil;
-
-	RpAtomic *nearAtomic = nearMi->GetFirstAtomicFromDistance(0.0f);
-	RpAtomic *entityAtomic = (RpAtomic*)nearest->m_rwObject;
-	if(nearAtomic == nil)
-		return nil;
-	if(RpAtomicGetGeometry(nearAtomic) != RpAtomicGetGeometry(entityAtomic))
-		RpAtomicSetGeometry(entityAtomic, RpAtomicGetGeometry(nearAtomic),
-		                    rpATOMICSAMEBOUNDINGSPHERE);
-	// This model was loaded before its normal draw range, so finish the
-	// load-time alpha ramp before using it as the LOD replacement. Distance
-	// fading still applies when the entity reaches its configured range.
-	nearMi->m_alpha = 255;
-	return nearest;
-}
-
-static void
-WiiQueueLodHoleFill(CEntity *lod)
-{
-	if(gWiiLodHoleFillPairCount >= NUMVISIBLEENTITIES)
-		return;
-	for(int32 i = 0; i < gWiiLodHoleFillPairCount; i++)
-		if(gWiiLodHoleFillPairs[i].lod == lod)
-			return;
-	CEntity *nearEntity = WiiPrepareRelatedNearEntity(lod);
-	if(nearEntity == nil)
-		return;
-	WiiLodHoleFillPair &pair = gWiiLodHoleFillPairs[gWiiLodHoleFillPairCount++];
-	pair.lod = lod;
-	pair.nearEntity = nearEntity;
-#if WII_STREAM_BIG_BUILDING_PROBE
-	uint32 frame = CTimer::GetFrameCounter();
-	if(lod->GetModelIndex() == 775 && frame - gWiiLodHoleFillProbeFrame >= 120){
-		gWiiLodHoleFillProbeFrame = frame;
-		printf("[WII-LOD-HOLE-FILL] frame=%u lod=%d('%s') near=%d('%s') "
-		       "dist=%.3f mode=loaded-near-replaces-lod\n",
-		       (unsigned)frame, lod->GetModelIndex(),
-		       CModelInfo::GetModelInfo(lod->GetModelIndex())->GetModelName(),
-		       nearEntity->GetModelIndex(),
-		       CModelInfo::GetModelInfo(nearEntity->GetModelIndex())->GetModelName(),
-		       (nearEntity->GetPosition() - TheCamera.GetPosition()).Magnitude());
-	}
-#endif
-}
-
-static bool
-WiiIsLodHoleFillQueued(CEntity *lod)
-{
-	for(int32 i = 0; i < gWiiLodHoleFillPairCount; i++)
-		if(gWiiLodHoleFillPairs[i].lod == lod)
-			return true;
-	return false;
-}
-
-static bool
-WiiIsLodHoleFillNearEntity(CEntity *nearEntity)
-{
-	for(int32 i = 0; i < gWiiLodHoleFillPairCount; i++)
-		if(gWiiLodHoleFillPairs[i].nearEntity == nearEntity)
-			return true;
-	return false;
-}
-
 static uint32 gWiiBigBuildingRequestFrame = UINT32_MAX;
 static int32 gWiiBigBuildingRequestsThisFrame;
 
@@ -398,11 +234,7 @@ CEntity *CRenderer::ms_aVisibleBuildingPtrs[NUMVISIBLEENTITIES];
 CVUVECTOR CRenderer::ms_vecCameraPosition;
 CVehicle *CRenderer::m_pFirstPersonVehicle;
 bool CRenderer::m_loadingPriority;
-#ifdef WII
-float CRenderer::ms_lodDistScale = 1.1f;
-#else
 float CRenderer::ms_lodDistScale = 1.2f;
-#endif
 
 // unused
 BlockedRange CRenderer::aBlockedRanges[16];
@@ -633,12 +465,6 @@ CRenderer::RenderEverythingBarRoads(void)
 
 		if(IsRoad(e))
 			continue;
-
-#ifdef WII
-		if(e->IsBuilding() && e->bIsBIGBuilding && WiiIsLodHoleFillQueued(e))
-			continue;
-#endif
-
 #ifdef EXTENDED_PIPELINES
 		if(CustomPipes::bRenderingEnvMap && (e->IsPed() || e->IsVehicle()))
 			continue;
@@ -660,16 +486,6 @@ CRenderer::RenderEverythingBarRoads(void)
 		}else
 			RenderOneNonRoad(e);
 	}
-#ifdef WII
-	// The loaded related model replaces its coarse LOD while it is outside the
-	// normal draw range. Drawing only one geometry avoids both the brightness
-	// change from overlapping fades and the LOD covering the sharper facade.
-	for(i = 0; i < gWiiLodHoleFillPairCount; i++){
-		RwRenderStateSet(rwRENDERSTATEZTESTENABLE, (void*)TRUE);
-		RwRenderStateSet(rwRENDERSTATEZWRITEENABLE, (void*)TRUE);
-		RenderOneNonRoad(gWiiLodHoleFillPairs[i].nearEntity);
-	}
-#endif
 	POP_RENDERGROUP();
 }
 
@@ -773,22 +589,12 @@ CRenderer::RenderOneBuilding(CEntity *ent, float camdist)
 		RpAtomic *lodatm;
 		float fadefactor;
 		uint32 alpha;
-		bool usedCurrentAtomic = false;
 
 		lodatm = mi->GetAtomicFromDistance(camdist - FADE_DISTANCE);
-		if(lodatm == nil){
-			lodatm = atomic;
-			usedCurrentAtomic = true;
-		}
 		fadefactor = (mi->GetLargestLodDistance() - (camdist - FADE_DISTANCE))/FADE_DISTANCE;
 		if(fadefactor > 1.0f)
 			fadefactor = 1.0f;
 		alpha = mi->m_alpha * fadefactor;
-	#if WII_STREAM_BIG_BUILDING_PROBE
-		WiiProbeCamJonesRender(ent, atomic, lodatm, alpha,
-			usedCurrentAtomic ? "distance_fade_current_atomic" : "distance_fade");
-	#endif
-
 		if(alpha == 255)
 			WorldRender::AtomicFirstPass(atomic, pass);
 		else{
@@ -798,12 +604,8 @@ CRenderer::RenderOneBuilding(CEntity *ent, float camdist)
 				RpAtomicSetGeometry(atomic, geo, rpATOMICSAMEBOUNDINGSPHERE);
 			WorldRender::AtomicFullyTransparent(atomic, pass, alpha);
 		}
-	}else{
-	#if WII_STREAM_BIG_BUILDING_PROBE
-		WiiProbeCamJonesRender(ent, atomic, nil, 255, "opaque");
-	#endif
+	}else
 		WorldRender::AtomicFirstPass(atomic, pass);
-	}
 
 	ent->bImBeingRendered = false;	// TODO: this seems wrong, but do we even need it?
 }
@@ -1377,13 +1179,6 @@ CRenderer::SetupEntityVisibility(CEntity *ent)
 	if(!IsAreaVisible(ent->m_area))
 		return VIS_INVISIBLE;
 
-#ifdef WII
-	// The paired big-building pass owns this entity until its normal draw
-	// range begins. Do not also enqueue its distance-faded copy.
-	if(WiiIsLodHoleFillNearEntity(ent))
-		return VIS_INVISIBLE;
-#endif
-
 	dist = (ent->GetPosition() - ms_vecCameraPosition).Magnitude();
 
 #ifndef FIX_BUGS
@@ -1413,10 +1208,6 @@ CRenderer::SetupEntityVisibility(CEntity *ent)
 		if(RpAtomicGetGeometry(a) != RpAtomicGetGeometry(rwobj))
 			RpAtomicSetGeometry(rwobj, RpAtomicGetGeometry(a), rpATOMICSAMEBOUNDINGSPHERE); // originally 5 (mistake?)
 		mi->IncreaseAlpha();
-#ifdef WII
-		if(WiiDisableDistanceFade(mi))
-			mi->m_alpha = 255;
-#endif
 		if(ent->m_rwObject == nil || !ent->bIsVisible)
 			return VIS_INVISIBLE;
 
@@ -1441,27 +1232,11 @@ CRenderer::SetupEntityVisibility(CEntity *ent)
 	}
 
 	// Object is not loaded, figure out what to do
-	// On Wii, a short-range static building can sit in front of a loaded
-	// world LOD (garage doors and similar facade pieces are common examples).
-	// Admit those visible building entities across the existing world LOD
-	// horizon so their normal RW instance is ready before the camera reaches
-	// the near-model draw distance.  Keep the lookahead bounded to buildings
-	// inside the current frustum; this does not change the streaming queue or
-	// texture/GX policy.
-	bool wiiVisibleBuildingLookahead = false;
-#ifdef WII
-	wiiVisibleBuildingLookahead =
-		ent->IsBuilding() &&
-		ent->GetIsOnScreen() &&
-		dist < LOD_DISTANCE &&
-		mi->GetLargestLodDistance() < LOD_DISTANCE;
-#endif
 
 	if(mi->m_noFade){
 		mi->m_isDamaged = false;
 		// request model
-		if((dist - STREAM_DISTANCE < mi->GetLargestLodDistance() ||
-		    wiiVisibleBuildingLookahead) && request)
+		if(dist - STREAM_DISTANCE < mi->GetLargestLodDistance() && request)
 			return VIS_STREAMME;
 		return VIS_INVISIBLE;
 	}
@@ -1472,8 +1247,7 @@ CRenderer::SetupEntityVisibility(CEntity *ent)
 	mi->m_isDamaged = false;
 	if(a == nil){
 		// request model
-		if((dist - FADE_DISTANCE - STREAM_DISTANCE < mi->GetLargestLodDistance() ||
-		    wiiVisibleBuildingLookahead) && request)
+		if(dist - FADE_DISTANCE - STREAM_DISTANCE < mi->GetLargestLodDistance() && request)
 			return VIS_STREAMME;
 		return VIS_INVISIBLE;
 	}
@@ -1486,10 +1260,6 @@ CRenderer::SetupEntityVisibility(CEntity *ent)
 	if(RpAtomicGetGeometry(a) != RpAtomicGetGeometry(rwobj))
 		RpAtomicSetGeometry(rwobj, RpAtomicGetGeometry(a), rpATOMICSAMEBOUNDINGSPHERE); // originally 5 (mistake?)
 	mi->IncreaseAlpha();
-#ifdef WII
-	if(WiiDisableDistanceFade(mi))
-		mi->m_alpha = 255;
-#endif
 	if(ent->m_rwObject == nil || !ent->bIsVisible)
 		return VIS_INVISIBLE;
 
@@ -1497,16 +1267,6 @@ CRenderer::SetupEntityVisibility(CEntity *ent)
 		mi->m_alpha = 255;
 		return VIS_OFFSCREEN;
 	}else{
-#ifdef WII
-		if(WiiDisableDistanceFade(mi)){
-			ent->bDistanceFade = false;
-			if(mi->m_drawLast || ent->bDrawLast){
-				if(CVisibilityPlugins::InsertEntityIntoSortedList(ent, dist))
-					return VIS_INVISIBLE;
-			}
-			return VIS_VISIBLE;
-		}
-#endif
 		CVisibilityPlugins::InsertEntityIntoSortedList(ent, dist);
 		ent->bDistanceFade = true;
 		return VIS_OFFSCREEN;	// Why this?
@@ -1589,10 +1349,6 @@ CRenderer::SetupBigBuildingVisibility(CEntity *ent)
 		if(RpAtomicGetGeometry(a) != RpAtomicGetGeometry(rwobj))
 			RpAtomicSetGeometry(rwobj, RpAtomicGetGeometry(a), rpATOMICSAMEBOUNDINGSPHERE); // originally 5 (mistake?)
 		mi->IncreaseAlpha();
-#ifdef WII
-		if(WiiDisableDistanceFade(mi))
-			mi->m_alpha = 255;
-#endif
 		if(!ent->IsVisible() || !ent->GetIsOnScreenComplex() || ent->IsEntityOccluded()){
 			mi->m_alpha = 255;
 			return VIS_INVISIBLE;
@@ -1649,24 +1405,10 @@ CRenderer::SetupBigBuildingVisibility(CEntity *ent)
 	if(RpAtomicGetGeometry(a) != RpAtomicGetGeometry(rwobj))
 		RpAtomicSetGeometry(rwobj, RpAtomicGetGeometry(a), rpATOMICSAMEBOUNDINGSPHERE); // originally 5 (mistake?)
 	mi->IncreaseAlpha();
-#ifdef WII
-	if(WiiDisableDistanceFade(mi))
-		mi->m_alpha = 255;
-#endif
 	if(!ent->IsVisible() || !ent->GetIsOnScreenComplex() || ent->IsEntityOccluded()){
 		mi->m_alpha = 255;
 		return VIS_INVISIBLE;
 	}
-#ifdef WII
-	if(WiiDisableDistanceFade(mi)){
-		ent->bDistanceFade = false;
-		if(mi->m_drawLast){
-			CVisibilityPlugins::InsertEntityIntoSortedList(ent, dist);
-			return VIS_INVISIBLE;
-		}
-		return VIS_VISIBLE;
-	}
-#endif
 	CVisibilityPlugins::InsertEntityIntoSortedList(ent, dist);
 	ent->bDistanceFade = true;
 	return VIS_INVISIBLE;
@@ -1684,9 +1426,6 @@ CRenderer::ConstructRenderList(void)
 	ms_nNoOfInVisibleEntities = 0;
 }
 	ms_vecCameraPosition = TheCamera.GetPosition();
-#ifdef WII
-	gWiiLodHoleFillPairCount = 0;
-#endif
 
 	// unused
 	pFullBlockedRanges = nil;
@@ -2227,9 +1966,6 @@ CRenderer::ScanBigBuildingList(CPtrList &list)
 				CStreaming::ProbeBigBuilding("visible_missing", ent->GetModelIndex(),
 				                             0, "visible_without_rw");
 #endif
-		#ifdef WII
-			WiiQueueLodHoleFill(ent);
-		#endif
 			InsertEntityIntoList(ent);
 			ent->bOffscreen = false;
 			break;

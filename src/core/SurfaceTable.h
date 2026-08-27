@@ -93,7 +93,6 @@ IsShootThrough(uint8 surfType)
 class CSurfaceTable
 {
 	static float ms_aAdhesiveLimitTable[NUMADHESIVEGROUPS][NUMADHESIVEGROUPS];
-	static void ResetAdhesiveTableToDefaults();
 public:
 	static void Initialise(Const char *filename);
 	static int GetAdhesionGroup(uint8 surfaceType);

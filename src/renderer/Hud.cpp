@@ -1242,13 +1242,6 @@ void CHud::Draw()
 #else
 				rect.Grow(6.0f);
 #endif
-#ifdef WII
-				RwRenderStateSet(rwRENDERSTATEZTESTENABLE, (void*)FALSE);
-				RwRenderStateSet(rwRENDERSTATEZWRITEENABLE, (void*)FALSE);
-				RwRenderStateSet(rwRENDERSTATEVERTEXALPHAENABLE, (void*)TRUE);
-				RwRenderStateSet(rwRENDERSTATESRCBLEND, (void*)rwBLENDSRCALPHA);
-				RwRenderStateSet(rwRENDERSTATEDESTBLEND, (void*)rwBLENDINVSRCALPHA);
-#endif
 				rect.Translate(SCREEN_SCALE_X_FIX(0.0f), SCREEN_SCALE_Y_FIX(2.0f));
 				Sprites[HUD_RADARDISC].Draw(rect, CRGBA(0, 0, 0, 255));
 				rect.Translate(SCREEN_SCALE_X_FIX(0.0f), SCREEN_SCALE_Y_FIX(-2.0f));

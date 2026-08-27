@@ -119,7 +119,6 @@ void CTimer::Update(void)
 		RsTimerType timer = RsTimer();
 
 		RsTimerType updInMs = timer - oldPcTimer;
-		if (updInMs > 100.0) updInMs = 100.0;  // cap first-frame spike on GC
 
 		frameTime = (double)updInMs * ms_fTimeScale;
 

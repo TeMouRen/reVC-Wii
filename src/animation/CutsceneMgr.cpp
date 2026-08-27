@@ -433,10 +433,7 @@ CCutsceneMgr::SetupCutsceneToStart(void)
 		obj->UpdateRpHAnim();
 	}
 
-	// On Wii we already entered this path from a freshly-updated gameplay frame.
-	// Advancing the timer twice here causes the first cutscene frame to jump,
-	// which makes intro transitions and early animation cadence look jerky
-	// despite rendering at 60 Hz.
+	CTimer::Update();
 	CTimer::Update();
 	ms_running = true;
 	ms_cutsceneTimer = 0.0f;

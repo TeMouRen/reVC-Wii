@@ -32,27 +32,6 @@ static RwIm2DVertex Vertex[4];
 static RwIm2DVertex Vertex2[4];
 static RwImVertexIndex Index[6] = { 0, 1, 2, 0, 2, 3 };
 
-#ifdef WII
-static bool
-WiiUseMotionBlurHistory(int32 type)
-{
-	switch(type)
-	{
-	case MOTION_BLUR_INTRO:
-	case MOTION_BLUR_INTRO2:
-	case MOTION_BLUR_INTRO3:
-	case MOTION_BLUR_INTRO4:
-	case MOTION_BLUR_CUT_SCENE:
-	case MOTION_BLUR_SECURITY_CAM:
-	case MOTION_BLUR_SNIPER:
-	case MOTION_BLUR_SNIPER_ZOOM:
-		return true;
-	default:
-		return false;
-	}
-}
-#endif
-
 #ifndef LIBRW
 extern "C" D3DCAPS8 _RwD3D8DeviceCaps;
 #endif
@@ -105,12 +84,7 @@ CMBlur::MotionBlurOpen(RwCamera *cam)
 	debug("Available video memory %d\n", avaible);
 #endif
 		
-	bool allocateHistoryBuffer = BlurOn;
-#ifdef WII
-	allocateHistoryBuffer = true;
-#endif
-
-	if(allocateHistoryBuffer)
+	if(BlurOn)
 	{
 		uint32 width  = Pow(2.0f, int32(log2(RwRasterGetWidth (RwCameraGetRaster(cam))))+1);
 		uint32 height = Pow(2.0f, int32(log2(RwRasterGetHeight(RwCameraGetRaster(cam))))+1);
@@ -130,7 +104,7 @@ CMBlur::MotionBlurOpen(RwCamera *cam)
 			BlurOn = false;
 #endif
 		
-		if ( allocateHistoryBuffer )
+		if ( BlurOn )
 		{
 			ms_bScaledBlur = false;
 			rect.w = width;
@@ -156,13 +130,6 @@ CMBlur::MotionBlurOpen(RwCamera *cam)
 #ifndef LIBRW
 		_GetVideoMemInfo(&total, &avaible);
 		debug("Available video memory %d\n", avaible);
-#endif
-#ifdef WII
-		printf("[MBLUR-WII] MotionBlurOpen blurOn=%d alloc=%d front=%p size=%ux%u depth=%u\n",
-		       BlurOn ? 1 : 0,
-		       allocateHistoryBuffer ? 1 : 0,
-		       (void*)pFrontBuffer,
-		       rect.w, rect.h, depth);
 #endif
 		CreateImmediateModeData(cam, &rect);
 	}
@@ -376,20 +343,6 @@ CMBlur::MotionBlurRender(RwCamera *cam, uint32 red, uint32 green, uint32 blue, u
 #else
 	PUSH_RENDERGROUP("CMBlur::MotionBlurRender");
 	RwRGBA color = { (RwUInt8)red, (RwUInt8)green, (RwUInt8)blue, (RwUInt8)blur };
-	bool useFeedbackBlur = BlurOn;
-#ifdef WII
-	useFeedbackBlur = useFeedbackBlur || WiiUseMotionBlurHistory(type);
-	if(useFeedbackBlur && pFrontBuffer == nil){
-		static uint32 s_missingHistoryWarnCount = 0;
-		if(s_missingHistoryWarnCount < 8){
-			printf("[MBLUR-WII] skip blur type=%d blurOn=%d justInit=%d front=%p\n",
-			       type, BlurOn ? 1 : 0, ms_bJustInitialised ? 1 : 0, (void*)pFrontBuffer);
-			s_missingHistoryWarnCount++;
-		}
-		POP_RENDERGROUP();
-		return;
-	}
-#endif
 #ifdef GTA_PS2
 	if( pFrontBuffer )
 		OverlayRender(cam, pFrontBuffer, color, type, bluralpha);
@@ -398,7 +351,7 @@ CMBlur::MotionBlurRender(RwCamera *cam, uint32 red, uint32 green, uint32 blue, u
 		ms_bJustInitialised = false;
 	else
 		OverlayRender(cam, pFrontBuffer, color, type, bluralpha);
-	if(useFeedbackBlur && pFrontBuffer){
+	if(BlurOn){
 		RwRasterPushContext(pFrontBuffer);
 		RwRasterRenderFast(RwCameraGetRaster(cam), 0, 0);
 		RwRasterPopContext();
@@ -417,11 +370,6 @@ void
 CMBlur::OverlayRender(RwCamera *cam, RwRaster *raster, RwRGBA color, int32 type, int32 bluralpha)
 {
 	int r, g, b, a;
-	bool useFeedbackBlur = BlurOn;
-#ifdef WII
-	useFeedbackBlur = useFeedbackBlur || (raster != nil && WiiUseMotionBlurHistory(type));
-#endif
-
 	r = color.red;
 	g = color.green;
 	b = color.blue;
@@ -463,7 +411,7 @@ CMBlur::OverlayRender(RwCamera *cam, RwRaster *raster, RwRGBA color, int32 type,
 		break;
 	}
 
-	if(!useFeedbackBlur){
+	if(!BlurOn){
 		// gta clamps these to 255 (probably a macro or inlined function)
 		int ovR = r * 0.6f;
 		int ovG = g * 0.6f;
@@ -494,7 +442,7 @@ CMBlur::OverlayRender(RwCamera *cam, RwRaster *raster, RwRGBA color, int32 type,
 	RwRenderStateSet(rwRENDERSTATESRCBLEND, (void*)rwBLENDONE);
 	RwRenderStateSet(rwRENDERSTATEDESTBLEND, (void*)rwBLENDONE);
 
-	if(useFeedbackBlur){
+	if(BlurOn){
 		if(type == MOTION_BLUR_SNIPER){
 			RwIm2DVertexSetIntRGBA(&Vertex2[0], r, g, b, 80);
 			RwIm2DVertexSetIntRGBA(&Vertex2[1], r, g, b, 80);

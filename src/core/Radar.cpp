@@ -23,88 +23,6 @@
 #include "SaveBuf.h"
 #include "Timer.h"
 
-#ifdef WII
-static int32 gWiiRadarLogBudget = 80;
-
-static void
-WiiRadarLogState(const char *stage)
-{
-	(void)stage;
-}
-
-static void
-WiiRadarLogPoly(const char *stage, int32 x, int32 y, int32 numVertices, const CVector2D *screenPoly)
-{
-	(void)stage;
-	(void)x;
-	(void)y;
-	(void)numVertices;
-	(void)screenPoly;
-}
-
-static int32
-WiiClipRadarPolyPlane(const CVector2D *in, int32 numIn, CVector2D *out, int32 outCap, const CVector2D &normal, float limit)
-{
-	if(numIn < 1)
-		return 0;
-
-	int32 numOut = 0;
-	for(int32 i = 0; i < numIn; i++){
-		const CVector2D &p1 = in[i];
-		const CVector2D &p2 = in[(i + 1) % numIn];
-		float d1 = limit - DotProduct2D(normal, p1);
-		float d2 = limit - DotProduct2D(normal, p2);
-		bool in1 = d1 >= -0.0001f;
-		bool in2 = d2 >= -0.0001f;
-
-		if(in1 != in2 && numOut < outCap){
-			float t = d1 / (d1 - d2);
-			out[numOut++] = p1 + (p2 - p1) * t;
-		}
-		if(in2 && numOut < outCap)
-			out[numOut++] = p2;
-	}
-	return numOut;
-}
-
-static int32
-WiiClipRadarPolyToCircle(const CVector2D *in, int32 numIn, CVector2D *out, int32 outCap)
-{
-	const int32 segments = 32;
-	const int32 workCap = 48;
-	CVector2D workA[workCap];
-	CVector2D workB[workCap];
-
-	if(numIn < 3)
-		return 0;
-
-	int32 num = Min(numIn, workCap);
-	for(int32 i = 0; i < num; i++)
-		workA[i] = in[i];
-
-	CVector2D *src = workA;
-	CVector2D *dst = workB;
-	float limit = Cos(PI / segments);
-
-	for(int32 i = 0; i < segments; i++){
-		float angle = (i + 0.5f) * TWOPI / segments;
-		CVector2D normal(Cos(angle), Sin(angle));
-		num = WiiClipRadarPolyPlane(src, num, dst, workCap, normal, limit);
-		if(num < 3)
-			return 0;
-
-		CVector2D *tmp = src;
-		src = dst;
-		dst = tmp;
-	}
-
-	num = Min(num, outCap);
-	for(int32 i = 0; i < num; i++)
-		out[i] = src[i];
-	return num;
-}
-#endif
-
 float CRadar::m_radarRange;
 sRadarTrace CRadar::ms_RadarTrace[NUMRADARBLIPS];
 CVector2D vec2DRadarOrigin;
@@ -778,9 +696,6 @@ void CRadar::DrawMap()
 
 void CRadar::DrawRadarMap()
 {
-#ifdef WII
-	WiiRadarLogState("before-mask");
-#endif
 	DrawRadarMask();
 
 	// top left ist (0, 0)
@@ -793,19 +708,11 @@ void CRadar::DrawRadarMap()
 	RwRenderStateSet(rwRENDERSTATEDESTBLEND, (void*)rwBLENDINVSRCALPHA);
 	RwRenderStateSet(rwRENDERSTATETEXTUREFILTER, (void*)rwFILTERLINEAR);
 	RwRenderStateSet(rwRENDERSTATESHADEMODE, (void*)rwSHADEMODEFLAT);
-#ifdef WII
-	RwRenderStateSet(rwRENDERSTATEZTESTENABLE, (void*)FALSE);
-#else
 	RwRenderStateSet(rwRENDERSTATEZTESTENABLE, (void*)TRUE);
-#endif
 	RwRenderStateSet(rwRENDERSTATEZWRITEENABLE, (void*)FALSE);
 	RwRenderStateSet(rwRENDERSTATEVERTEXALPHAENABLE, (void*)FALSE);
 	RwRenderStateSet(rwRENDERSTATETEXTUREADDRESS, (void*)rwTEXTUREADDRESSCLAMP);
 	RwRenderStateSet(rwRENDERSTATETEXTUREPERSPECTIVE, (void*)FALSE);
-#ifdef WII
-	WiiRadarLogState("map-state");
-#endif
-
 	DrawRadarSection(x - 1, y - 1);
 	DrawRadarSection(x, y - 1);
 	DrawRadarSection(x + 1, y - 1);
@@ -841,10 +748,6 @@ void CRadar::DrawRadarMask()
 	RwRenderStateSet(rwRENDERSTATESRCBLEND, (void*)rwBLENDZERO);
 	RwRenderStateSet(rwRENDERSTATEDESTBLEND, (void*)rwBLENDONE);
 #endif
-#ifdef WII
-	WiiRadarLogState("mask-state");
-#endif
-
 	CVector2D out[8];
 	CVector2D in;
 
@@ -863,9 +766,6 @@ void CRadar::DrawRadarMask()
 		};
 
 		CSprite2d::SetMaskVertices(8, (float *)out);
-#ifdef WII
-		WiiRadarLogPoly("mask-poly", i, -1, 8, out);
-#endif
 		RwIm2DRenderPrimitive(rwPRIMTYPETRIFAN, CSprite2d::GetVertices(), 8);
 	}
 #if !defined(GTA_PS2_STUFF) && defined(RWLIBS)
@@ -878,11 +778,11 @@ void CRadar::DrawRadarSection(int32 x, int32 y)
 {
 	int i;
 	RwTexDictionary *txd;
-	CVector2D worldPoly[48];
+	CVector2D worldPoly[8];
 	CVector2D radarCorners[4];
-	CVector2D radarPoly[48];
-	CVector2D texCoords[48];
-	CVector2D screenPoly[48];
+	CVector2D radarPoly[8];
+	CVector2D texCoords[8];
+	CVector2D screenPoly[8];
 	int numVertices;
 	RwTexture *texture = nil;
 
@@ -897,14 +797,6 @@ void CRadar::DrawRadarSection(int32 x, int32 y)
 		TransformRealWorldPointToRadarSpace(radarCorners[i], worldPoly[i]);
 
 	numVertices = ClipRadarPoly(radarPoly, radarCorners);
-#ifdef WII
-	if(!FrontEndMenuManager.m_bMenuMapActive){
-		CVector2D circlePoly[48];
-		numVertices = WiiClipRadarPolyToCircle(radarPoly, numVertices, circlePoly, ARRAY_SIZE(circlePoly));
-		for(i = 0; i < numVertices; i++)
-			radarPoly[i] = circlePoly[i];
-	}
-#endif
 
 	// FIX: can return earlier here
 //	if(numVertices == 0)
@@ -916,49 +808,11 @@ void CRadar::DrawRadarSection(int32 x, int32 y)
 		TransformRealWorldToTexCoordSpace(texCoords[i], worldPoly[i], x, y);
 		TransformRadarPointToScreenSpace(screenPoly[i], radarPoly[i]);
 	}
-#ifdef WII
-	WiiRadarLogPoly("section-poly", x, y, numVertices, screenPoly);
-#endif
-
 	if (CTheScripts::bPlayerIsInTheStatium) {
 		RwRenderStateSet(rwRENDERSTATETEXTURERASTER, nil);
-#ifdef WII
-		if(!FrontEndMenuManager.m_bMenuMapActive){
-			CVector2D triScreen[3];
-			CVector2D triTex[3];
-			for(i = 1; i < numVertices - 1; i++){
-				triScreen[0] = screenPoly[0];
-				triScreen[1] = screenPoly[i];
-				triScreen[2] = screenPoly[i + 1];
-				triTex[0] = texCoords[0];
-				triTex[1] = texCoords[i];
-				triTex[2] = texCoords[i + 1];
-				CSprite2d::SetVertices(3, (float*)triScreen, (float*)triTex, CRGBA(204, 204, 204, 255));
-				RwIm2DRenderPrimitive(rwPRIMTYPETRIFAN, CSprite2d::GetVertices(), 3);
-			}
-			return;
-		}
-#endif
 		CSprite2d::SetVertices(numVertices, (float*)screenPoly, (float*)texCoords, CRGBA(204, 204, 204, 255));
 	} else {
 		RwRenderStateSet(rwRENDERSTATETEXTURERASTER, RwTextureGetRaster(texture));
-#ifdef WII
-		if(!FrontEndMenuManager.m_bMenuMapActive){
-			CVector2D triScreen[3];
-			CVector2D triTex[3];
-			for(i = 1; i < numVertices - 1; i++){
-				triScreen[0] = screenPoly[0];
-				triScreen[1] = screenPoly[i];
-				triScreen[2] = screenPoly[i + 1];
-				triTex[0] = texCoords[0];
-				triTex[1] = texCoords[i];
-				triTex[2] = texCoords[i + 1];
-				CSprite2d::SetVertices(3, (float*)triScreen, (float*)triTex, CRGBA(255, 255, 255, 255));
-				RwIm2DRenderPrimitive(rwPRIMTYPETRIFAN, CSprite2d::GetVertices(), 3);
-			}
-			return;
-		}
-#endif
 		CSprite2d::SetVertices(numVertices, (float*)screenPoly, (float*)texCoords, CRGBA(255, 255, 255, 255));
 	}
 
@@ -1200,7 +1054,7 @@ void
 CRadar::LoadTextures()
 {
 	CTxdStore::PushCurrentTxd();
-	int hudSlot = CTxdStore::FindTxdSlot("hud"); if(hudSlot == -1) hudSlot = CTxdStore::AddTxdSlot("hud"); CTxdStore::SetCurrentTxd(hudSlot);
+	CTxdStore::SetCurrentTxd(CTxdStore::FindTxdSlot("hud"));
 	CentreSprite.SetTexture("radar_centre");
 	MapHereSprite.SetTexture("arrow");
 	NorthSprite.SetTexture("radar_north");

@@ -8,28 +8,6 @@
 
 float CSurfaceTable::ms_aAdhesiveLimitTable[NUMADHESIVEGROUPS][NUMADHESIVEGROUPS];
 
-static float
-GxDefaultAdhesiveValue(int i, int j)
-{
-	static const float kDefaultTable[NUMADHESIVEGROUPS][NUMADHESIVEGROUPS] = {
-		{6.0f, 3.6f, 4.5f, 3.2f, 2.0f, 2.4f},
-		{3.6f, 2.0f, 3.0f, 3.5f, 4.0f, 2.0f},
-		{4.5f, 3.0f, 6.0f, 2.0f, 2.0f, 1.0f},
-		{3.2f, 3.5f, 2.0f, 1.0f, 1.0f, 1.0f},
-		{2.0f, 4.0f, 2.0f, 1.0f, 1.0f, 1.0f},
-		{2.4f, 2.0f, 1.0f, 1.0f, 1.0f, 0.5f},
-	};
-	return kDefaultTable[i][j];
-}
-
-void
-CSurfaceTable::ResetAdhesiveTableToDefaults(void)
-{
-	for(int i = 0; i < NUMADHESIVEGROUPS; i++)
-		for(int j = 0; j < NUMADHESIVEGROUPS; j++)
-			ms_aAdhesiveLimitTable[i][j] = GxDefaultAdhesiveValue(i, j);
-}
-
 void
 CSurfaceTable::Initialise(Const char *filename)
 {
@@ -37,26 +15,9 @@ CSurfaceTable::Initialise(Const char *filename)
 	char *line;
 	char surfname[256];
 	float adhesiveLimit;
-	ssize_t loadLen;
 
-	ResetAdhesiveTableToDefaults();
-
-	// Keep vehicles drivable even if SURFACE.DAT fails to load on GameCube.
 	CFileMgr::SetDir("");
-	loadLen = CFileMgr::LoadFile(filename, work_buff, sizeof(work_buff), "r");
-	if(loadLen <= 0){
-#if REAL_GAMECUBE
-		printf("[SURFACE-LOAD] failed file=%s len=%d fallback road-road=%f rubber-road=%f\n",
-		       filename, (int)loadLen,
-		       ms_aAdhesiveLimitTable[ADHESIVE_ROAD][ADHESIVE_ROAD],
-		       ms_aAdhesiveLimitTable[ADHESIVE_RUBBER][ADHESIVE_ROAD]);
-#endif
-		return;
-	}
-#if REAL_GAMECUBE
-	printf("[SURFACE-LOAD] file=%s bytes=%d first=%c%c%c%c\n",
-	       filename, (int)loadLen, work_buff[0], work_buff[1], work_buff[2], work_buff[3]);
-#endif
+	CFileMgr::LoadFile(filename, work_buff, sizeof(work_buff), "r");
 
 	line = (char*)work_buff;
 	for(lineno = 0; lineno < NUMADHESIVEGROUPS; lineno++){
@@ -89,24 +50,6 @@ CSurfaceTable::Initialise(Const char *filename)
 			ms_aAdhesiveLimitTable[fieldno][lineno] = adhesiveLimit;
 		}
 	}
-#if GX_CONSOLE
-	if(ms_aAdhesiveLimitTable[ADHESIVE_ROAD][ADHESIVE_ROAD] <= 0.0f ||
-	   ms_aAdhesiveLimitTable[ADHESIVE_RUBBER][ADHESIVE_ROAD] <= 0.0f){
-		ResetAdhesiveTableToDefaults();
-#if REAL_GAMECUBE
-		printf("[SURFACE-LOAD] parsed zero adhesion, fallback engaged road-road=%f rubber-road=%f wet-road=%f\n",
-		       ms_aAdhesiveLimitTable[ADHESIVE_ROAD][ADHESIVE_ROAD],
-		       ms_aAdhesiveLimitTable[ADHESIVE_RUBBER][ADHESIVE_ROAD],
-		       ms_aAdhesiveLimitTable[ADHESIVE_WET][ADHESIVE_ROAD]);
-#endif
-	}
-#endif
-#if REAL_GAMECUBE
-	printf("[SURFACE-LOAD] rubber-road=%f road-road=%f wet-road=%f\n",
-	       ms_aAdhesiveLimitTable[ADHESIVE_RUBBER][ADHESIVE_ROAD],
-	       ms_aAdhesiveLimitTable[ADHESIVE_ROAD][ADHESIVE_ROAD],
-	       ms_aAdhesiveLimitTable[ADHESIVE_WET][ADHESIVE_ROAD]);
-#endif
 }
 
 int
@@ -203,28 +146,7 @@ CSurfaceTable::GetWetMultiplier(uint8 surfaceType)
 float
 CSurfaceTable::GetAdhesiveLimit(CColPoint &colpoint)
 {
-	int surfaceBGroup = GetAdhesionGroup(colpoint.surfaceB);
-	int surfaceAGroup = GetAdhesionGroup(colpoint.surfaceA);
-	float adhesive = ms_aAdhesiveLimitTable[surfaceBGroup][surfaceAGroup];
-#if GX_CONSOLE
-	if(!(adhesive > 0.0f && adhesive < 1000.0f)){
-		static int s_gcAdhesiveFallbackLogs;
-		float fallback = GxDefaultAdhesiveValue(surfaceBGroup, surfaceAGroup);
-		ResetAdhesiveTableToDefaults();
-		if(s_gcAdhesiveFallbackLogs < 16){
-#if REAL_GAMECUBE
-			printf("[SURFACE-ADH] fallback surfA=%u surfB=%u grpA=%d grpB=%d val=%f fallback=%f road-road=%f rubber-road=%f\n",
-			       (uint32)colpoint.surfaceA, (uint32)colpoint.surfaceB,
-			       surfaceAGroup, surfaceBGroup, adhesive, fallback,
-			       ms_aAdhesiveLimitTable[ADHESIVE_ROAD][ADHESIVE_ROAD],
-			       ms_aAdhesiveLimitTable[ADHESIVE_RUBBER][ADHESIVE_ROAD]);
-#endif
-			s_gcAdhesiveFallbackLogs++;
-		}
-		adhesive = fallback;
-	}
-#endif
-	return adhesive;
+	return ms_aAdhesiveLimitTable[GetAdhesionGroup(colpoint.surfaceB)][GetAdhesionGroup(colpoint.surfaceA)];
 }
 
 bool

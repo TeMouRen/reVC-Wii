@@ -257,7 +257,12 @@ CSprite2d::SetVertices(int n, float *positions, float *uvs, const CRGBA &col)
 	for(i = 0; i < n; i++){
 		RwIm2DVertexSetScreenX(&maVertices[i], positions[i*2 + 0]);
 		RwIm2DVertexSetScreenY(&maVertices[i], positions[i*2 + 1]);
+#ifdef WII
+		// GX needs a larger separation from the radar mask depth.
 		RwIm2DVertexSetScreenZ(&maVertices[i], NearScreenZ + 0.01f);
+#else
+		RwIm2DVertexSetScreenZ(&maVertices[i], NearScreenZ + 0.0001f);
+#endif
 		RwIm2DVertexSetCameraZ(&maVertices[i], NearCamZ);
 		RwIm2DVertexSetRecipCameraZ(&maVertices[i], RecipNearClip);
 		RwIm2DVertexSetIntRGBA(&maVertices[i], col.r, col.g, col.b, col.a);

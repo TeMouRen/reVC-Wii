@@ -1,9 +1,9 @@
 // gxmatfx.cpp -- GX MatFX pipeline boundary
 //
-// The GX MatFX effect path is intentionally quarantined until it has a
-// verified two-pass implementation. MatFX atomics still use the normal GX
-// object pipeline, so materials remain visible without applying an unverified
-// reflection, blend, depth, or fog approximation.
+// The GX MatFX path currently implements the environment-map effect as a
+// separate additive pass. The object pipe owns the base material draw and
+// state restoration; this file only owns the effect resource lookup, normal
+// reflection texgen, and effect TEV setup.
 
 #ifdef GAMECUBE
 
@@ -26,12 +26,6 @@
 
 namespace rw {
 namespace gx {
-
-// The previous one-pass environment-map approximation is retained below for
-// reference only. It must not be compiled into the production path until its
-// PS2/D3D8 blend, depth, fog, and framebuffer-alpha behavior has a visual
-// regression baseline.
-#if 0
 
 static GxRaster*
 getNativeRaster(Texture *texture)
@@ -68,6 +62,21 @@ gxMatFXEnvReady(Material *mat, bool hasNormals)
 
     GxRaster *raster = getNativeRaster(env->tex);
     return raster != nil && raster->texObjValid;
+}
+
+bool
+gxMatFXEnvUsesAlpha(Material *mat)
+{
+    const MatFX::Env *env = getEnvMap(mat);
+    if(env == nil)
+        return false;
+    if(env->fbAlpha != 0)
+        return true;
+
+    if(mat == nil || mat->texture == nil || mat->texture->raster == nil)
+        return false;
+    GxRaster *baseRaster = getNativeRaster(mat->texture);
+    return baseRaster != nil && baseRaster->hasAlpha != 0;
 }
 
 static uint8
@@ -134,7 +143,7 @@ getEnvColor(Material *mat, const MatFX::Env *env)
         colorByte((float)color.red / 255.0f * coefficient),
         colorByte((float)color.green / 255.0f * coefficient),
         colorByte((float)color.blue / 255.0f * coefficient),
-        255
+        (uint8)(mat != nil ? mat->color.alpha : 255)
     };
     return result;
 }
@@ -150,69 +159,17 @@ setEnvTextureStage(uint8 stage)
     GX_SetTevColorOp(stage,
                      GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
                      GX_TRUE, GX_TEVPREV);
-}
-
-static void
-setEnvLightStage(uint8 stage)
-{
-    GX_SetTevOrder(stage, GX_TEXCOORDNULL,
-                   GX_TEXMAP_NULL, GX_COLORNULL);
-    GX_SetTevColorIn(stage,
-                     GX_CC_ZERO, GX_CC_CPREV,
-                     GX_CC_C0, GX_CC_ZERO);
-    GX_SetTevColorOp(stage,
-                     GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
-                     GX_TRUE, GX_TEVPREV);
-}
-
-static void
-setBaseAlphaStage(uint8 stage)
-{
-    GX_SetTevOrder(stage, GX_TEXCOORDNULL,
-                   GX_TEXMAP_NULL, GX_COLORNULL);
-    GX_SetTevColorIn(stage,
-                     GX_CC_ZERO, GX_CC_C2,
-                     GX_CC_A2, GX_CC_ZERO);
-    GX_SetTevColorOp(stage,
-                     GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
-                     GX_TRUE, GX_TEVREG1);
-}
-
-static void
-setEnvAlphaStage(uint8 stage)
-{
-    GX_SetTevOrder(stage, GX_TEXCOORDNULL,
-                   GX_TEXMAP_NULL, GX_COLORNULL);
-    GX_SetTevColorIn(stage,
-                     GX_CC_ZERO, GX_CC_CPREV,
-                     GX_CC_A2, GX_CC_ZERO);
-    GX_SetTevColorOp(stage,
-                     GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
-                     GX_TRUE, GX_TEVPREV);
-}
-
-static void
-setCompositeStage(uint8 stage)
-{
-    GX_SetTevOrder(stage, GX_TEXCOORDNULL,
-                   GX_TEXMAP_NULL, GX_COLORNULL);
-    // c=0 makes this stage a straight base-premultiplied + env add.
-    GX_SetTevColorIn(stage,
-                     GX_CC_C1, GX_CC_ZERO,
-                     GX_CC_ZERO, GX_CC_CPREV);
-    GX_SetTevColorOp(stage,
-                     GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
-                     GX_TRUE, GX_TEVPREV);
+    GX_SetTevKAlphaSel(stage, GX_TEV_KASEL_K0_A);
     GX_SetTevAlphaIn(stage,
-                     GX_CA_A2, GX_CA_ZERO,
-                     GX_CA_ZERO, GX_CA_ZERO);
+                     GX_CA_ZERO, GX_CA_TEXA,
+                     GX_CA_KONST, GX_CA_ZERO);
     GX_SetTevAlphaOp(stage,
                      GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
                      GX_TRUE, GX_TEVPREV);
 }
 
 bool
-gxMatFXSetupEnv(Material *mat, bool baseTextured)
+gxMatFXSetupEnv(Material *mat, bool baseTextured, bool vertexAlpha)
 {
     const MatFX::Env *env = getEnvMap(mat);
     if(env == nil || env->tex == nil)
@@ -241,23 +198,66 @@ gxMatFXSetupEnv(Material *mat, bool baseTextured)
                        GX_TG_NRM, GX_TEXMTX0,
                        GX_FALSE, GX_DTTIDENTITY);
 
-    uint8 stage = baseTextured ? 4 : 3;
-    setEnvTextureStage(stage++);
-    if(MatFX::envMapApplyLight)
-        setEnvLightStage(stage++);
-
-    setBaseAlphaStage(stage++);
-    if(env->fbAlpha)
-        setEnvAlphaStage(stage++);
-    setCompositeStage(stage++);
-    GX_SetNumTevStages(stage);
-
-    // The reference MatFX pass adds the reflection contribution with a
-    // source factor of one. setMaterial has already selected the destination
-    // factor for the material; preserve it and restore the full state after
-    // the draw in gxpipe.cpp.
-    GX_SetBlendMode(GX_BM_BLEND, GX_BL_ONE,
-                    (u8)gxState.dstBlend, GX_LO_CLEAR);
+    // The effect is drawn after the base material. Keep this pass deliberately
+    // small: env texture * K0, with blending/depth policy owned by gxpipe.
+    // This avoids carrying the base pass's TEV registers across a primitive.
+    setEnvTextureStage(GX_TEVSTAGE0);
+    uint8 stageCount = 1;
+    if(MatFX::envMapApplyLight){
+        GX_SetTevOrder(GX_TEVSTAGE1, GX_TEXCOORDNULL,
+                       GX_TEXMAP_NULL, GX_COLOR1A1);
+        GX_SetTevColorIn(GX_TEVSTAGE1,
+                         GX_CC_ZERO, GX_CC_CPREV,
+                         GX_CC_RASC, GX_CC_ZERO);
+        GX_SetTevColorOp(GX_TEVSTAGE1,
+                         GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
+                         GX_TRUE, GX_TEVPREV);
+        GX_SetTevAlphaIn(GX_TEVSTAGE1,
+                         GX_CA_ZERO, GX_CA_ZERO,
+                         GX_CA_ZERO, GX_CA_APREV);
+        GX_SetTevAlphaOp(GX_TEVSTAGE1,
+                         GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
+                         GX_TRUE, GX_TEVPREV);
+        stageCount++;
+    }
+    if(gxMatFXEnvUsesAlpha(mat) && baseTextured){
+        // Match RenderWare's framebuffer-alpha mode and ordinary textured
+        // alpha by masking the effect alpha with the base texture alpha. The
+        // color result remains the environment texture.
+        GX_SetTevOrder(stageCount, GX_TEXCOORD0,
+                       GX_TEXMAP0, GX_COLORNULL);
+        GX_SetTevColorIn(stageCount,
+                         GX_CC_ZERO, GX_CC_ZERO,
+                         GX_CC_ZERO, GX_CC_CPREV);
+        GX_SetTevColorOp(stageCount,
+                         GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
+                         GX_TRUE, GX_TEVPREV);
+        GX_SetTevAlphaIn(stageCount,
+                         GX_CA_ZERO, GX_CA_TEXA,
+                         GX_CA_APREV, GX_CA_ZERO);
+        GX_SetTevAlphaOp(stageCount,
+                         GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
+                         GX_TRUE, GX_TEVPREV);
+        stageCount++;
+    }
+    if(vertexAlpha){
+        GX_SetTevOrder(stageCount, GX_TEXCOORDNULL,
+                       GX_TEXMAP_NULL, GX_COLOR0A0);
+        GX_SetTevColorIn(stageCount,
+                         GX_CC_ZERO, GX_CC_ZERO,
+                         GX_CC_ZERO, GX_CC_CPREV);
+        GX_SetTevColorOp(stageCount,
+                         GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
+                         GX_TRUE, GX_TEVPREV);
+        GX_SetTevAlphaIn(stageCount,
+                         GX_CA_ZERO, GX_CA_APREV,
+                         GX_CA_RASA, GX_CA_ZERO);
+        GX_SetTevAlphaOp(stageCount,
+                         GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
+                         GX_TRUE, GX_TEVPREV);
+        stageCount++;
+    }
+    GX_SetNumTevStages(stageCount);
 
     printf("[GX-MATFX] env tex=%s coef=%.3f applyLight=%d matColor=%d flipU=%d fbAlpha=%d stages=%u\n",
            env->tex->name ? env->tex->name : "<unnamed>",
@@ -266,29 +266,9 @@ gxMatFXSetupEnv(Material *mat, bool baseTextured)
            MatFX::envMapUseMatColor ? 1 : 0,
            MatFX::envMapFlipU ? 1 : 0,
            env->fbAlpha ? 1 : 0,
-           (unsigned)stage);
+           (unsigned)stageCount);
     return true;
 }
-
-// Keep the gxpipe interface stable while the effect implementation is
-// disabled. No GX texture unit, texgen, TEV, blend, or depth state is changed.
-#else
-bool
-gxMatFXEnvReady(Material *mat, bool hasNormals)
-{
-    (void)mat;
-    (void)hasNormals;
-    return false;
-}
-
-bool
-gxMatFXSetupEnv(Material *mat, bool baseTextured)
-{
-    (void)mat;
-    (void)baseTextured;
-    return false;
-}
-#endif
 
 } // namespace gx
 

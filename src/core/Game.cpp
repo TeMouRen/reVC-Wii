@@ -118,35 +118,6 @@ extern "C" void WiiMemoryDumpStats(const char *reason);
 #define GC_CUT_FRAME_LOG(stage) ((void)0)
 #endif
 
-#ifdef WII
-static bool
-WiiShouldThrottleOptionalWorldWork(uint32 cadenceMask)
-{
-	if(CGame::playingIntro || CReplay::IsPlayingBack())
-		return false;
-
-	// The Wii game loop targets 29.97 FPS, so a normal frame is about 33 ms.
-	// Only shed optional generation work on genuinely late frames, and still
-	// let it run periodically so traffic and population can recover.
-	if(CTimer::GetTimeStepInMilliseconds() < 50)
-		return false;
-
-	return (CTimer::GetFrameCounter() & cadenceMask) != 0;
-}
-
-static bool
-WiiShouldThrottlePopulationWork(void)
-{
-	return WiiShouldThrottleOptionalWorldWork(3);
-}
-
-static bool
-WiiShouldThrottleTrafficGeneration(void)
-{
-	return WiiShouldThrottleOptionalWorldWork(7);
-}
-#endif
-
 eLevelName CGame::currLevel;
 int32 CGame::currArea;
 bool CGame::bDemoMode = true;
@@ -1088,9 +1059,6 @@ void CGame::Process(void)
 	wiiAfterStreamingTicks = gettime();
 	wiiAfterScriptsTicks = wiiAfterStreamingTicks;
 	wiiAfterWorldTicks = wiiAfterStreamingTicks;
-	const bool wiiStreamingOverBudget = processTime >= 2;
-	const bool wiiThrottlePopulation = WiiShouldThrottlePopulationWork();
-	const bool wiiThrottleTraffic = WiiShouldThrottleTrafficGeneration();
 #endif
 	CWindModifiers::Number = 0;
 	if (!CTimer::GetIsPaused())
@@ -1143,25 +1111,10 @@ void CGame::Process(void)
 #else
 		if (processTime >= 2) {
 #endif
-		#ifdef WII
-			// Streaming can legitimately take several milliseconds on the Wii.
-			// Do not let that permanently suppress random population work.
-			if ((CTimer::GetFrameCounter() & 3) == 0)
-				CPopulation::Update(!wiiThrottlePopulation);
-			else
-				CPopulation::Update(false);
-		#else
 			CPopulation::Update(false);
-		#endif
 		} else {
 			uint32 startTime = CTimer::GetCurrentTimeInCycles() / CTimer::GetCyclesPerMillisecond();
-			CPopulation::Update(
-#ifdef WII
-				!wiiThrottlePopulation
-#else
-				true
-#endif
-			);
+			CPopulation::Update(true);
 			processTime = CTimer::GetCurrentTimeInCycles() / CTimer::GetCyclesPerMillisecond() - startTime;
 		}
 		CWeapon::UpdateWeapons();
@@ -1207,27 +1160,10 @@ void CGame::Process(void)
 		if (!CReplay::IsPlayingBack())
 		{
 			PUSH_MEMID(MEMID_CARS);
-			#ifdef WII
-			const bool wiiTrafficBudgetAvailable =
-				(!wiiStreamingOverBudget && processTime < 2) ||
-				(CTimer::GetFrameCounter() & 7) == 0;
-			if (wiiTrafficBudgetAvailable && !CGame::playingIntro
-			#else
-			if (processTime < 2 && !CGame::playingIntro
-			#endif
-#ifdef WII
-				&& !wiiThrottleTraffic
-#endif
-			)
+			if (processTime < 2)
 				CCarCtrl::GenerateRandomCars();
-			if (!CGame::playingIntro
-#ifdef WII
-				&& !wiiThrottleTraffic
-#endif
-			)
-				CRoadBlocks::GenerateRoadBlocks();
-			if (!CGame::playingIntro)
-				CCarCtrl::RemoveDistantCars();
+			CRoadBlocks::GenerateRoadBlocks();
+			CCarCtrl::RemoveDistantCars();
 			CCarCtrl::RemoveCarsIfThePoolGetsFull();
 			POP_MEMID();
 		}

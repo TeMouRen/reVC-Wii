@@ -93,88 +93,6 @@ CCam::Init(void)
 float PLAYERPED_LEVEL_SMOOTHING_CONST_INV = 0.6f;
 float PLAYERPED_TREND_SMOOTHING_CONST_INV = 0.8f;
 
-#ifdef WII
-static float
-WiiVehicleCameraLerpFactor(float cameraStep, float decayPerStep)
-{
-	float step = Clamp(cameraStep, 0.01f, 3.0f);
-	return Clamp(1.0f - Pow(decayPerStep, step), 0.0f, 1.0f);
-}
-
-static float
-WiiVehicleCamSmoothFactor(void)
-{
-	// Match the GC path for now. The extra Wii-only low-pass on the final
-	// source vector strongly correlates with the reported "breathing"/pumping
-	// feel while driving and when sweeping the C-stick.
-	return 1.0f;
-}
-
-static float
-WiiStableCameraTimeStep(void)
-{
-	return Clamp(CTimer::GetTimeStep(), 0.01f, 3.0f);
-}
-
-static float
-WiiCameraAxisResponse(float axis)
-{
-	float normal = Clamp(axis / 128.0f, -1.0f, 1.0f);
-	float magnitude = Abs(normal);
-	float response = magnitude * magnitude * (0.2f + magnitude * (1.9f - 1.4f * magnitude));
-	return normal < 0.0f ? -response : response;
-}
-
-static float
-WiiVehicleCameraAxisResponse(float axis, float *state, float deadzone)
-{
-	float target = Clamp(axis / 128.0f, -1.0f, 1.0f);
-
-	if(Abs(target) <= deadzone){
-		target = 0.0f;
-	}else if(target > 0.0f){
-		target = (target - deadzone) / (1.0f - deadzone);
-	}else{
-		target = (target + deadzone) / (1.0f - deadzone);
-	}
-
-	float response = target < 0.0f ? -target * target : target * target;
-	float blend = 0.40f + 0.30f * Clamp(Abs(response - *state), 0.0f, 1.0f);
-	*state += (response - *state) * blend;
-	if(response == 0.0f && Abs(*state) < 0.0005f)
-		*state = 0.0f;
-	return Clamp(*state, -1.0f, 1.0f);
-}
-
-static float
-WiiVehicleTargetFOV(float defaultFov, CVehicle *car, bool isCar, bool isBike)
-{
-	float targetFov = defaultFov;
-
-	if(isCar || isBike){
-		float forwardSpeed = DotProduct(car->GetForward(), car->m_vecMoveSpeed);
-		if(forwardSpeed > 0.4f){
-			float extraFov = (forwardSpeed - 0.4f) * 8.0f;
-			targetFov += Clamp(extraFov, 0.0f, 8.0f);
-		}
-	}
-
-	return Clamp(targetFov, defaultFov, defaultFov + 8.0f);
-}
-
-static CVector
-WiiSmoothVehicleSource(const CVector &prevSource, const CVector &targetSource, float cameraStep)
-{
-	(void)prevSource;
-	(void)cameraStep;
-	if((targetSource - prevSource).Magnitude() > 1.0f)
-		return targetSource;
-
-	return targetSource;
-}
-
-#endif
-
 void
 CCam::Process(void)
 {
@@ -1478,12 +1396,8 @@ CCam::Process_FollowPedWithMouse(const CVector &CameraTarget, float TargetOrient
 			BetaOffset = LookLeftRight * TheCamera.m_fMouseAccelHorzntl * FOV/80.0f;
 			AlphaOffset = LookUpDown * TheCamera.m_fMouseAccelVertical * FOV/80.0f;
 		}else{
-			float cameraStep = CTimer::GetTimeStep();
-#ifdef WII
-			cameraStep = WiiStableCameraTimeStep();
-#endif
-			BetaOffset = LookLeftRight * fStickSens * (1.0f/14.0f) * FOV/80.0f * cameraStep;
-			AlphaOffset = LookUpDown * fStickSens * (0.6f/14.0f) * FOV/80.0f * cameraStep;
+			BetaOffset = LookLeftRight * fStickSens * (1.0f/14.0f) * FOV/80.0f * CTimer::GetTimeStep();
+			AlphaOffset = LookUpDown * fStickSens * (0.6f/14.0f) * FOV/80.0f * CTimer::GetTimeStep();
 		}
 	}
 
@@ -1629,9 +1543,6 @@ float fBillsBetaOffset;	// made up name, actually in CCam
 void
 CCam::Process_BehindCar(const CVector &CameraTarget, float TargetOrientation, float, float)
 {
-#ifdef WII
-	static CVector PrevSource;
-#endif
 	FOV = DefaultFOV;
 
 	if(!CamTargetEntity->IsVehicle())
@@ -1673,13 +1584,6 @@ CCam::Process_BehindCar(const CVector &CameraTarget, float TargetOrientation, fl
 	m_cvecTargetCoorsForFudgeInter = TargetCoors;
 	CVector OrigSource = Source;
 	TheCamera.AvoidTheGeometry(OrigSource, m_cvecTargetCoorsForFudgeInter, Source, FOV);
-#ifdef WII
-	if(ResetStatics)
-		PrevSource = Source;
-	else
-		Source = PrevSource + (Source - PrevSource)*WiiVehicleCamSmoothFactor();
-	PrevSource = Source;
-#endif
 
 	Front = TargetCoors - Source;
 	ResetStatics = false;
@@ -1800,13 +1704,8 @@ CCam::WorkOutCamHeight(const CVector &TargetCoors, float TargetOrientation, floa
 		WellBufferMe(TargetAlpha, &Alpha, &AlphaSpeed, 0.09f, 0.04f, true);
 	else if(isHeli)
 		WellBufferMe(TargetAlpha, &Alpha, &AlphaSpeed, 0.09f, 0.04f, true);
-#ifdef WII
-	else
-		WellBufferMe(TargetAlpha, &Alpha, &AlphaSpeed, 0.11f, 0.05f, true);
-#else
 	else
 		WellBufferMe(TargetAlpha, &Alpha, &AlphaSpeed, 0.15f, 0.07f, true);
-#endif
 
 	Source.z = TargetCoors.z + Sin(Alpha + AlphaOffset)*Length + m_fCloseInCarHeightOffset;
 	AlphaOffset -= AlphaDec;
@@ -1892,9 +1791,6 @@ float TiltOverShoot[] = { 1.05f, 1.05f, 0.0f, 0.0f, 1.0f };
 void
 CCam::Process_Cam_On_A_String(const CVector &CameraTarget, float TargetOrientation, float, float)
 {
-#ifdef WII
-	static CVector PrevSource;
-#endif
 	if(!CamTargetEntity->IsVehicle())
 		return;
 
@@ -1951,13 +1847,6 @@ CCam::Process_Cam_On_A_String(const CVector &CameraTarget, float TargetOrientati
 		TheCamera.AvoidTheGeometry(OrigSource, m_cvecTargetCoorsForFudgeInter, Source, FOV);
 	else
 		TheCamera.AvoidTheGeometry(OrigSource, CamTargetEntity->GetPosition(), Source, FOV);
-#ifdef WII
-	if(ResetStatics)
-		PrevSource = Source;
-	else
-		Source = PrevSource + (Source - PrevSource)*WiiVehicleCamSmoothFactor();
-	PrevSource = Source;
-#endif
 
 	Front = TargetCoors - Source;
 	Front.Normalise();
@@ -2377,15 +2266,8 @@ CCam::Process_Rocket(const CVector &CameraTarget, float, float, float)
 	{
 		float xdir = LookLeftRight < 0.0f ? -1.0f : 1.0f;
 		float ydir = LookUpDown < 0.0f ? -1.0f : 1.0f;
-		float cameraStep = CTimer::GetTimeStep();
-#ifdef WII
-		cameraStep = WiiStableCameraTimeStep();
-		Beta += WiiCameraAxisResponse(LookLeftRight)*0.8f/14.0f * FOV/80.0f * cameraStep;
-		Alpha += WiiCameraAxisResponse(LookUpDown)*1.0f/14.0f * FOV/80.0f * cameraStep;
-#else
-		Beta += SQR(LookLeftRight/100.0f)*xdir*0.8f/14.0f * FOV/80.0f * cameraStep;
-		Alpha += SQR(LookUpDown/150.0f)*ydir*1.0f/14.0f * FOV/80.0f * cameraStep;
-#endif
+		Beta += SQR(LookLeftRight/100.0f)*xdir*0.8f/14.0f * FOV/80.0f * CTimer::GetTimeStep();
+		Alpha += SQR(LookUpDown/150.0f)*ydir*1.0f/14.0f * FOV/80.0f * CTimer::GetTimeStep();
 	}
 	while(Beta >= PI) Beta -= 2*PI;
 	while(Beta < -PI) Beta += 2*PI;
@@ -2492,27 +2374,13 @@ CCam::Process_M16_1stPerson(const CVector &CameraTarget, float, float, float)
 	if(Mode == MODE_HELICANNON_1STPERSON){
 		LookLeftRight /= 128.0f;
 		LookUpDown /= 128.0f;
-		float cameraStep = CTimer::GetTimeStep();
-#ifdef WII
-		cameraStep = WiiStableCameraTimeStep();
-		Beta += LookLeftRight*0.56f/14.0f * FOV/80.0f * cameraStep;
-		Alpha += LookUpDown*0.48f/14.0f * FOV/80.0f * cameraStep;
-#else
-		Beta += LookLeftRight*Abs(LookLeftRight)*0.56f/14.0f * FOV/80.0f * cameraStep;
-		Alpha += LookUpDown*Abs(LookUpDown)*0.48f/14.0f * FOV/80.0f * cameraStep;
-#endif
+		Beta += LookLeftRight*Abs(LookLeftRight)*0.56f/14.0f * FOV/80.0f * CTimer::GetTimeStep();
+		Alpha += LookUpDown*Abs(LookUpDown)*0.48f/14.0f * FOV/80.0f * CTimer::GetTimeStep();
 	}else{
 		float xdir = LookLeftRight < 0.0f ? -1.0f : 1.0f;
 		float ydir = LookUpDown < 0.0f ? -1.0f : 1.0f;
-		float cameraStep = CTimer::GetTimeStep();
-#ifdef WII
-		cameraStep = WiiStableCameraTimeStep();
-		Beta += WiiCameraAxisResponse(LookLeftRight)*0.8f/14.0f * FOV/80.0f * cameraStep;
-		Alpha += WiiCameraAxisResponse(LookUpDown)*1.0f/14.0f * FOV/80.0f * cameraStep;
-#else
-		Beta += SQR(LookLeftRight/100.0f)*xdir*0.8f/14.0f * FOV/80.0f * cameraStep;
-		Alpha += SQR(LookUpDown/150.0f)*ydir*1.0f/14.0f * FOV/80.0f * cameraStep;
-#endif
+		Beta += SQR(LookLeftRight/100.0f)*xdir*0.8f/14.0f * FOV/80.0f * CTimer::GetTimeStep();
+		Alpha += SQR(LookUpDown/150.0f)*ydir*1.0f/14.0f * FOV/80.0f * CTimer::GetTimeStep();
 	}
 	if (!isAttached) {
 		while(Beta >= TWOPI) Beta -= TWOPI;
@@ -2710,15 +2578,8 @@ CCam::Process_1stPerson(const CVector &CameraTarget, float TargetOrientation, fl
 		LookUpDown = CPad::GetPad(0)->LookAroundUpDown();
 		float xdir = LookLeftRight < 0.0f ? -1.0f : 1.0f;
 		float ydir = LookUpDown < 0.0f ? -1.0f : 1.0f;
-		float cameraStep = CTimer::GetTimeStep();
-#ifdef WII
-		cameraStep = WiiStableCameraTimeStep();
-		Beta += WiiCameraAxisResponse(LookLeftRight)*0.8f/14.0f * FOV/80.0f * cameraStep;
-		Alpha += WiiCameraAxisResponse(LookUpDown)*1.0f/14.0f * FOV/80.0f * cameraStep;
-#else
-		Beta += SQR(LookLeftRight/100.0f)*xdir*0.8f/14.0f * FOV/80.0f * cameraStep;
-		Alpha += SQR(LookUpDown/150.0f)*ydir*1.0f/14.0f * FOV/80.0f * cameraStep;
-#endif
+		Beta += SQR(LookLeftRight/100.0f)*xdir*0.8f/14.0f * FOV/80.0f * CTimer::GetTimeStep();
+		Alpha += SQR(LookUpDown/150.0f)*ydir*1.0f/14.0f * FOV/80.0f * CTimer::GetTimeStep();
 		while(Beta >= PI) Beta -= 2*PI;
 		while(Beta < -PI) Beta += 2*PI;
 		if(Alpha > DEGTORAD(60.0f)) Alpha = DEGTORAD(60.0f);
@@ -2930,15 +2791,8 @@ CCam::Process_1rstPersonPedOnPC(const CVector&, float TargetOrientation, float, 
 		{
 			float xdir = LookLeftRight < 0.0f ? -1.0f : 1.0f;
 			float ydir = LookUpDown < 0.0f ? -1.0f : 1.0f;
-			float cameraStep = CTimer::GetTimeStep();
-#ifdef WII
-			cameraStep = WiiStableCameraTimeStep();
-			Beta += WiiCameraAxisResponse(LookLeftRight)*0.8f/14.0f * FOV/80.0f * cameraStep;
-			Alpha += WiiCameraAxisResponse(LookUpDown)*1.0f/14.0f * FOV/80.0f * cameraStep;
-#else
-			Beta += SQR(LookLeftRight/100.0f)*xdir*0.8f/14.0f * FOV/80.0f * cameraStep;
-			Alpha += SQR(LookUpDown/150.0f)*ydir*1.0f/14.0f * FOV/80.0f * cameraStep;
-#endif
+		Beta += SQR(LookLeftRight/100.0f)*xdir*0.8f/14.0f * FOV/80.0f * CTimer::GetTimeStep();
+		Alpha += SQR(LookUpDown/150.0f)*ydir*1.0f/14.0f * FOV/80.0f * CTimer::GetTimeStep();
 		}
 		while(Beta >= PI) Beta -= 2*PI;
 		while(Beta < -PI) Beta += 2*PI;
@@ -3082,15 +2936,8 @@ CCam::Process_Sniper(const CVector &CameraTarget, float TargetOrientation, float
 	{
 		float xdir = LookLeftRight < 0.0f ? -1.0f : 1.0f;
 		float ydir = LookUpDown < 0.0f ? -1.0f : 1.0f;
-		float cameraStep = CTimer::GetTimeStep();
-#ifdef WII
-		cameraStep = WiiStableCameraTimeStep();
-		Beta += WiiCameraAxisResponse(LookLeftRight)*0.8f/14.0f * FOV/80.0f * cameraStep;
-		Alpha += WiiCameraAxisResponse(LookUpDown)*1.0f/14.0f * FOV/80.0f * cameraStep;
-#else
-		Beta += SQR(LookLeftRight/100.0f)*xdir*0.8f/14.0f * FOV/80.0f * cameraStep;
-		Alpha += SQR(LookUpDown/150.0f)*ydir*1.0f/14.0f * FOV/80.0f * cameraStep;
-#endif
+		Beta += SQR(LookLeftRight/100.0f)*xdir*0.8f/14.0f * FOV/80.0f * CTimer::GetTimeStep();
+		Alpha += SQR(LookUpDown/150.0f)*ydir*1.0f/14.0f * FOV/80.0f * CTimer::GetTimeStep();
 	}
 	while(Beta >= PI) Beta -= 2*PI;
 	while(Beta < -PI) Beta += 2*PI;
@@ -4846,12 +4693,8 @@ CCam::Process_FollowPed_Rotation(const CVector &CameraTarget, float TargetOrient
 		BetaOffset = LookLeftRight * TheCamera.m_fMouseAccelHorzntl * FOV/80.0f;
 		AlphaOffset = LookUpDown * TheCamera.m_fMouseAccelVertical * FOV/80.0f;
 	}else{
-		float cameraStep = CTimer::GetTimeStep();
-#ifdef WII
-		cameraStep = WiiStableCameraTimeStep();
-#endif
-		BetaOffset = LookLeftRight * fStickSens * (1.0f/20.0f) * FOV/80.0f * cameraStep;
-		AlphaOffset = LookUpDown * fStickSens * (0.6f/20.0f) * FOV/80.0f * cameraStep;
+		BetaOffset = LookLeftRight * fStickSens * (1.0f/20.0f) * FOV/80.0f * CTimer::GetTimeStep();
+		AlphaOffset = LookUpDown * fStickSens * (0.6f/20.0f) * FOV/80.0f * CTimer::GetTimeStep();
 	}
 
 	// Stop centering once stick has been touched
@@ -4980,9 +4823,6 @@ CCam::Process_FollowPed_Rotation(const CVector &CameraTarget, float TargetOrient
 void
 CCam::Process_FollowCar_SA(const CVector& CameraTarget, float TargetOrientation, float, float)
 {
-#ifdef WII
-	static CVector PrevSource;
-#endif
 	// Missing things on III CCam
 	static CVector m_aTargetHistoryPosOne;
 	static CVector m_aTargetHistoryPosTwo;
@@ -5113,22 +4953,10 @@ CCam::Process_FollowCar_SA(const CVector& CameraTarget, float TargetOrientation,
 	CA_MIN_DISTANCE = 3.5f;
 
 	float cameraStep = CTimer::GetTimeStep();
-#ifdef WII
-	cameraStep = WiiStableCameraTimeStep();
-	float targetFOV = WiiVehicleTargetFOV(DefaultFOV, car, isCar, isBike);
-#endif
 
 	if (ResetStatics) {
-#ifdef WII
-		FOV = targetFOV;
-#else
 		FOV = DefaultFOV;
-#endif
 	} else {
-#ifdef WII
-		FOV += (targetFOV - FOV) * WiiVehicleCameraLerpFactor(cameraStep, 0.82f);
-		FOV = Clamp(FOV, DefaultFOV, DefaultFOV + 8.0f);
-#else
 		if (isCar || isBike) {
 			// 0.4f: CAR_FOV_START_SPEED
 			float forwardSpeed = DotProduct(car->GetForward(), car->m_vecMoveSpeed);
@@ -5140,7 +4968,6 @@ CCam::Process_FollowCar_SA(const CVector& CameraTarget, float TargetOrientation,
 			// 0.98f: CAR_FOV_FADE_MULT
 			FOV = Pow(0.98f, cameraStep) * (FOV - DefaultFOV) + DefaultFOV;
 		FOV = Clamp(FOV, DefaultFOV, DefaultFOV + 30.0f);
-#endif
 	}
 
 	// WORKAROUND: I still don't know how looking behind works (m_bCamDirectlyInFront is unused in III, they seem to use m_bUseTransitionBeta)
@@ -5280,17 +5107,6 @@ CCam::Process_FollowCar_SA(const CVector& CameraTarget, float TargetOrientation,
 	float stickX = -(pad->GetCarGunLeftRight());
 	float stickY = -pad->GetCarGunUpDown();
 
-#ifdef WII
-	static float sWiiVehicleStickX = 0.0f;
-	static float sWiiVehicleStickY = 0.0f;
-	static float sWiiVehicleSteerY = 0.0f;
-	if(vehicleCamReset){
-		sWiiVehicleStickX = 0.0f;
-		sWiiVehicleStickY = 0.0f;
-		sWiiVehicleSteerY = 0.0f;
-	}
-#endif
-
 	// In SA this checks for m_bUseMouse3rdPerson so num2 / num8 do not move camera
 	// when Keyboard & Mouse controls are used. To make it work better with III/VC, check for actual pad state instead
 	if (!CPad::IsAffectedByController && !isCar)
@@ -5298,15 +5114,8 @@ CCam::Process_FollowCar_SA(const CVector& CameraTarget, float TargetOrientation,
 	else if (CPad::bInvertLook4Pad)
 		stickY = -stickY;
 
-#ifdef WII
-	float stableStickX = WiiVehicleCameraAxisResponse(stickX, &sWiiVehicleStickX, 0.12f);
-	float stableStickY = WiiVehicleCameraAxisResponse(stickY, &sWiiVehicleStickY, 0.16f);
-	float xMovement = stableStickX * (FOV / 80.0f) * 0.057f;
-	float yMovement = stableStickY * (FOV / 80.0f) * 0.034f;
-#else
 	float xMovement = Abs(stickX) * (FOV / 80.0f * 5.f / 70.f) * stickX * 0.007f * 0.007f;
 	float yMovement = Abs(stickY) * (FOV / 80.0f * 3.f / 70.f) * stickY * 0.007f * 0.007f;
-#endif
 
 	bool correctAlpha = true;
 	//	if (SA checks if we aren't in work car, why?) {
@@ -5330,12 +5139,7 @@ CCam::Process_FollowCar_SA(const CVector& CameraTarget, float TargetOrientation,
 		// Because III/VC doesn't have any buttons tied to LeftStick if you're not in Classic Configuration, using Dodo or using GInput/Pad, so :shrug:
 		if (Abs(pad->GetSteeringUpDown()) > 120.0f) {
 			if (car->pDriver && car->pDriver->m_objective != OBJECTIVE_LEAVE_CAR) {
-#ifdef WII
-				float stableSteerY = WiiVehicleCameraAxisResponse(pad->GetSteeringUpDown(), &sWiiVehicleSteerY, 0.92f);
-				yMovement += stableSteerY * (FOV / 80.0f) * 0.017f;
-#else
 				yMovement += Abs(pad->GetSteeringUpDown()) * (FOV / 80.0f * 3.f / 70.f) * pad->GetSteeringUpDown() * 0.007f * 0.007f * 0.5;
-#endif
 			}
 		}
 	}
@@ -5590,84 +5394,11 @@ CCam::Process_FollowCar_SA(const CVector& CameraTarget, float TargetOrientation,
 				Source.z = level;
 		}
 	}
-#ifdef WII
-	if(vehicleCamReset)
-		PrevSource = Source;
-	else
-		Source = WiiSmoothVehicleSource(PrevSource, Source, cameraStep);
-	PrevSource = Source;
-#endif
 	Front = TargetCoors - Source;
 
 	// -------- LCS specific part ends
 
 	GetVectorsReadyForRW();
-#ifdef WII
-	{
-		static float sPrevLoggedFOV = 0.0f;
-		static float sPrevLoggedAlpha = 0.0f;
-		static float sPrevLoggedBeta = 0.0f;
-		static float sPrevLoggedZoom = 0.0f;
-		static float sPrevLoggedActualDistance = 0.0f;
-		static uint32 sLastVehicleCamLogFrame = 0;
-
-		float actualDistance = (TargetCoors - Source).Magnitude();
-		float zoomProxy = 1.0f / Max(actualDistance * Tan(DEGTORAD(FOV) * 0.5f), 0.001f);
-		float betaDelta = Abs(CGeneral::LimitRadianAngle(Beta - sPrevLoggedBeta));
-		float alphaDelta = Abs(Alpha - sPrevLoggedAlpha);
-		float fovDelta = Abs(FOV - sPrevLoggedFOV);
-		float zoomDelta = Abs(zoomProxy - sPrevLoggedZoom);
-		float distDelta = Abs(actualDistance - sPrevLoggedActualDistance);
-		bool cStickActive = Abs((int)pad->GetCarGunLeftRight()) > 18 || Abs((int)pad->GetCarGunUpDown()) > 18;
-		bool timingSpike = CTimer::GetTimeStepInMilliseconds() >= 24 || Abs(CTimer::GetTimeStep() - cameraStep) > 0.20f;
-		bool zoomPump = fovDelta > 0.18f || Abs(targetFOV - FOV) > 0.20f || distDelta > 0.08f || zoomDelta > 0.005f;
-		bool angleJump = betaDelta > 0.030f || alphaDelta > 0.020f;
-		uint32 frameNow = CTimer::GetFrameCounter();
-		bool periodicStickLog = cStickActive && (frameNow - sLastVehicleCamLogFrame) >= 12;
-
-		if(periodicStickLog ||
-		   ((cStickActive || timingSpike) && (angleJump || zoomPump)) ||
-		   (zoomPump && (frameNow - sLastVehicleCamLogFrame) >= 12)){
-			printf("[WII-CAM] frame=%u rawts=%.4f camts=%.4f tsms=%u mode=%d set=%u dis=0x%03X rs=(%d,%d) filt=(%.3f,%.3f) move=(%.4f,%.4f) a=%.3f da=%.3f b=%.3f db=%.3f as=%.4f bs=%.4f fov=%.2f tfov=%.2f df=%.3f want=%.3f real=%.3f clip=%.3f zoom=%.5f dz=%.5f spike=%d pump=%d\n",
-			       frameNow,
-			       CTimer::GetTimeStep(),
-			       cameraStep,
-			       CTimer::GetTimeStepInMilliseconds(),
-			       Mode,
-			       camSetArrPos,
-			       (unsigned int)pad->DisablePlayerControls,
-			       (int)stickX,
-			       (int)stickY,
-			       stableStickX,
-			       stableStickY,
-			       xMovement,
-			       yMovement,
-			       Alpha,
-			       alphaDelta,
-			       Beta,
-			       betaDelta,
-			       AlphaSpeed,
-			       BetaSpeed,
-			       FOV,
-			       targetFOV,
-			       fovDelta,
-			       newDistance,
-			       actualDistance,
-			       newDistance - actualDistance,
-			       zoomProxy,
-			       zoomDelta,
-			       timingSpike ? 1 : 0,
-			       zoomPump ? 1 : 0);
-			sLastVehicleCamLogFrame = frameNow;
-		}
-
-		sPrevLoggedFOV = FOV;
-		sPrevLoggedAlpha = Alpha;
-		sPrevLoggedBeta = Beta;
-		sPrevLoggedZoom = zoomProxy;
-		sPrevLoggedActualDistance = actualDistance;
-	}
-#endif
 	// SA
 	// gTargetCoordsForLookingBehind = TargetCoors;
 

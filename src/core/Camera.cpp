@@ -79,20 +79,6 @@ static bool bSwitchedToObbeCam;
 float CCamera::m_fMouseAccelHorzntl;
 float CCamera::m_fMouseAccelVertical;
 
-#ifdef WII
-static float
-WiiSceneLodScale(void)
-{
-	return 1.0f;
-}
-
-static float
-WiiGenerationLodScale(void)
-{
-	return 0.9f;
-}
-
-#endif
 float CCamera::m_f3rdPersonCHairMultX;
 float CCamera::m_f3rdPersonCHairMultY;
 
@@ -644,10 +630,6 @@ CCamera::Process(void)
 	}else
 		LODDistMultiplier = 1.0f;
 	GenerationDistMultiplier = LODDistMultiplier;
-#ifdef WII
-	GenerationDistMultiplier *= WiiGenerationLodScale();
-	LODDistMultiplier = Min(LODDistMultiplier * WiiSceneLodScale(), 1.15f);
-#endif
 	LODDistMultiplier *= CRenderer::ms_lodDistScale;
 
 	CDraw::SetNearClipZ(RwCameraGetNearClipPlane(m_pRwCamera));
@@ -3795,7 +3777,6 @@ CCamera::ProcessFade(void)
 			if (m_fFLOATingFade <= 0.0f) {
 				m_bFading = false;
 				m_fFLOATingFade = 0.0f;
-				m_FadeTargetIsSplashScreen = false;
 			}
 		}else if(m_iFadingDirection == FADE_OUT){
 			if(m_fTimeToFadeOut != 0.0f)
@@ -3857,7 +3838,6 @@ CCamera::Fade(float timeout, int16 direction)
 void
 CCamera::SetFadeColour(uint8 r, uint8 g, uint8 b)
 {
-	m_FadeTargetIsSplashScreen = r == 2 && g == 2 && b == 2;
 	CDraw::FadeRed = r;
 	CDraw::FadeGreen = g;
 	CDraw::FadeBlue = b;
@@ -3893,23 +3873,6 @@ CCamera::GetScreenFadeStatus(void)
 void
 CCamera::RenderMotionBlur(void)
 {
-#ifdef WII
-	// Wii currently renders gameplay more smoothly when we skip the full-screen
-	// feedback blur path outside of scripted intro/cutscene special cases.
-	if(m_BlurType == MOTION_BLUR_LIGHT_SCENE ||
-	   m_BlurType == MOTION_BLUR_NONE)
-		return;
-	if(!CCutsceneMgr::IsRunning() &&
-	   m_BlurType != MOTION_BLUR_INTRO &&
-	   m_BlurType != MOTION_BLUR_INTRO2 &&
-	   m_BlurType != MOTION_BLUR_INTRO3 &&
-	   m_BlurType != MOTION_BLUR_INTRO4 &&
-	   m_BlurType != MOTION_BLUR_SECURITY_CAM &&
-	   m_BlurType != MOTION_BLUR_SNIPER &&
-	   m_BlurType != MOTION_BLUR_SNIPER_ZOOM &&
-	   m_BlurType != MOTION_BLUR_CUT_SCENE)
-		return;
-#endif
 	if(m_BlurType == 0)
 		return;
 

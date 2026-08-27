@@ -1571,6 +1571,23 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
                    (void*)md->material,
                    (md->material && md->material->texture) ? md->material->texture->name : "none");
         SetRenderState(VERTEXALPHA, meshNeedsBlendAlphaState);
+        const bool matFXPipeline = rwpipe->pluginID == ID_MATFX;
+        const bool matFXEnvReady = matFXPipeline &&
+                                   gxMatFXEnvReady(md->material,
+                                                   inst->hasNormals);
+        const bool matFXEnvUsesAlpha = matFXEnvReady &&
+                                       (gxMatFXEnvUsesAlpha(md->material) ||
+                                        effectiveVertexAlpha ||
+                                        (md->material &&
+                                         md->material->color.alpha != 255));
+        bool matFXBaseTextured = false;
+        if(matFXEnvReady && inst->numTexCoords > 0 &&
+           md->material && md->material->texture &&
+           md->material->texture->raster){
+            GxRaster *baseRaster = PLUGINOFFSET(
+                GxRaster, md->material->texture->raster, nativeRasterOffset);
+            matFXBaseTextured = baseRaster != nil && baseRaster->texObjValid;
+        }
         uint32 passCount = setMaterial(md->material, effectiveVertexAlpha, inst->hasColors,
                     (geo->flags & Geometry::MODULATE) != 0, lights, 0,
                     &stateCache);
@@ -1638,6 +1655,36 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
             drawPipeMesh(geo, meshIdx, numIdx,
                          inst->hasNormals, inst->hasColors,
                          inst->numTexCoords, prim, trace, m, 1);
+        }
+
+        // MatFX ENVMAP is a separate reflection contribution. The base pass
+        // above remains identical to the default pipe, while this pass uses
+        // generated normal coordinates and does not write depth. Alpha is
+        // masked in TEV for translucent materials. Reapply the material setup
+        // afterward so texture unit 1 and all MatFX state cannot leak.
+        if(matFXEnvReady &&
+           gxMatFXSetupEnv(md->material, matFXBaseTextured,
+                           effectiveVertexAlpha)) {
+            setZCompLocCached(&stateCache, GX_FALSE);
+            setZModeCached(&stateCache,
+                           gxState.zTest ? GX_TRUE : GX_FALSE,
+                           GX_LEQUAL, GX_FALSE);
+            setAlphaCompareCached(&stateCache,
+                                  gxAlphaFuncFromState(gxState.alphaTestFunc),
+                                  (u8)gxState.alphaTestRef,
+                                  GX_AOP_AND, GX_ALWAYS, 0);
+            setBlendModeCached(&stateCache, GX_BM_BLEND,
+                               matFXEnvUsesAlpha ? GX_BL_SRCALPHA : GX_BL_ONE,
+                               GX_BL_ONE,
+                               GX_LO_CLEAR, true);
+            drawPipeMesh(geo, meshIdx, numIdx,
+                         inst->hasNormals, inst->hasColors,
+                         inst->numTexCoords, prim, trace, m, 2);
+
+            gxSetTexture(nil, 1);
+            setMaterial(md->material, effectiveVertexAlpha, inst->hasColors,
+                        (geo->flags & Geometry::MODULATE) != 0, lights, 0,
+                        &stateCache);
         }
     }
     // GS alpha emulation changes the hardware compare/depth state for the

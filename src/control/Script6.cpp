@@ -687,18 +687,7 @@ int8 CRunningScript::ProcessCommands1000To1099(int32 command)
 		CollectParameters(&m_nIp, 2);
 		CStats::RegisterHighestScore(ScriptParams[0], ScriptParams[1]);
 		return 0;
-	case COMMAND_WARP_CHAR_INTO_CAR_AS_PASSENGER:
-	{
-		CollectParameters(&m_nIp, 3);
-		CPed* pPed = CPools::GetPedPool()->GetAt(ScriptParams[0]);
-		script_assert(pPed);
-		CVehicle* pVehicle = CPools::GetVehiclePool()->GetAt(ScriptParams[1]);
-		script_assert(pVehicle);
-#if REAL_GAMECUBE
-		GcTraceMissionPassengerWarpIntent("command-hit", pPed, pVehicle, ScriptParams[2]);
-#endif
-		return 0;
-	}
+	//case COMMAND_WARP_CHAR_INTO_CAR_AS_PASSENGER:
 	case COMMAND_IS_CAR_PASSENGER_SEAT_FREE:
 	{
 		CollectParameters(&m_nIp, 2);
@@ -780,6 +769,7 @@ int8 CRunningScript::ProcessCommands1000To1099(int32 command)
 		CollectParameters(&m_nIp, 1);
 		TheCamera.m_bIgnoreFadingStuffForMusic = (ScriptParams[0] == 0);
 		return 0;
+	/*
 	case COMMAND_SET_INTRO_IS_PLAYING:
 		CollectParameters(&m_nIp, 1);
 		if (ScriptParams[0]) {
@@ -793,11 +783,8 @@ int8 CRunningScript::ProcessCommands1000To1099(int32 command)
 			CStreaming::RequestModel(mi, STREAMFLAGS_DEPENDENCY);
 			CStreaming::LoadAllRequestedModels(false);
 		}
-#if REAL_GAMECUBE
-		printf("[SCR-INTRO] set_intro_is_playing=%d time=%u\n",
-			ScriptParams[0] ? 1 : 0, CTimer::GetTimeInMilliseconds());
-#endif
 		return 0;
+	*/
 	case COMMAND_SET_PLAYER_HOOKER:
 	{
 		CollectParameters(&m_nIp, 2);
@@ -967,14 +954,6 @@ int8 CRunningScript::ProcessCommands1100To1199(int32 command)
 		m_nIp += KEY_LENGTH_IN_SCRIPT;
 		printf("[SCRIPT-SPLASH] request '%s'\n", tmp);
 		LoadSplash(tmp);
-#ifdef WII
-		// Keep the Wii-specific fix narrowly scoped: only intro* screens need
-		// the immediate fade-target handoff to avoid a black frame.
-		if (strncmp(tmp, "intro", 5) == 0) {
-			ForceScriptSplashNow(tmp);
-			printf("[SCRIPT-SPLASH] forcing splash fade target for '%s'\n", tmp);
-		}
-#endif
 		return 0;
 	/*
 	case COMMAND_SET_CAR_IGNORE_LEVEL_TRANSITIONS:

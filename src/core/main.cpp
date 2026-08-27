@@ -108,9 +108,7 @@ void gxMemGetPoolStats(uint32 *capacityBytes, uint32 *usedBytes,
 
 GlobalScene Scene;
 static char gCurrentSplashName[32];
-static bool CurrentSplashIsLoadingScreen(void);
 #ifdef WII
-static bool CurrentSplashIsIntroSequence(void);
 struct WiiFrameDiagnostics {
 	uint32 sequence;
 	double timeStepMs;
@@ -576,9 +574,6 @@ DoFade(void)
 		if(FrontEndMenuManager.m_bMenuActive)
 			brightness = 256;
 
-		if(TheCamera.m_FadeTargetIsSplashScreen)
-			fadeValue = 0;
-
 		float fade = fadeValue + 256 - brightness;
 		if(fade == 0){
 			fadeColor.r = 0;
@@ -598,16 +593,6 @@ DoFade(void)
 		TheCamera.GetScreenRect(rect);
 		CSprite2d::DrawRect(rect, fadeColor);
 
-		if(CDraw::FadeValue != 0 &&
-		   TheCamera.m_FadeTargetIsSplashScreen &&
-		   !CurrentSplashIsLoadingScreen()){
-			RwRenderStateSet(rwRENDERSTATETEXTUREFILTER, (void*)rwFILTERLINEAR);
-			fadeColor.r = 255;
-			fadeColor.g = 255;
-			fadeColor.b = 255;
-			fadeColor.a = CDraw::FadeValue;
-			splash->Draw(CRect(0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT), fadeColor, fadeColor, fadeColor, fadeColor);
-		}
 	}
 }
 
@@ -862,164 +847,46 @@ Terminate3D(void)
 CSprite2d splash;
 int splashTxdId = -1;
 
-#ifdef WII
-static int32 gWiiIslandTransitionSplashLevel = LEVEL_GENERIC;
-static bool gWiiIslandTransitionSplashActive;
-#endif
-
-static bool
-CurrentSplashIsLoadingScreen(void)
-{
-	return gCurrentSplashName[0] != '\0' &&
-		strncmp(gCurrentSplashName, "loadsc", 6) == 0;
-}
-
-#ifdef WII
-static bool
-CurrentSplashIsIntroSequence(void)
-{
-	return gCurrentSplashName[0] != '\0' &&
-		strncmp(gCurrentSplashName, "intro", 5) == 0;
-}
-
-bool
-WiiShouldPreserveScriptSplash(void)
-{
-	return CurrentSplashIsIntroSequence() &&
-		(CGame::playingIntro ||
-		CCutsceneMgr::IsRunning() ||
-		CCutsceneMgr::ms_cutsceneLoadStatus != 0);
-}
-
-static bool
-WiiShouldSuppressLoadingOverlay(const char *str1, const char *splashscreen)
-{
-	if(str1 == nil)
-		return false;
-	if(!WiiShouldPreserveScriptSplash())
-		return false;
-	if(splashscreen == nil)
-		return true;
-	return strncmp(splashscreen, "loadsc", 6) == 0 ||
-		strncmp(splashscreen, "splash", 6) == 0 ||
-		strncmp(splashscreen, "intro", 5) == 0;
-}
-
-static bool
-WiiShouldSuppressLoadingPresent(const char *str1, const char *splashscreen)
-{
-	if(!WiiShouldPreserveScriptSplash())
-		return false;
-	if(str1 != nil)
-		return true;
-	if(splashscreen == nil)
-		return true;
-	return strncmp(splashscreen, "loadsc", 6) == 0 ||
-		strncmp(splashscreen, "splash", 6) == 0;
-}
-
-static bool
-ShouldProtectActiveIntroSplash(const char *name)
-{
-	if(name == nil)
-		return false;
-	if(!WiiShouldPreserveScriptSplash())
-		return false;
-	return strncmp(name, "loadsc", 6) == 0 ||
-		strncmp(name, "splash", 6) == 0;
-}
-
-void
-ForceScriptSplashNow(const char *name)
-{
-	if(name == nil || strncmp(name, "intro", 5) != 0)
-		return;
-
-	// Cut over to the intro splash immediately instead of waiting for the
-	// legacy fade-hold path to release plain black on a later frame.
-	StillToFadeOut = false;
-	JustLoadedDontFadeInYet = false;
-	TimeStartedCountingForFade = 0;
-	TimeToStayFadedBeforeFadeOut = 0;
-	TheCamera.SetFadeColour(2, 2, 2);
-	TheCamera.m_bFading = false;
-	TheCamera.m_FadeTargetIsSplashScreen = true;
-	CDraw::FadeValue = 255;
-	printf("[SCRIPT-SPLASH] force now '%s' fade reset\n", name);
-}
-#else
 void
 ForceScriptSplashNow(const char *name)
 {
 	(void)name;
 }
-#endif
 
 #ifdef WII
 bool
+WiiShouldPreserveScriptSplash(void)
+{
+	return false;
+}
+
+bool
 WiiPrepareIslandTransitionSplash(int level)
 {
-	if(level < LEVEL_BEACH || level > LEVEL_MAINLAND)
-		return false;
-	const char *textureName = GetLevelSplashScreen(level);
-	CSprite2d *prepared = LoadSplash(textureName);
-	bool ready = prepared == &splash && splash.m_pTexture != nil &&
-	             strcmp(gCurrentSplashName, textureName) == 0;
-	printf("[WII-ISLAND-SPLASH] prepare level=%d name='%s' slot=%d ready=%d\n",
-	       level, textureName, splashTxdId, ready ? 1 : 0);
-	return ready;
+	(void)level;
+	return false;
 }
 
 void
 WiiBeginIslandTransitionSplash(int level)
 {
-	if(level < LEVEL_BEACH || level > LEVEL_MAINLAND)
-		return;
-	gWiiIslandTransitionSplashLevel = level;
-	gWiiIslandTransitionSplashActive = true;
-	const char *textureName = GetLevelSplashScreen(level);
-	bool ready = splash.m_pTexture != nil &&
-	             strcmp(gCurrentSplashName, textureName) == 0;
-	printf("[WII-ISLAND-SPLASH] transition begin level=%d ready=%d\n",
-	       level, ready ? 1 : 0);
+	(void)level;
 }
 
 void
 WiiEndIslandTransitionSplash(void)
 {
-	if(gWiiIslandTransitionSplashActive)
-		printf("[WII-ISLAND-SPLASH] transition end level=%d\n",
-		       gWiiIslandTransitionSplashLevel);
-	gWiiIslandTransitionSplashActive = false;
-	gWiiIslandTransitionSplashLevel = LEVEL_GENERIC;
 }
 
 bool
 WiiIsIslandTransitionSplashActive(void)
 {
-	return gWiiIslandTransitionSplashActive;
+	return false;
 }
 
 void
 WiiDrawIslandTransitionSplash(void)
 {
-	int level = gWiiIslandTransitionSplashLevel;
-	const char *textureName = level >= LEVEL_BEACH && level <= LEVEL_MAINLAND ?
-	                          GetLevelSplashScreen(level) : nil;
-	bool ready = textureName != nil && splash.m_pTexture != nil &&
-	             strcmp(gCurrentSplashName, textureName) == 0;
-	CSprite2d::SetRecipNearClip();
-	DefinedState();
-	CRGBA black(0, 0, 0, 255);
-	CSprite2d::DrawRect(CRect(0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT), black);
-	if(ready)
-		splash.Draw(CRect(0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT),
-		            CRGBA(255, 255, 255, 255));
-	else{
-		FrontEndMenuManager.m_nMenuFadeAlpha = 255;
-		FrontEndMenuManager.SmallMessageScreen("FELD_WR");
-		CFont::DrawFonts();
-	}
 }
 #endif
 
@@ -1041,13 +908,6 @@ LoadSplash(const char *name)
 
 	if(name == nil)
 		return &splash;
-#ifdef WII
-	if(ShouldProtectActiveIntroSplash(name)){
-		printf("[LOADSC] keep active intro splash '%s', ignore generic '%s'\n",
-		       gCurrentSplashName, name);
-		return &splash;
-	}
-#endif
 	if(splashTxdId == -1)
 		splashTxdId = CTxdStore::AddTxdSlot("splash");
 
@@ -1221,31 +1081,11 @@ LoadingScreen(const char *str1, const char *str2, const char *splashscreen)
 	splashscreen = "LOADSC0";
 #endif
 
-#ifdef WII
-	if(WiiShouldSuppressLoadingOverlay(str1, splashscreen)){
-		printf("[LOADSC] suppress loading overlay while intro owns splash current='%s' req='%s' text='%s'\n",
-		       gCurrentSplashName,
-		       splashscreen ? splashscreen : "<current>",
-		       str1 ? str1 : "<none>");
-		str1 = nil;
-		str2 = nil;
-	}
-#endif
-
 	splash = LoadSplash(splashscreen);
 
 #ifndef GTA_PS2
 	if(RsGlobal.quit)
 		return;
-#endif
-
-#ifdef WII
-	if(WiiShouldSuppressLoadingPresent(str1, splashscreen)){
-		printf("[LOADSC] suppress full loading present while intro owns splash current='%s' req='%s'\n",
-		       gCurrentSplashName,
-		       splashscreen ? splashscreen : "<current>");
-		return;
-	}
 #endif
 
 	if(DoRWStuffStartOfFrame(0, 0, 0, 0, 0, 0, 255)){
