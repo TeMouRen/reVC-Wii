@@ -24,6 +24,65 @@ static inline uint32 readLE32(const uint8 *p) {
 
 wchar WideErrorString[25];
 
+#ifdef CHINESE_FONT
+struct ChineseBuiltinTextEntry {
+	const char *key;
+	wchar *value;
+};
+
+static wchar ChineseGraphicsMenuText[] = { 0x56FE, 0x5F62, 0x8BBE, 0x7F6E, '\0' };
+static wchar ChineseFreeCamText[] = { 0x81EA, 0x7531, 0x955C, 0x5934, '\0' };
+static wchar ChineseCutsceneBordersText[] = { 0x8FC7, 0x573A, 0x9ED1, 0x8FB9, '\0' };
+static wchar ChineseAntiAliasingText[] = { 0x6297, 0x952F, 0x9F7F, '\0' };
+static wchar ChinesePs2AlphaTestText[] = { 'P', 'S', '2', ' ', 'A', 'l', 'p', 'h', 'a', ' ', 0x6D4B, 0x8BD5, '\0' };
+static wchar ChineseColourFilterText[] = { 0x8272, 0x5F69, 0x6EE4, 0x955C, '\0' };
+static wchar ChineseNoneText[] = { 0x65E0, '\0' };
+static wchar ChineseSimpleText[] = { 0x7B80, 0x5355, '\0' };
+static wchar ChineseNormalText[] = { 0x6807, 0x51C6, '\0' };
+static wchar ChineseMobileText[] = { 0x79FB, 0x52A8, 0x7248, '\0' };
+static wchar ChineseTrailsText[] = { 0x62D6, 0x5F71, '\0' };
+static wchar ChineseVehiclePipelineText[] = { 0x8F66, 0x8F86, 0x7BA1, 0x7EBF, '\0' };
+static wchar ChineseMatFxText[] = { 'M', 'a', 't', 'F', 'X', '\0' };
+static wchar ChineseNeoText[] = { 'N', 'e', 'o', '\0' };
+static wchar ChinesePedRimLightText[] = { 0x884C, 0x4EBA, 0x8FB9, 0x7F18, 0x5149, '\0' };
+static wchar ChineseWorldLightingText[] = { 0x4E16, 0x754C, 0x5149, 0x7167, '\0' };
+static wchar ChineseRoadGlossText[] = { 0x9053, 0x8DEF, 0x9AD8, 0x5149, '\0' };
+
+static ChineseBuiltinTextEntry gChineseBuiltinMenuTexts[] = {
+	{ "FET_GFX", ChineseGraphicsMenuText },
+	{ "FEC_FRC", ChineseFreeCamText },
+	{ "FEM_CSB", ChineseCutsceneBordersText },
+	{ "FED_AAS", ChineseAntiAliasingText },
+	{ "FEM_2PR", ChinesePs2AlphaTestText },
+	{ "FED_CLF", ChineseColourFilterText },
+	{ "FEM_NON", ChineseNoneText },
+	{ "FEM_SIM", ChineseSimpleText },
+	{ "FEM_NRM", ChineseNormalText },
+	{ "FEM_MOB", ChineseMobileText },
+	{ "FED_TRA", ChineseTrailsText },
+	{ "FED_VPL", ChineseVehiclePipelineText },
+	{ "FED_MFX", ChineseMatFxText },
+	{ "FED_NEO", ChineseNeoText },
+	{ "FED_PRM", ChinesePedRimLightText },
+	{ "FED_WLM", ChineseWorldLightingText },
+	{ "FED_RGL", ChineseRoadGlossText },
+};
+
+static wchar *
+GetChineseBuiltinMenuText(const char *key)
+{
+	if (FrontEndMenuManager.m_PrefsLanguage != CMenuManager::LANGUAGE_CHINESE)
+		return nil;
+
+	for (int i = 0; i < ARRAY_SIZE(gChineseBuiltinMenuTexts); ++i) {
+		if (strcmp(gChineseBuiltinMenuTexts[i].key, key) == 0)
+			return gChineseBuiltinMenuTexts[i].value;
+	}
+
+	return nil;
+}
+#endif
+
 CText TheText;
 
 CText::CText(void)
@@ -95,10 +154,7 @@ CText::Load(void)
 
     file = CFileMgr::OpenFile(filename, "rb");
 
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // [GC-FIX] 文件打开失败守卫
-    // 原代码：file=-1 时直接进 while 循环，ReadChunkHeader �?    //         无效 fd �?NULL 解引�?�?崩溃
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // Guard against a missing language file before reading its chunks.
     if (file < 0) {
         printf("[reVC-WII] FATAL: Cannot open text file: %s\n", filename);
         CFileMgr::SetDir("");
@@ -145,6 +201,12 @@ CText::Unload(void)
 wchar*
 CText::Get(const char *key)
 {
+#ifdef CHINESE_FONT
+	wchar *builtinChinese = GetChineseBuiltinMenuText(key);
+	if (builtinChinese)
+		return builtinChinese;
+#endif
+
     uint8 result = false;
 #if defined (FIX_BUGS) || defined(FIX_BUGS_64)
     wchar *outstr = keyArray.Search(key, data.chars, &result);
@@ -319,10 +381,7 @@ CText::LoadMissionText(char *MissionTableName)
     CTimer::Suspend();
     int file = CFileMgr::OpenFile(filename, "rb");
 
-    // File open guard �?handles missing language files gracefully
-    // [GC-FIX] LoadMissionText 也需�?file < 0 守卫
-    // 原代码缺失此检查：OpenFile 失败后直�?Seek(fd=-1,...) 崩溃
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // Mission text files need the same missing-file guard as the main table.
     if (file < 0) {
         printf("[reVC-WII] FATAL: LoadMissionText: Cannot open %s\n", filename);
         CTimer::Resume();

@@ -43,7 +43,19 @@
 	#define VIDEOMODE_SELECTOR
 #endif
 
-#ifdef MULTISAMPLING
+#ifdef WII
+	// These values preserve the menu and INI contract until GX implements the effects.
+static int8 gWiiAntiAliasing = 0;
+static int8 gWiiColourFilter = 0;
+static int8 gWiiVehiclePipeline = 0;
+static int8 gWiiPedRimLight = 0;
+static int8 gWiiWorldLightmaps = 0;
+static int8 gWiiRoadGloss = 0;
+#endif
+
+#ifdef WII
+	#define MULTISAMPLING_SELECTOR MENUACTION_CFO_SELECT, "FED_AAS", { new CCFOSelect(&gWiiAntiAliasing, "Graphics", "AntiAliasing", off_on, ARRAY_SIZE(off_on), false) }, 0, 0, MENUALIGN_LEFT,
+#elif defined(MULTISAMPLING)
 	#define MULTISAMPLING_SELECTOR MENUACTION_CFO_DYNAMIC, "FED_AAS", { new CCFODynamic((int8*)&FrontEndMenuManager.m_nPrefsMSAALevel, "Graphics", "MultiSampling", MultiSamplingDraw, MultiSamplingButtonPress) }, 0, 0, MENUALIGN_LEFT,
 #else
 	#define MULTISAMPLING_SELECTOR
@@ -82,13 +94,25 @@
 	#define ISLAND_LOADING_SELECTOR 
 #endif
 
-#ifdef EXTENDED_COLOURFILTER
+#ifdef WII
+	#define POSTFX_SELECTORS \
+		MENUACTION_CFO_SELECT, "FED_CLF", { new CCFOSelect(&gWiiColourFilter, "Graphics", "ColourFilter", filterNames, ARRAY_SIZE(filterNames), false) }, 0, 0, MENUALIGN_LEFT,
+	#define WII_PIPELINE_SELECTORS \
+		MENUACTION_CFO_SELECT, "FED_VPL", { new CCFOSelect(&gWiiVehiclePipeline, "Graphics", "VehiclePipeline", vehiclePipelineNames, ARRAY_SIZE(vehiclePipelineNames), false) }, 0, 0, MENUALIGN_LEFT, \
+		MENUACTION_CFO_SELECT, "FED_PRM", { new CCFOSelect(&gWiiPedRimLight, "Graphics", "NeoRimLight", off_on, ARRAY_SIZE(off_on), false) }, 0, 0, MENUALIGN_LEFT, \
+		MENUACTION_CFO_SELECT, "FED_WLM", { new CCFOSelect(&gWiiWorldLightmaps, "Graphics", "NeoLightMaps", off_on, ARRAY_SIZE(off_on), false) }, 0, 0, MENUALIGN_LEFT, \
+		MENUACTION_CFO_SELECT, "FED_RGL", { new CCFOSelect(&gWiiRoadGloss, "Graphics", "NeoRoadGloss", off_on, ARRAY_SIZE(off_on), false) }, 0, 0, MENUALIGN_LEFT,
+#elif defined(EXTENDED_COLOURFILTER)
 	#define POSTFX_SELECTORS \
 		MENUACTION_CFO_SELECT, "FED_CLF", { new CCFOSelect((int8*)&CPostFX::EffectSwitch, "Graphics", "ColourFilter", filterNames, ARRAY_SIZE(filterNames), false) }, 0, 0, MENUALIGN_LEFT, \
 		MENUACTION_CFO_SELECT, "FED_MBL", { new CCFOSelect((int8*)&CPostFX::MotionBlurOn, "Graphics", "MotionBlur", off_on, 2, false) }, 0, 0, MENUALIGN_LEFT,
 #else
 	#define POSTFX_SELECTORS
-#endif	
+#endif
+
+#ifndef WII
+	#define WII_PIPELINE_SELECTORS
+#endif
 
 #ifdef INVERT_LOOK_FOR_PAD
 	#define INVERT_PAD_SELECTOR MENUACTION_CFO_SELECT, "FEC_ILU", { new CCFOSelect((int8*)&CPad::bInvertLook4Pad, "Controller", "InvertPad", off_on, 2, false) }, 0, 0, MENUALIGN_LEFT,
@@ -104,6 +128,9 @@
 
 const char *filterNames[] = { "FEM_NON", "FEM_SIM", "FEM_NRM", "FEM_MOB" };
 const char *off_on[] = { "FEM_OFF", "FEM_ON" };
+#ifdef WII
+const char *vehiclePipelineNames[] = { "FED_MFX", "FED_NEO" };
+#endif
 
 void RestoreDefGraphics(int8 action) {
 	if (action != FEOPTION_ACTION_SELECT)
@@ -112,12 +139,20 @@ void RestoreDefGraphics(int8 action) {
 	#ifdef PS2_ALPHA_TEST
 		gPS2alphaTest = false;
 	#endif
-	#ifdef MULTISAMPLING
+	#if defined(MULTISAMPLING) && !defined(WII)
 		FrontEndMenuManager.m_nPrefsMSAALevel = FrontEndMenuManager.m_nDisplayMSAALevel = 0;
 	#endif
-	#ifdef NO_ISLAND_LOADING
-	    	if (!FrontEndMenuManager.m_bGameNotLoaded) {
-	    		FrontEndMenuManager.m_PrefsIslandLoading = FrontEndMenuManager.ISLAND_LOADING_LOW;
+	#ifdef WII
+		gWiiAntiAliasing = 0;
+		gWiiColourFilter = 0;
+		gWiiVehiclePipeline = 0;
+		gWiiPedRimLight = 0;
+		gWiiWorldLightmaps = 0;
+		gWiiRoadGloss = 0;
+	#endif
+	#if defined(NO_ISLAND_LOADING) && !defined(WII)
+		if (!FrontEndMenuManager.m_bGameNotLoaded) {
+			FrontEndMenuManager.m_PrefsIslandLoading = FrontEndMenuManager.ISLAND_LOADING_LOW;
 				CStreaming::RemoveUnusedBigBuildings(CGame::currLevel);
 				CStreaming::RemoveUnusedBuildings(CGame::currLevel);
 				CStreaming::RequestIslands(CGame::currLevel);
@@ -126,6 +161,7 @@ void RestoreDefGraphics(int8 action) {
 	    		FrontEndMenuManager.m_PrefsIslandLoading = FrontEndMenuManager.ISLAND_LOADING_LOW;
 	#endif
 	#ifdef GRAPHICS_MENU_OPTIONS // otherwise Frontend will handle those
+	#ifndef WII
 		FrontEndMenuManager.m_PrefsFrameLimiter = true;
 		FrontEndMenuManager.m_PrefsVsyncDisp = true;
 		#ifdef LEGACY_MENU_OPTIONS
@@ -133,6 +169,7 @@ void RestoreDefGraphics(int8 action) {
 		#endif
 		FrontEndMenuManager.m_PrefsUseWideScreen = false;
 		FrontEndMenuManager.m_nDisplayVideoMode = FrontEndMenuManager.m_nPrefsVideoMode;
+	#endif
 		CMBlur::BlurOn = false;
 		FrontEndMenuManager.SaveSettings();
 	#endif
@@ -153,10 +190,7 @@ void RestoreDefDisplay(int8 action) {
 	#endif
 	#ifdef GRAPHICS_MENU_OPTIONS // otherwise Frontend will handle those
 		FrontEndMenuManager.m_PrefsBrightness = 256;
-	#ifdef WII
-		FrontEndMenuManager.m_PrefsLOD = 1.10f;
-		CRenderer::ms_lodDistScale = 1.10f;
-	#else
+	#ifndef WII
 		FrontEndMenuManager.m_PrefsLOD = 1.2f;
 		CRenderer::ms_lodDistScale = 1.2f;
 	#endif
@@ -213,7 +247,7 @@ void CarDensityChange(float before, float after) {
 }
 #endif
 
-#ifndef MULTISAMPLING
+#if !defined(MULTISAMPLING) || defined(WII)
 void GraphicsGoBack() {
 }
 #else
@@ -475,16 +509,23 @@ CMenuScreenCustom aScreens[] = {
 #else
 	{ "FEH_DIS", MENUPAGE_OPTIONS, new CCustomScreenLayout({40, 78, 25, true}), nil,
 		MENUACTION_BRIGHTNESS,	"FED_BRI", { nil, SAVESLOT_NONE, MENUPAGE_DISPLAY_SETTINGS }, 0, 0, MENUALIGN_LEFT,
+#ifndef WII
 		MENUACTION_DRAWDIST,	"FEM_LOD", { nil, SAVESLOT_NONE, MENUPAGE_DISPLAY_SETTINGS }, 0, 0, MENUALIGN_LEFT,
+#endif
 #ifndef GAMECUBE
 		DENSITY_SLIDERS
+#endif
+#ifdef WII
+		MENUACTION_SUBTITLES,	"FED_SUB", { nil, SAVESLOT_NONE, MENUPAGE_DISPLAY_SETTINGS }, 0, 0, MENUALIGN_LEFT,
 #endif
 		CUTSCENE_BORDERS_TOGGLE
 		FREE_CAM_TOGGLE
 		MENUACTION_LEGENDS,		"MAP_LEG", { nil, SAVESLOT_NONE, MENUPAGE_DISPLAY_SETTINGS }, 0, 0, MENUALIGN_LEFT,
 		MENUACTION_RADARMODE,	"FED_RDR", { nil, SAVESLOT_NONE, MENUPAGE_DISPLAY_SETTINGS }, 0, 0, MENUALIGN_LEFT,
 		MENUACTION_HUD,			"FED_HUD", { nil, SAVESLOT_NONE, MENUPAGE_DISPLAY_SETTINGS }, 0, 0, MENUALIGN_LEFT,
+#ifndef WII
 		MENUACTION_SUBTITLES,	"FED_SUB", { nil, SAVESLOT_NONE, MENUPAGE_DISPLAY_SETTINGS }, 0, 0, MENUALIGN_LEFT,
+#endif
 		MENUACTION_CFO_DYNAMIC,	"FET_DEF", { new CCFODynamic(nil, nil, nil, nil, RestoreDefDisplay) }, 320, 0, MENUALIGN_CENTER,
 		MENUACTION_GOBACK,		"FEDS_TB", { nil, SAVESLOT_NONE, MENUPAGE_NONE}, 320, 0, MENUALIGN_CENTER,
 	},
@@ -797,25 +838,32 @@ CMenuScreenCustom aScreens[] = {
 #ifdef GRAPHICS_MENU_OPTIONS
 	// MENUPAGE_GRAPHICS_SETTINGS
 	{ "FET_GFX", MENUPAGE_OPTIONS, new CCustomScreenLayout({40, 78, 25, true, true}), GraphicsGoBack,
-
-#ifndef GTA_HANDHELD
+	#ifdef WII
+		MULTISAMPLING_SELECTOR
+		DUALPASS_SELECTOR
+		POSTFX_SELECTORS
+		MENUACTION_TRAILS,		"FED_TRA", { nil, SAVESLOT_NONE, MENUPAGE_GRAPHICS_SETTINGS }, 0, 0, MENUALIGN_LEFT,
+		WII_PIPELINE_SELECTORS
+	#else
+	#ifndef GTA_HANDHELD
 		MENUACTION_SCREENRES,	"FED_RES", { nil, SAVESLOT_NONE, MENUPAGE_GRAPHICS_SETTINGS }, 0, 0, MENUALIGN_LEFT,
-#endif
+	#endif
 		MENUACTION_WIDESCREEN,	"FED_WIS", { nil, SAVESLOT_NONE, MENUPAGE_GRAPHICS_SETTINGS }, 0, 0, MENUALIGN_LEFT,
 		VIDEOMODE_SELECTOR
-#ifdef LEGACY_MENU_OPTIONS
+	#ifdef LEGACY_MENU_OPTIONS
 		MENUACTION_FRAMESYNC,	"FEM_VSC", {nil, SAVESLOT_NONE, MENUPAGE_GRAPHICS_SETTINGS}, 0, 0, MENUALIGN_LEFT,
-#endif
+	#endif
 		MENUACTION_FRAMELIMIT,	"FEM_FRM", { nil, SAVESLOT_NONE, MENUPAGE_GRAPHICS_SETTINGS }, 0, 0, MENUALIGN_LEFT,
 		MULTISAMPLING_SELECTOR
 		ISLAND_LOADING_SELECTOR
 		DUALPASS_SELECTOR
-#ifdef EXTENDED_COLOURFILTER
+	#ifdef EXTENDED_COLOURFILTER
 		POSTFX_SELECTORS
-#elif defined LEGACY_MENU_OPTIONS
+	#elif defined LEGACY_MENU_OPTIONS
 		MENUACTION_TRAILS,		"FED_TRA", { nil, SAVESLOT_NONE, MENUPAGE_GRAPHICS_SETTINGS }, 0, 0, MENUALIGN_LEFT,
-#endif
+	#endif
 		// re3.cpp inserts here pipeline selectors if neo/neo.txd exists and EXTENDED_PIPELINES defined
+	#endif
 		MENUACTION_CFO_DYNAMIC,	"FET_DEF", { new CCFODynamic(nil, nil, nil, nil, RestoreDefGraphics) }, 320, 0, MENUALIGN_CENTER,
 		MENUACTION_GOBACK,		"FEDS_TB", {nil, SAVESLOT_NONE, MENUPAGE_NONE}, 320, 0, MENUALIGN_CENTER,
 	},

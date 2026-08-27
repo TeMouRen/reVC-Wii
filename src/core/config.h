@@ -439,9 +439,11 @@ enum Config {
 #		define INVERT_LOOK_FOR_PAD // enable the hidden option
 #		define PED_CAR_DENSITY_SLIDERS
 #	endif
-#	ifdef GAMECUBE
+#	if defined(GAMECUBE) && !defined(WII)
 #		undef GRAPHICS_MENU_OPTIONS   // GC: merge GFX into Display
 #		undef CUTSCENE_BORDERS_SWITCH // GC: no cutscene borders toggle
+#	endif
+#	ifdef GAMECUBE
 #		undef PED_CAR_DENSITY_SLIDERS // GC: no ped/car density sliders
 #	endif
 #endif
