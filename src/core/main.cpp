@@ -574,6 +574,9 @@ DoFade(void)
 		if(FrontEndMenuManager.m_bMenuActive)
 			brightness = 256;
 
+		if(TheCamera.m_FadeTargetIsSplashScreen)
+			fadeValue = 0;
+
 		float fade = fadeValue + 256 - brightness;
 		if(fade == 0){
 			fadeColor.r = 0;
@@ -592,6 +595,15 @@ DoFade(void)
 
 		TheCamera.GetScreenRect(rect);
 		CSprite2d::DrawRect(rect, fadeColor);
+
+		if(CDraw::FadeValue != 0 && TheCamera.m_FadeTargetIsSplashScreen){
+			RwRenderStateSet(rwRENDERSTATETEXTUREFILTER, (void*)rwFILTERLINEAR);
+			fadeColor.r = 255;
+			fadeColor.g = 255;
+			fadeColor.b = 255;
+			fadeColor.a = CDraw::FadeValue;
+			splash->Draw(CRect(0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT), fadeColor, fadeColor, fadeColor, fadeColor);
+		}
 
 	}
 }

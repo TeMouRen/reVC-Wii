@@ -3838,6 +3838,7 @@ CCamera::Fade(float timeout, int16 direction)
 void
 CCamera::SetFadeColour(uint8 r, uint8 g, uint8 b)
 {
+	m_FadeTargetIsSplashScreen = r == 2 && g == 2 && b == 2;
 	CDraw::FadeRed = r;
 	CDraw::FadeGreen = g;
 	CDraw::FadeBlue = b;
