@@ -69,7 +69,7 @@ static uint32 gWiiLodHoleFillProbeFrame;
 #endif
 
 // Find the actual near entity referenced by this world LOD. The near model is
-// used only outside its normal fade range and only after its streamed resource
+// used only outside its normal draw range and only after its streamed resource
 // is already loaded; this does not extend the streaming or GX admission policy.
 static CEntity *
 WiiPrepareRelatedNearEntity(CEntity *lod)
@@ -136,7 +136,7 @@ WiiPrepareRelatedNearEntity(CEntity *lod)
 
 	float cameraDistance = (nearest->GetPosition() - TheCamera.GetPosition()).Magnitude();
 	if(cameraDistance >= LOD_DISTANCE ||
-	   nearMi->GetAtomicFromDistance(cameraDistance - FADE_DISTANCE) != nil)
+	   nearMi->GetAtomicFromDistance(cameraDistance) != nil)
 		return nil;
 
 	if(nearest->m_rwObject == nil)
@@ -192,6 +192,15 @@ WiiIsLodHoleFillQueued(CEntity *lod)
 {
 	for(int32 i = 0; i < gWiiLodHoleFillPairCount; i++)
 		if(gWiiLodHoleFillPairs[i].lod == lod)
+			return true;
+	return false;
+}
+
+static bool
+WiiIsLodHoleFillNearEntity(CEntity *nearEntity)
+{
+	for(int32 i = 0; i < gWiiLodHoleFillPairCount; i++)
+		if(gWiiLodHoleFillPairs[i].nearEntity == nearEntity)
 			return true;
 	return false;
 }
@@ -1367,6 +1376,13 @@ CRenderer::SetupEntityVisibility(CEntity *ent)
 
 	if(!IsAreaVisible(ent->m_area))
 		return VIS_INVISIBLE;
+
+#ifdef WII
+	// The paired big-building pass owns this entity until its normal draw
+	// range begins. Do not also enqueue its distance-faded copy.
+	if(WiiIsLodHoleFillNearEntity(ent))
+		return VIS_INVISIBLE;
+#endif
 
 	dist = (ent->GetPosition() - ms_vecCameraPosition).Magnitude();
 

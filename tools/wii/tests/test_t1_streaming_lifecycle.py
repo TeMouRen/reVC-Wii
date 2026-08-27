@@ -126,9 +126,13 @@ class T1StreamingLifecycleTests(unittest.TestCase):
         self.assertIn("candidate->m_area != lod->m_area", prepare)
         self.assertIn("candidate->m_level != lod->m_level", prepare)
         self.assertIn("SQR(0.25f)", prepare)
-        self.assertIn("nearMi->GetAtomicFromDistance(cameraDistance - FADE_DISTANCE)", prepare)
+        self.assertIn("nearMi->GetAtomicFromDistance(cameraDistance)", prepare)
         self.assertIn("nearest->CreateRwObject()", prepare)
         self.assertIn("nearMi->m_alpha = 255", prepare)
+
+        setup = function_body(RENDERER_SOURCE, "CRenderer::SetupEntityVisibility(CEntity *ent)")
+        self.assertIn("WiiIsLodHoleFillNearEntity(ent)", setup)
+        self.assertIn("return VIS_INVISIBLE", setup)
 
         render = function_body(RENDERER_SOURCE, "CRenderer::RenderEverythingBarRoads(void)")
         self.assertIn("WiiIsLodHoleFillQueued(e)", render)
