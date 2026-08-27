@@ -108,9 +108,8 @@ class T1StreamingLifecycleTests(unittest.TestCase):
 
     def test_visible_buildings_keep_original_lod_handoff_boundary(self) -> None:
         setup = function_body(RENDERER_SOURCE, "CRenderer::SetupEntityVisibility(CEntity *ent)")
-        self.assertIn("WiiHasLoadedNearbyBigBuilding(ent)", setup)
-        self.assertIn("STREAMSTATE_LOADED", setup)
-        self.assertIn("mi->GetFirstAtomicFromDistance(0.0f)", setup)
+        self.assertNotIn("WiiIsLoadedRelatedLodEntity", setup)
+        self.assertNotIn("a = mi->GetFirstAtomicFromDistance(0.0f)", setup)
 
         render_one = function_body(RENDERER_SOURCE, "CRenderer::RenderOneBuilding(CEntity *ent, float camdist)")
         self.assertIn("if(lodatm == nil){", render_one)
@@ -118,6 +117,26 @@ class T1StreamingLifecycleTests(unittest.TestCase):
         self.assertIn("usedCurrentAtomic", render_one)
 
         self.assertIn("if(lodatm == nil)\n\t\tlodatm = atomic;", VISIBILITY_SOURCE)
+
+    def test_lod_hole_fill_uses_related_loaded_near_geometry_only(self) -> None:
+        prepare = function_body(RENDERER_SOURCE, "WiiPrepareRelatedNearEntity(CEntity *lod)")
+        self.assertIn("lodMi->GetRelatedModel()", prepare)
+        self.assertIn("STREAMSTATE_LOADED", prepare)
+        self.assertIn("nearMi->m_drawLast || nearMi->m_additive || nearMi->m_noZwrite", prepare)
+        self.assertIn("candidate->m_area != lod->m_area", prepare)
+        self.assertIn("candidate->m_level != lod->m_level", prepare)
+        self.assertIn("SQR(0.25f)", prepare)
+        self.assertIn("nearMi->GetAtomicFromDistance(cameraDistance - FADE_DISTANCE)", prepare)
+        self.assertIn("nearest->CreateRwObject()", prepare)
+
+        render = function_body(RENDERER_SOURCE, "CRenderer::RenderEverythingBarRoads(void)")
+        self.assertIn("WiiIsLodHoleFillQueued(e)", render)
+        self.assertNotIn("WiiPrepareRelatedNearEntity", render)
+        self.assertIn("rwRENDERSTATEZWRITEENABLE, (void*)FALSE", render)
+        self.assertIn("RenderOneNonRoad(gWiiLodHoleFillPairs[i].nearEntity)", render)
+        self.assertIn("rwRENDERSTATEZWRITEENABLE, (void*)TRUE", render)
+        self.assertIn("RenderOneNonRoad(gWiiLodHoleFillPairs[i].lod)", render)
+        self.assertIn("[WII-LOD-HOLE-FILL]", RENDERER_SOURCE)
 
     def test_cam_jones_probe_covers_near_door_and_extended_facade(self) -> None:
         self.assertIn("if(modelId == 826)", RENDERER_SOURCE)

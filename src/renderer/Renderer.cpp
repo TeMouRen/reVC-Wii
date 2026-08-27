@@ -56,27 +56,139 @@ WiiDisableDistanceFade(const CSimpleModelInfo *mi)
 	return mi->m_drawLast || mi->m_additive || mi->m_noZwrite;
 }
 
-// Diagnostic baseline from ec50046: keep a loaded short-range building
-// component available while a nearby world LOD is resident. This intentionally
-// restores the pre-flicker-fix behavior so the full handoff can be audited.
-static bool
-WiiHasLoadedNearbyBigBuilding(CEntity *ent)
+struct WiiLodHoleFillPair
 {
-	const float radiusSq = SQR(32.0f);
-	eLevelName levels[2] = { CGame::currLevel, LEVEL_GENERIC };
-	for(int i = 0; i < 2; i++){
-		if(i == 1 && levels[1] == levels[0])
-			continue;
-		CPtrList &list = CWorld::GetBigBuildingList(levels[i]);
-		for(CPtrNode *node = list.first; node; node = node->next){
-			CEntity *big = (CEntity*)node->item;
-			if(big == ent || !big->bIsBIGBuilding ||
-			   big->m_rwObject == nil || !big->bIsVisible)
-				continue;
-			if((big->GetPosition() - ent->GetPosition()).MagnitudeSqr() <= radiusSq)
-				return true;
+	CEntity *lod;
+	CEntity *nearEntity;
+};
+
+static WiiLodHoleFillPair gWiiLodHoleFillPairs[NUMVISIBLEENTITIES];
+static int32 gWiiLodHoleFillPairCount;
+#if WII_STREAM_BIG_BUILDING_PROBE
+static uint32 gWiiLodHoleFillProbeFrame;
+#endif
+
+// Find the actual near entity referenced by this world LOD. The near model is
+// used only outside its normal fade range and only after its streamed resource
+// is already loaded; this does not extend the streaming or GX admission policy.
+static CEntity *
+WiiPrepareRelatedNearEntity(CEntity *lod)
+{
+	if(lod == nil || !lod->IsBuilding() || !lod->bIsBIGBuilding ||
+	   !lod->bIsVisible || lod->m_rwObject == nil)
+		return nil;
+
+	CBaseModelInfo *lodBase = CModelInfo::GetModelInfo(lod->GetModelIndex());
+	if(lodBase == nil || !lodBase->IsSimple())
+		return nil;
+	CSimpleModelInfo *lodMi = (CSimpleModelInfo*)lodBase;
+	CSimpleModelInfo *nearMi = lodMi->GetRelatedModel();
+	if(nearMi == nil || nearMi->GetRwObject() == nil ||
+	   nearMi->m_drawLast || nearMi->m_additive || nearMi->m_noZwrite)
+		return nil;
+
+	const float radius = 32.0f;
+	const CVector &lodPos = lod->GetPosition();
+	int minX = CWorld::GetSectorIndexX(lodPos.x - radius);
+	int minY = CWorld::GetSectorIndexY(lodPos.y - radius);
+	int maxX = CWorld::GetSectorIndexX(lodPos.x + radius);
+	int maxY = CWorld::GetSectorIndexY(lodPos.y + radius);
+	if(minX < 0) minX = 0;
+	if(minY < 0) minY = 0;
+	if(maxX >= NUMSECTORS_X) maxX = NUMSECTORS_X - 1;
+	if(maxY >= NUMSECTORS_Y) maxY = NUMSECTORS_Y - 1;
+
+	CEntity *nearest = nil;
+	float nearestDistanceSq = SQR(0.25f);
+	for(int y = minY; y <= maxY; y++)
+		for(int x = minX; x <= maxX; x++){
+			CSector *sector = CWorld::GetSector(x, y);
+			CPtrList *lists[2] = {
+				&sector->m_lists[ENTITYLIST_BUILDINGS],
+				&sector->m_lists[ENTITYLIST_BUILDINGS_OVERLAP]
+			};
+			for(int listIndex = 0; listIndex < 2; listIndex++)
+				for(CPtrNode *node = lists[listIndex]->first; node; node = node->next){
+					CEntity *candidate = (CEntity*)node->item;
+					if(candidate == nil || candidate == lod || !candidate->IsBuilding() ||
+					   candidate->bIsBIGBuilding || !candidate->bIsVisible ||
+					   candidate->m_area != lod->m_area ||
+					   candidate->m_level != lod->m_level ||
+					   !candidate->GetIsOnScreen() ||
+					   CModelInfo::GetModelInfo(candidate->GetModelIndex()) != nearMi)
+						continue;
+					float distanceSq = (candidate->GetPosition() - lodPos).MagnitudeSqr();
+					if(distanceSq <= nearestDistanceSq &&
+					   DotProduct(candidate->GetForward(), lod->GetForward()) > 0.999f &&
+					   DotProduct(candidate->GetUp(), lod->GetUp()) > 0.999f){
+						nearest = candidate;
+						nearestDistanceSq = distanceSq;
+					}
+				}
 		}
+
+	if(nearest == nil || nearest->bDrawLast)
+		return nil;
+	int32 modelId = nearest->GetModelIndex();
+	if(modelId < 0 || modelId >= STREAM_OFFSET_TXD ||
+	   CStreaming::ms_aInfoForModel[modelId].m_loadState != STREAMSTATE_LOADED)
+		return nil;
+
+	float cameraDistance = (nearest->GetPosition() - TheCamera.GetPosition()).Magnitude();
+	if(cameraDistance >= LOD_DISTANCE ||
+	   nearMi->GetAtomicFromDistance(cameraDistance - FADE_DISTANCE) != nil)
+		return nil;
+
+	if(nearest->m_rwObject == nil)
+		nearest->CreateRwObject();
+	if(nearest->m_rwObject == nil || RwObjectGetType(nearest->m_rwObject) != rpATOMIC)
+		return nil;
+
+	RpAtomic *nearAtomic = nearMi->GetFirstAtomicFromDistance(0.0f);
+	RpAtomic *entityAtomic = (RpAtomic*)nearest->m_rwObject;
+	if(nearAtomic == nil)
+		return nil;
+	if(RpAtomicGetGeometry(nearAtomic) != RpAtomicGetGeometry(entityAtomic))
+		RpAtomicSetGeometry(entityAtomic, RpAtomicGetGeometry(nearAtomic),
+		                    rpATOMICSAMEBOUNDINGSPHERE);
+	return nearest;
+}
+
+static void
+WiiQueueLodHoleFill(CEntity *lod)
+{
+	if(gWiiLodHoleFillPairCount >= NUMVISIBLEENTITIES)
+		return;
+	for(int32 i = 0; i < gWiiLodHoleFillPairCount; i++)
+		if(gWiiLodHoleFillPairs[i].lod == lod)
+			return;
+	CEntity *nearEntity = WiiPrepareRelatedNearEntity(lod);
+	if(nearEntity == nil)
+		return;
+	WiiLodHoleFillPair &pair = gWiiLodHoleFillPairs[gWiiLodHoleFillPairCount++];
+	pair.lod = lod;
+	pair.nearEntity = nearEntity;
+#if WII_STREAM_BIG_BUILDING_PROBE
+	uint32 frame = CTimer::GetFrameCounter();
+	if(lod->GetModelIndex() == 775 && frame - gWiiLodHoleFillProbeFrame >= 120){
+		gWiiLodHoleFillProbeFrame = frame;
+		printf("[WII-LOD-HOLE-FILL] frame=%u lod=%d('%s') near=%d('%s') "
+		       "dist=%.3f mode=near-color-then-lod-depth\n",
+		       (unsigned)frame, lod->GetModelIndex(),
+		       CModelInfo::GetModelInfo(lod->GetModelIndex())->GetModelName(),
+		       nearEntity->GetModelIndex(),
+		       CModelInfo::GetModelInfo(nearEntity->GetModelIndex())->GetModelName(),
+		       (nearEntity->GetPosition() - TheCamera.GetPosition()).Magnitude());
 	}
+#endif
+}
+
+static bool
+WiiIsLodHoleFillQueued(CEntity *lod)
+{
+	for(int32 i = 0; i < gWiiLodHoleFillPairCount; i++)
+		if(gWiiLodHoleFillPairs[i].lod == lod)
+			return true;
 	return false;
 }
 
@@ -509,6 +621,11 @@ CRenderer::RenderEverythingBarRoads(void)
 		if(IsRoad(e))
 			continue;
 
+#ifdef WII
+		if(e->IsBuilding() && e->bIsBIGBuilding && WiiIsLodHoleFillQueued(e))
+			continue;
+#endif
+
 #ifdef EXTENDED_PIPELINES
 		if(CustomPipes::bRenderingEnvMap && (e->IsPed() || e->IsVehicle()))
 			continue;
@@ -530,6 +647,18 @@ CRenderer::RenderEverythingBarRoads(void)
 		}else
 			RenderOneNonRoad(e);
 	}
+#ifdef WII
+	// Composite these pairs after the opaque list. The near entity first fills
+	// color without changing depth; the normal LOD draw then covers every pixel
+	// it owns. Existing foreground depth remains authoritative, while only real
+	// holes in the LOD retain the near geometry.
+	for(i = 0; i < gWiiLodHoleFillPairCount; i++){
+		RwRenderStateSet(rwRENDERSTATEZWRITEENABLE, (void*)FALSE);
+		RenderOneNonRoad(gWiiLodHoleFillPairs[i].nearEntity);
+		RwRenderStateSet(rwRENDERSTATEZWRITEENABLE, (void*)TRUE);
+		RenderOneNonRoad(gWiiLodHoleFillPairs[i].lod);
+	}
+#endif
 	POP_RENDERGROUP();
 }
 
@@ -1254,14 +1383,6 @@ CRenderer::SetupEntityVisibility(CEntity *ent)
 		mi->m_isDamaged = true;
 
 	RpAtomic *a = mi->GetAtomicFromDistance(dist);
-#ifdef WII
-	if(a == nil && ent->IsBuilding() && !ent->bIsBIGBuilding &&
-	   ent->GetIsOnScreen() && dist < LOD_DISTANCE &&
-	   CStreaming::ms_aInfoForModel[ent->GetModelIndex()].m_loadState ==
-	   STREAMSTATE_LOADED && mi->GetRwObject() != nil &&
-	   WiiHasLoadedNearbyBigBuilding(ent))
-		a = mi->GetFirstAtomicFromDistance(0.0f);
-#endif
 	if(a){
 		mi->m_isDamaged = false;
 		if(ent->m_rwObject == nil)
@@ -1545,6 +1666,9 @@ CRenderer::ConstructRenderList(void)
 	ms_nNoOfInVisibleEntities = 0;
 }
 	ms_vecCameraPosition = TheCamera.GetPosition();
+#ifdef WII
+	gWiiLodHoleFillPairCount = 0;
+#endif
 
 	// unused
 	pFullBlockedRanges = nil;
@@ -2085,6 +2209,9 @@ CRenderer::ScanBigBuildingList(CPtrList &list)
 				CStreaming::ProbeBigBuilding("visible_missing", ent->GetModelIndex(),
 				                             0, "visible_without_rw");
 #endif
+		#ifdef WII
+			WiiQueueLodHoleFill(ent);
+		#endif
 			InsertEntityIntoList(ent);
 			ent->bOffscreen = false;
 			break;
