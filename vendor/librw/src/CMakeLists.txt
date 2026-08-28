@@ -61,7 +61,11 @@ set(LIBRW_D3D8_COMPAT_SOURCES
 
 set(LIBRW_GX_SOURCES
     gx/gxdevice.cpp
-    gx/gxim2d_fixed.cpp
+    # The legacy GX Im2D path is the one used by the last known runnable Wii
+    # build.  Intro splash fades and HUD quads rely on its original blend and
+    # depth setup; keep the experimental state-sensitive replacement out of
+    # the production target until it is proven equivalent.
+    gx/gxim2d.cpp
     gx/gxmatfx.cpp
     gx/gxmemory.cpp
     gx/gxpipe.cpp
