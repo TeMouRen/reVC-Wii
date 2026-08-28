@@ -50,7 +50,6 @@ static GXRModeObj *rmode   = NULL;
 static void       *xfb     = NULL;
 #define DEFAULT_FIFO_SIZE (256u * 1024u)
 static void       *gp_fifo = NULL;
-static bool        gGcDidSyntheticFirstRestart = false;
 static volatile bool gWiiExitRequested = false;
 static volatile int  gWiiExitReason    = 0;
 static bool        gWiiPresentedThisFrame = false;
@@ -850,39 +849,64 @@ int main(int argc, char *argv[]) {
     extern void InitialiseGame(void);
     extern bool b_FoundRecentSavedGameWantToLoad;
 
-    SYS_Report("[reVC-WII] Entering Frontend Loop...\n");
+    enum WiiGameState {
+        WII_FRONTEND,
+        WII_INIT_PLAYING_GAME,
+        WII_PLAYING_GAME
+    };
+    WiiGameState gameState = WII_FRONTEND;
+    bool firstGameFrame = true;
+    int gameFrames = 0;
+
+    SYS_Report("[reVC-WII] Entering shared frontend/game lifecycle...\n");
     WiiResetLoopTimingMarks();
 
     while (!RsGlobal.quit) {
-        WiiWaitForVideoSyncAndMeasure(true);
+        if (gameState == WII_FRONTEND) {
+            WiiWaitForVideoSyncAndMeasure(true);
+            PAD_ScanPads();
+            if (gWiiExitRequested)
+                break;
 
-        PAD_ScanPads();
-        if (gWiiExitRequested)
-            break;
+            gWiiPresentedThisFrame = false;
+            FrontendIdle();
+            if (gWiiExitRequested)
+                break;
 
-        gWiiPresentedThisFrame = false;
+            if (!FrontEndMenuManager.m_bMenuActive ||
+                FrontEndMenuManager.m_bWantToLoad ||
+                FrontEndMenuManager.m_bWantToRestart) {
+                gameState = WII_INIT_PLAYING_GAME;
+                continue;
+            }
 
-		//DIAG_LOG("[WII] -- Frame %d Start --\n", g_diagFrame);
-        FrontendIdle();
-        if (gWiiExitRequested)
-            break;
-		//DIAG_LOG("[WII] -- FrontendIdle done --\n");
+            g_diagFrame++;
+            if (g_diagFrame == 1) {
+                int errs = 0;
+                for (int i = 0; i < 64; i++) {
+                    if (_guard_before[i] != 0xDEADBEEF) errs++;
+                    if (_guard_after[i]  != 0xBEEFDEAD) errs++;
+                }
+                if (errs > 0)
+                    DIAG_ERROR("GUARD CORRUPTED: %d words damaged!\n", errs);
+                else
+                    SYS_Report("[reVC-WII] GUARD: OK, no memory corruption detected\n");
+            }
+            continue;
+        }
 
-        // â?New Game / Load Game transition
-        // m_bWantToLoad: è¯»æ¡£æµç¨è®¾ç½® | m_bWantToRestart: æ°æ¸¸ææµç¨è®¾ç½?
-        if (FrontEndMenuManager.m_bWantToLoad || FrontEndMenuManager.m_bWantToRestart) {
+        if (gameState == WII_INIT_PLAYING_GAME) {
             const bool wantsInitialLoad = FrontEndMenuManager.m_bWantToLoad;
             if (FrontEndMenuManager.m_bSpritesLoaded) {
-                SYS_Report("[reVC-WII] First transition: unloading frontend textures before InitialiseGame()\n");
                 FrontEndMenuManager.UnloadTextures();
                 FrontEndMenuManager.m_bMenuActive = false;
             }
-            SYS_Report("[reVC-WII] Loading game world...\n");
+
             SYS_Report("[reVC-WII] InitialiseGame() START\n");
             InitialiseGame();
             SYS_Report("[reVC-WII] InitialiseGame() DONE\n");
+
             if (wantsInitialLoad) {
-                SYS_Report("[reVC-WII] First transition requested save load. Running synthetic restart/load path.\n");
                 CPad::ResetCheats();
                 CPad::StopPadsShaking();
                 DMAudio.ChangeMusicMode(MUSICMODE_DISABLE);
@@ -890,54 +914,26 @@ int main(int argc, char *argv[]) {
                 CTimer::Stop();
                 CGame::InitialiseWhenRestarting();
                 FrontEndMenuManager.m_bWantToRestart = false;
-                SYS_Report("[reVC-WII] Synthetic first restart/load complete.\n");
             }
+
             WiiRestoreAudioFadeAfterLoad();
             DMAudio.ChangeMusicMode(MUSICMODE_GAME);
-            // Splash ownership remains with the script/cutscene lifecycle.
-            // Destroying it here made DoFade() lose the intro picture before
-            // the black-to-picture transition could be rendered.
             FrontEndMenuManager.m_bGameNotLoaded = false;
             FrontEndMenuManager.m_bWantToRestart = false;
-            if (!gGcDidSyntheticFirstRestart) {
-                SYS_Report("[reVC-WII] Frontend transition: direct gameplay handoff enabled, synthetic first restart disabled\n");
-                gGcDidSyntheticFirstRestart = true;
-            }
             GcResetPadStateForGameplay();
-            // The first gameplay frame is submitted immediately below.  The
-            // loading path has just presented its current splash; waiting for
-            // another retrace before the first shared Idle() leaves that
-            // full-bright image on screen and skips the intro's first visible
-            // DoFade() result.
-            SYS_Report("[reVC-WII] Game world loaded. Entering game loop.\n");
-            break;
+
+            gameState = WII_PLAYING_GAME;
+            firstGameFrame = true;
+            gameFrames = 0;
+            WiiResetLoopTimingMarks();
         }
 
-        g_diagFrame++;
+        if (gameState != WII_PLAYING_GAME)
+            continue;
 
-        // Check guard arrays on first frame
-        if (g_diagFrame == 1) {
-            int errs = 0;
-            for (int i = 0; i < 64; i++) {
-                if (_guard_before[i] != 0xDEADBEEF) errs++;
-                if (_guard_after[i]  != 0xBEEFDEAD) errs++;
-            }
-            if (errs > 0)
-                DIAG_ERROR("GUARD CORRUPTED: %d words damaged!\n", errs);
-            else
-                SYS_Report("[reVC-WII] GUARD: OK, no memory corruption detected\n");
-        }
-		/*        if (g_diagFrame % 60 == 0)*/
-    }
-
-    SYS_Report("[reVC-WII] Frontend loop exited. Total frames: %d\n", g_diagFrame);
-
-    // ââ Game Loop ââ
-    SYS_Report("[reVC-WII] Entering Game Loop...\n");
-    WiiResetLoopTimingMarks();
-    int gameFrames = 0;
-    bool firstGameFrame = true;
-    while (!RsGlobal.quit) {
+        // The first frame after initialization is submitted immediately.
+        // Subsequent frames follow the Wii retrace bridge, while shared Idle
+        // owns all rendering and fade processing.
         if (!firstGameFrame)
             WiiWaitForVideoSyncAndMeasure(false);
         firstGameFrame = false;
@@ -947,21 +943,13 @@ int main(int argc, char *argv[]) {
             break;
 
         gWiiPresentedThisFrame = false;
-
         Idle((void*)0x00000001);
         if (gWiiExitRequested)
             break;
 
-        if (FrontEndMenuManager.m_bWantToRestart || b_FoundRecentSavedGameWantToLoad) {
-            SYS_Report("[reVC-WII] Restart/load requested: restart=%d recentLoad=%d wantLoad=%d demo=%d time=%d cut=%s cutStatus=%u cutRun=%d. Reinitialising game.\n",
-                FrontEndMenuManager.m_bWantToRestart,
-                b_FoundRecentSavedGameWantToLoad,
-                FrontEndMenuManager.m_bWantToLoad,
-                CGame::bDemoMode ? 1 : 0,
-                CTimer::GetTimeInMilliseconds(),
-                CCutsceneMgr::GetCutsceneName(),
-                CCutsceneMgr::ms_cutsceneLoadStatus,
-                CCutsceneMgr::IsRunning());
+        if (FrontEndMenuManager.m_bWantToRestart ||
+            b_FoundRecentSavedGameWantToLoad) {
+            SYS_Report("[reVC-WII] Restart/load requested; reinitialising game.\n");
 
             CPad::ResetCheats();
             CPad::StopPadsShaking();
@@ -978,14 +966,11 @@ int main(int argc, char *argv[]) {
             WiiRestoreAudioFadeAfterLoad();
             DMAudio.ChangeMusicMode(MUSICMODE_GAME);
             FrontEndMenuManager.m_bWantToRestart = false;
-            // Keep script-owned splash textures alive across restart/load;
-            // LoadSplash/ShutdownRenderWare release them at their boundary.
             GcResetPadStateForGameplay();
-            Idle(NULL);
 
+            firstGameFrame = true;
             gameFrames = 0;
             WiiResetLoopTimingMarks();
-            SYS_Report("[reVC-WII] Restart/load complete. Continuing game loop.\n");
             continue;
         }
         gameFrames++;
