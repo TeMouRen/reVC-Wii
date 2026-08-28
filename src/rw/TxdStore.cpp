@@ -11,6 +11,14 @@ RwTexDictionary *CTxdStore::ms_pStoredTxd;
 static int g_loadingTxdSlot = -1;
 static char g_loadingTxdName[20];
 
+#ifdef WII
+bool
+RwWiiIsLoadingSplashTxd(void)
+{
+	return strcmp(g_loadingTxdName, "splash") == 0;
+}
+#endif
+
 // Define GX_MISSING_TEXTURE_DIAGNOSTICS for targeted alias/TXD lifetime probes.
 
 static void

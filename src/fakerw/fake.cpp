@@ -23,6 +23,17 @@
 
 using namespace rw;
 
+#if defined(RW_GX) && defined(WII)
+static bool
+ShouldReadExternalTxdNative(void)
+{
+	// LoadSplash() loads files from TXD\\ through the dedicated "splash"
+	// dictionary slot. Keep the legacy native reader scoped to that one-shot
+	// path; streamed MODELS TXDs must remain GX-native only.
+	return RwWiiIsLoadingSplashTxd();
+}
+#endif
+
 #ifdef WII
 static bool
 IsCriticalUiRwAlloc(size_t size)
@@ -426,6 +437,19 @@ fakeShouldLogFocusedConversionResult(const char *name)
 RwBool rwNativeTextureHackRead(RwStream *stream, RwTexture **tex, RwInt32 size)
 {
 	*tex = Texture::streamReadNative(stream);
+	#if defined(RW_GX) && defined(WII)
+	if(*tex == nil && ShouldReadExternalTxdNative()){
+		// The GX reader has consumed the STRUCT header and platform word before
+		// rejecting D3D8. Rewind to the chunk start for the legacy reader.
+		((rw::Stream*)stream)->seek(-16);
+		*tex = d3d8::readNativeTexture((rw::Stream*)stream);
+		if(*tex != nil)
+			printf("[TXD-NATIVE] D3D8 source accepted txd=%s size=%d texture=%s\n",
+			       "splash",
+			       (int)size,
+			       (*tex)->name);
+	}
+	#endif
 	if(*tex == nil){
 		printf("[TXD-FAIL] rwNativeTextureHackRead: streamReadNative failed size=%d\n", (int)size);
 		return false;

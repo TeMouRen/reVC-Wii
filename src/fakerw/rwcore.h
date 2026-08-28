@@ -7,6 +7,11 @@
 
 #include <rwplcore.h>
 
+#ifdef WII
+/* True while a TXD from the external TXD\\ directory is being read. */
+bool RwWiiIsLoadingSplashTxd(void);
+#endif
+
 /*
  ***********************************************
  *
