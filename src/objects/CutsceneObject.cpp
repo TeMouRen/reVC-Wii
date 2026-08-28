@@ -80,6 +80,8 @@ CCutsceneObject::CreateShadow(void)
 void
 CCutsceneObject::ProcessControl(void)
 {
+	CPhysical::ProcessControl();
+
 	if ( m_pAttachTo )
 	{
 		if ( m_pAttachmentObject )
@@ -97,7 +99,6 @@ CCutsceneObject::ProcessControl(void)
 		ApplyMoveSpeed();
 	}
 
-	CPhysical::ProcessControl();
 }
 
 static RpMaterial*

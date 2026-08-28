@@ -269,6 +269,10 @@ CCutsceneMgr::LoadCutsceneData(const char *szCutsceneName)
 	if (!bIsEverythingRemovedFromTheWorldForTheBiggestFuckoffCutsceneEver)
 		CStreaming::RemoveCurrentZonesModels();
 
+	// Match upstream: refresh the directory entries before every cutscene load.
+	ms_pCutsceneDir->numEntries = 0;
+	ms_pCutsceneDir->ReadDirFile("ANIM\\CUTS.DIR");
+
 	CStreaming::RemoveUnusedModelsInLoadedList();
 	CGame::DrasticTidyUpMemory(true);
 
@@ -458,6 +462,8 @@ CCutsceneMgr::SetCutsceneAnim(const char *animName, CObject *pObject)
 	}
 	debug("Give cutscene anim %s\n", animName);
 
+	RpAnimBlendClumpRemoveAllAssociations((RpClump*)pObject->m_rwObject);
+
 	pTemplateAnim = ms_cutsceneAssociations.GetAnimation(animName);
 	if (pTemplateAnim == nil || pTemplateAnim->nodes == nil || pTemplateAnim->hierarchy == nil) {
 		debug("\n\nHaven't I told you I can't find the fucking animation %s\n\n\n", animName);
@@ -488,15 +494,6 @@ CCutsceneMgr::SetCutsceneAnim(const char *animName, CObject *pObject)
 		delete pNewAnim;
 		return;
 	}
-	if (pNewAnim->numNodes != pAnimBlendClumpData->numFrames) {
-		printf("[CUTSCENE] anim/clump frame mismatch for %s obj=%p assocFrames=%d clumpFrames=%d\n",
-		       animName, pObject, (int)pNewAnim->numNodes, (int)pAnimBlendClumpData->numFrames);
-		delete pNewAnim;
-		return;
-	}
-
-	RpAnimBlendClumpRemoveAllAssociations((RpClump*)pObject->m_rwObject);
-
 	pNewAnim->SetCurrentTime(0.0f);
 	pNewAnim->flags |= ASSOC_HAS_TRANSLATION;
 	pNewAnim->flags &= ~ASSOC_RUNNING;

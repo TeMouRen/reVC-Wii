@@ -39,7 +39,6 @@
 #include "Streaming.h"
 #include "Vehicle.h"
 #include "CutsceneMgr.h"
-#include "MBlur.h"
 #include "wii_save.h"
 #include "gxmemory.h"
 
@@ -275,37 +274,6 @@ GcResetPadStateForGameplay(void)
         pad->SetMode(0);
     }
     SYS_Report("[reVC-WII] Pad state reset for gameplay handoff\n");
-}
-
-static void
-GcWarmBootSettleFirstGameplay(void)
-{
-    SYS_Report("[reVC-WII] Warm boot settle START\n");
-    rw::gx::texPoolEnforceBudgetImmediate("warm-boot-settle", 32);
-
-    // The restart path rebuilds the world, but it does not eagerly restore
-    // the same initial streaming set as the first full game init.
-    CStreaming::LoadInitialVehicles();
-    CStreaming::LoadInitialPeds();
-    CStreaming::LoadInitialWeapons();
-    CStreaming::RequestBigBuildings(LEVEL_GENERIC);
-    CStreaming::LoadAllRequestedModels(false);
-    CStreaming::LoadAllRequestedModels(false);
-    rw::gx::texPoolEnforceBudgetImmediate("warm-boot-loaded", 32);
-    CTimer::Update();
-
-    // Present a couple of black frames so GX state/front-end leftovers settle
-    // before we expose the first gameplay frame to the user.
-    DoRWStuffStartOfFrame(0, 0, 0, 0, 0, 0, 255);
-    DoRWStuffEndOfFrame();
-    DoRWStuffStartOfFrame(0, 0, 0, 0, 0, 0, 255);
-    DoRWStuffEndOfFrame();
-
-    SYS_Report("[reVC-WII] Warm boot settle budget=%uKB pool=%uKB tex=%d\n",
-               rw::gx::texPoolGetSoftBudget() / 1024,
-               rw::gx::texPoolTotalBytes() / 1024,
-               rw::gx::texPoolCount());
-    SYS_Report("[reVC-WII] Warm boot settle DONE\n");
 }
 
 // Guard padding to detect memory corruption around RsGlobal
@@ -878,6 +846,7 @@ int main(int argc, char *argv[]) {
     // FrontendIdle() â?PC/PS2 èåä¸»å¾ªç?(å®ä¹å?main.cpp)
     // æ¯å®æ?Idle() æ´è½»é? ä¸å è½½æ¸¸ææ°æ®ãä¸åå§åä¸çãä¸æ¸²æ3D
     extern void FrontendIdle(void);
+    extern void Idle(void *arg);
     extern void InitialiseGame(void);
     extern bool b_FoundRecentSavedGameWantToLoad;
 
@@ -925,8 +894,6 @@ int main(int argc, char *argv[]) {
             }
             WiiRestoreAudioFadeAfterLoad();
             DMAudio.ChangeMusicMode(MUSICMODE_GAME);
-            CMBlur::ResetHistory();
-            SYS_Report("[reVC-WII] Reset blur history after InitialiseGame()\n");
             // Splash ownership remains with the script/cutscene lifecycle.
             // Destroying it here made DoFade() lose the intro picture before
             // the black-to-picture transition could be rendered.
@@ -937,6 +904,12 @@ int main(int argc, char *argv[]) {
                 gGcDidSyntheticFirstRestart = true;
             }
             GcResetPadStateForGameplay();
+            // Let the shared game lifecycle consume the first script frame
+            // before the Wii loop submits a visible gameplay frame.  The
+            // script creates cutscene objects and assigns their animations
+            // after START_CUTSCENE; rendering immediately here exposes their
+            // temporary bind-pose and bypasses the initial fade.
+            Idle(NULL);
             SYS_Report("[reVC-WII] Game world loaded. Entering game loop.\n");
             break;
         }
@@ -961,7 +934,6 @@ int main(int argc, char *argv[]) {
     SYS_Report("[reVC-WII] Frontend loop exited. Total frames: %d\n", g_diagFrame);
 
     // ââ Game Loop ââ
-    extern void Idle(void *arg);
     SYS_Report("[reVC-WII] Entering Game Loop...\n");
     WiiResetLoopTimingMarks();
     int gameFrames = 0;
@@ -1004,11 +976,10 @@ int main(int argc, char *argv[]) {
             WiiRestoreAudioFadeAfterLoad();
             DMAudio.ChangeMusicMode(MUSICMODE_GAME);
             FrontEndMenuManager.m_bWantToRestart = false;
-            CMBlur::ResetHistory();
-            SYS_Report("[reVC-WII] Reset blur history after restart/load\n");
             // Keep script-owned splash textures alive across restart/load;
             // LoadSplash/ShutdownRenderWare release them at their boundary.
             GcResetPadStateForGameplay();
+            Idle(NULL);
 
             gameFrames = 0;
             WiiResetLoopTimingMarks();
