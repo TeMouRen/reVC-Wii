@@ -113,6 +113,56 @@ void gxMemGetPoolStats(uint32 *capacityBytes, uint32 *usedBytes,
 
 GlobalScene Scene;
 #ifdef WII
+// The script splash is also the fade target for the intro sequence.  Keep
+// its name separate from the TXD slot so synchronous Wii loading screens
+// cannot silently replace it between LOAD_SPLASH_SCREEN and DoFade.
+static char gCurrentSplashName[32];
+
+static char
+SplashLowerAscii(char c)
+{
+	return c >= 'A' && c <= 'Z' ? (char)(c - 'A' + 'a') : c;
+}
+
+static bool
+SplashNameStartsWith(const char *name, const char *prefix)
+{
+	if(name == nil || prefix == nil)
+		return false;
+	while(*prefix){
+		if(*name == '\0' || SplashLowerAscii(*name) != SplashLowerAscii(*prefix))
+			return false;
+		name++;
+		prefix++;
+	}
+	return true;
+}
+
+static bool
+CurrentSplashIsIntroSequence(void)
+{
+	return SplashNameStartsWith(gCurrentSplashName, "intro");
+}
+
+static bool
+WiiShouldPreserveScriptSplash(void)
+{
+	return CurrentSplashIsIntroSequence() &&
+		(CGame::playingIntro ||
+		 CCutsceneMgr::IsRunning() ||
+		 CCutsceneMgr::IsCutsceneProcessing() ||
+		 CCutsceneMgr::ms_cutsceneLoadStatus != 0);
+}
+
+static bool
+ShouldProtectActiveIntroSplash(const char *name)
+{
+	return name != nil && WiiShouldPreserveScriptSplash() &&
+		(SplashNameStartsWith(name, "loadsc") ||
+		 SplashNameStartsWith(name, "splash"));
+}
+#endif
+#ifdef WII
 struct WiiFrameDiagnostics {
 	uint32 sequence;
 	double timeStepMs;
@@ -578,7 +628,15 @@ DoFade(void)
 		if(FrontEndMenuManager.m_bMenuActive)
 			brightness = 256;
 
-		if(TheCamera.m_FadeTargetIsSplashScreen)
+		bool useSplashFade = TheCamera.m_FadeTargetIsSplashScreen &&
+			splash != nil && splash->m_pTexture != nil;
+#ifdef WII
+		// A missing or replaced intro TXD must fall back to the ordinary black
+		// fade.  The upstream splash path suppresses that rectangle by design.
+		useSplashFade = useSplashFade && CurrentSplashIsIntroSequence();
+#endif
+
+		if(useSplashFade)
 			fadeValue = 0;
 
 		float fade = fadeValue + 256 - brightness;
@@ -600,7 +658,7 @@ DoFade(void)
 		TheCamera.GetScreenRect(rect);
 		CSprite2d::DrawRect(rect, fadeColor);
 
-		if(CDraw::FadeValue != 0 && TheCamera.m_FadeTargetIsSplashScreen){
+		if(CDraw::FadeValue != 0 && useSplashFade){
 			RwRenderStateSet(rwRENDERSTATETEXTUREFILTER, (void*)rwFILTERLINEAR);
 			fadeColor.r = 255;
 			fadeColor.g = 255;
@@ -903,13 +961,32 @@ LoadSplash(const char *name)
 
 	if(name == nil)
 		return &splash;
+#ifdef WII
+	if(ShouldProtectActiveIntroSplash(name))
+		return &splash;
+#endif
 	if(splashTxdId == -1)
 		splashTxdId = CTxdStore::AddTxdSlot("splash");
 
 	txd = CTxdStore::GetSlot(splashTxdId)->texDict;
 	if(txd)
 		tex = RwTexDictionaryFindNamedTexture(txd, name);
-	// if texture is found, splash was already set up below
+
+#ifdef WII
+	if(tex != nil &&
+	   (splash.m_pTexture == nil || !SplashNameStartsWith(gCurrentSplashName, name) ||
+	    !SplashNameStartsWith(name, gCurrentSplashName))){
+		CTxdStore::PushCurrentTxd();
+		CTxdStore::SetCurrentTxd(splashTxdId);
+		splash.SetTexture(name);
+		CTxdStore::PopCurrentTxd();
+	}
+	if(tex != nil && splash.m_pTexture != nil){
+		strncpy(gCurrentSplashName, name, sizeof(gCurrentSplashName) - 1);
+		gCurrentSplashName[sizeof(gCurrentSplashName) - 1] = '\0';
+		return &splash;
+	}
+#endif
 
 	if(tex == nil){
 		CFileMgr::SetDir("TXD\\");
@@ -920,17 +997,29 @@ LoadSplash(const char *name)
 #endif
 			splash.Delete();
 		}
+	#ifdef WII
+		gCurrentSplashName[0] = '\0';
+	#endif
 		if(txd)
 			CTxdStore::RemoveTxd(splashTxdId);
 #ifdef RW_GX
 		rw::gx::pushCriticalUiUploadContext(name);
 #endif
-		CTxdStore::LoadTxd(splashTxdId, filename);
-		CTxdStore::AddRef(splashTxdId);
-		CTxdStore::PushCurrentTxd();
-		CTxdStore::SetCurrentTxd(splashTxdId);
-		splash.SetTexture(name);
-		CTxdStore::PopCurrentTxd();
+		bool loaded = CTxdStore::LoadTxd(splashTxdId, filename);
+		if(loaded){
+			if(CTxdStore::GetNumRefs(splashTxdId) == 0)
+				CTxdStore::AddRef(splashTxdId);
+			CTxdStore::PushCurrentTxd();
+			CTxdStore::SetCurrentTxd(splashTxdId);
+			splash.SetTexture(name);
+			CTxdStore::PopCurrentTxd();
+		#ifdef WII
+			if(splash.m_pTexture != nil){
+				strncpy(gCurrentSplashName, name, sizeof(gCurrentSplashName) - 1);
+				gCurrentSplashName[sizeof(gCurrentSplashName) - 1] = '\0';
+			}
+		#endif
+		}
 #ifdef RW_GX
 		rw::gx::popCriticalUiUploadContext(name);
 #endif
@@ -947,6 +1036,9 @@ DestroySplashScreen(void)
 	if(splashTxdId != -1)
 		CTxdStore::RemoveTxdSlot(splashTxdId);
 	splashTxdId = -1;
+#ifdef WII
+	gCurrentSplashName[0] = '\0';
+#endif
 }
 
 Const char*
