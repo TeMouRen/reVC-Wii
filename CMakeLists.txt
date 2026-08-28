@@ -14,6 +14,7 @@ option(WII_STREAM_MEMORY_DIAGNOSTICS "Enable detailed Wii streaming diagnostics"
 option(WII_STREAM_MEMORY_DIAGNOSTIC_EVENTS "Emit per-resource Wii streaming diagnostic events" OFF)
 option(WII_STREAM_LIFECYCLE_AUDIT "Emit bounded Wii streaming lifecycle audit events" OFF)
 option(WII_STREAM_BIG_BUILDING_PROBE "Trace visible BIG-building LOD request and retirement decisions" OFF)
+option(GX_MATFX_ENV_ONLY_DEBUG "Draw only the GX MatFX environment pass and emit UV statistics" OFF)
 option(WII_ISLAND_READ_LIVENESS "Keep normal view streaming live during Wii island READ/COMMIT" OFF)
 option(WII_AUDIO_DECODE_ENABLE "Enable Wii audio allocation, decode, and playback" ON)
 set(WII_MEMORY_PROFILE_ID "P7-noaudio-ps2-world-scan" CACHE STRING "Wii memory policy profile identifier")
@@ -250,6 +251,9 @@ if(WII)
         WII_GX_ARENA2_EXPANSION_BYTES=${WII_GX_ARENA2_EXPANSION_BYTES}
         WII_GX_OPAQUE_RGBA8_RGB565_TIER=${WII_GX_OPAQUE_RGBA8_RGB565_TIER_VALUE}
     )
+    if(GX_MATFX_ENV_ONLY_DEBUG)
+        target_compile_definitions(librw PRIVATE GX_MATFX_ENV_ONLY_DEBUG=1)
+    endif()
     if(WII_ISLAND_READ_LIVENESS)
         target_compile_definitions(${EXECUTABLE} PUBLIC WII_ISLAND_READ_LIVENESS=1)
     else()

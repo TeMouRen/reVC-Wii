@@ -8,7 +8,6 @@
 #ifdef GAMECUBE
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "../rwbase.h"
@@ -45,8 +44,11 @@ static MatFxTraceKey s_matFxReadyTrace[GX_MATFX_TRACE_LIMIT];
 static uint32 s_matFxReadyTraceCount = 0;
 static uint32 s_matFxSetupTraceCount = 0;
 static uint32 s_matFxMatrixTraceCount = 0;
-static bool s_envOnlyDebug = false;
-static bool s_envOnlyDebugInit = false;
+static uint32 s_envUvTraceCount = 0;
+
+#ifndef GX_MATFX_ENV_ONLY_DEBUG
+#define GX_MATFX_ENV_ONLY_DEBUG 0
+#endif
 
 static const MatFX::Env *getEnvMap(Material *mat);
 
@@ -66,30 +68,16 @@ struct EnvUvStats
 
 static EnvUvStats s_envUvStats = { false, 0u, 0u, 0u, 0.0f, 0.0f, 0.0f, 0.0f, 0.0, 0.0 };
 
-static bool
-envOnlyDebugEnabled(void)
-{
-    if(!s_envOnlyDebugInit){
-        s_envOnlyDebugInit = true;
-        const char *value = getenv("GX_MATFX_ENV_ONLY_DEBUG");
-        if(value == nil || value[0] == '\0' || value[0] == '0')
-            s_envOnlyDebug = false;
-        else
-            s_envOnlyDebug = true;
-    }
-    return s_envOnlyDebug;
-}
-
 bool
 gxMatFXEnvOnlyDebugActive(void)
 {
-    return envOnlyDebugEnabled();
+    return GX_MATFX_ENV_ONLY_DEBUG != 0;
 }
 
 static bool
 envUvStatsStart(uint32 meshIndex, uint32 passIndex)
 {
-    if(!envOnlyDebugEnabled())
+    if(!gxMatFXEnvOnlyDebugActive())
         return false;
 
     s_envUvStats.active = true;
@@ -128,21 +116,26 @@ envUvStatsFinish(const Material *mat, const Texture *envTex)
 
     double avgU = s_envUvStats.count ? s_envUvStats.sumU / s_envUvStats.count : 0.0;
     double avgV = s_envUvStats.count ? s_envUvStats.sumV / s_envUvStats.count : 0.0;
-    fprintf(stdout,
-            "[GX-MATFX-UV] mat=%p envTex=%p name=%s mesh=%u pass=%u n=%u "
-            "u=[%.5f,%.5f] v=[%.5f,%.5f] avg=(%.5f,%.5f)\n",
-            (void*)mat,
-            (void*)envTex,
-            envTex && envTex->name[0] ? envTex->name : "<none>",
-            (unsigned)s_envUvStats.meshIndex,
-            (unsigned)s_envUvStats.passIndex,
-            (unsigned)s_envUvStats.count,
-            (double)s_envUvStats.minU,
-            (double)s_envUvStats.maxU,
-            (double)s_envUvStats.minV,
-            (double)s_envUvStats.maxV,
-            avgU,
-            avgV);
+    if(s_envUvTraceCount < GX_MATFX_TRACE_LIMIT){
+        s_envUvTraceCount++;
+        fprintf(stdout,
+                "[GX-MATFX-UV] mat=%p envTex=%p name=%s mesh=%u pass=%u n=%u "
+                "u=[%.5f,%.5f] v=[%.5f,%.5f] span=(%.5f,%.5f) avg=(%.5f,%.5f)\n",
+                (void*)mat,
+                (void*)envTex,
+                envTex && envTex->name[0] ? envTex->name : "<none>",
+                (unsigned)s_envUvStats.meshIndex,
+                (unsigned)s_envUvStats.passIndex,
+                (unsigned)s_envUvStats.count,
+                (double)s_envUvStats.minU,
+                (double)s_envUvStats.maxU,
+                (double)s_envUvStats.minV,
+                (double)s_envUvStats.maxV,
+                (double)(s_envUvStats.maxU - s_envUvStats.minU),
+                (double)(s_envUvStats.maxV - s_envUvStats.minV),
+                avgU,
+                avgV);
+    }
     s_envUvStats.active = false;
 }
 
@@ -274,7 +267,7 @@ gxMatFXRecordEnvUVStats(Material *mat, Geometry *geo, const uint16_t *meshIdx,
                         uint32_t numIdx, const Mtx normalMtx,
                         uint32_t meshIndex, uint32_t passIndex)
 {
-    if(!envOnlyDebugEnabled() || mat == nil || geo == nil || meshIdx == nil || numIdx == 0)
+    if(!gxMatFXEnvOnlyDebugActive() || mat == nil || geo == nil || meshIdx == nil || numIdx == 0)
         return;
 
     const MatFX::Env *env = getEnvMap(mat);

@@ -159,6 +159,7 @@ bool gxMatFXEnvUsesAlpha(Material *mat);
 bool gxMatFXEnvOnlyDebugActive(void);
 void gxMatFXRecordEnvUVStats(Material *mat, Geometry *geo,
                              const uint16_t *meshIdx, uint32_t numIdx,
+                             const Mtx normalMtx,
                              uint32_t meshIndex, uint32_t passIndex);
 
 // ── Device lifecycle ────────────────────────────────────────

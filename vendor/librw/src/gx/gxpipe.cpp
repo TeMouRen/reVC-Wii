@@ -1708,6 +1708,15 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
             if(envOnlyDiag){
                 gxMatFXRecordEnvUVStats(md->material, geo, meshIdx, numIdx,
                                         modelView, m, 0);
+                setZCompLocCached(&stateCache, GX_FALSE);
+                setZModeCached(&stateCache,
+                               gxState.zTest ? GX_TRUE : GX_FALSE,
+                               GX_LEQUAL, GX_FALSE);
+                setAlphaCompareCached(&stateCache, GX_ALWAYS, 0,
+                                      GX_AOP_AND, GX_ALWAYS, 0);
+                setBlendModeCached(&stateCache, GX_BM_NONE,
+                                   GX_BL_ONE, GX_BL_ZERO,
+                                   GX_LO_CLEAR, true);
                 drawPipeMesh(geo, meshIdx, numIdx,
                              inst->hasNormals, inst->hasColors,
                              inst->numTexCoords, prim, trace, m, 0);
