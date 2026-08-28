@@ -953,6 +953,9 @@ int8 CRunningScript::ProcessCommands1100To1199(int32 command)
 			tmp[i] = tolower((unsigned char)tmp[i]);
 		m_nIp += KEY_LENGTH_IN_SCRIPT;
 		LoadSplash(tmp);
+#ifdef WII
+		WiiPrepareIntroSplashFade(tmp);
+#endif
 		return 0;
 	/*
 	case COMMAND_SET_CAR_IGNORE_LEVEL_TRANSITIONS:
