@@ -605,6 +605,14 @@ DoFade(void)
 	}
 #endif
 
+#ifdef WII
+	// A script-driven intro splash owns the fade target for the cutscene
+	// handoff. Do not let the generic post-load black hold overwrite the
+	// (2,2,2) splash target before the next frame can render it.
+	if(StillToFadeOut && WiiShouldPreserveScriptSplash())
+		StillToFadeOut = false;
+#endif
+
 #ifdef PS2_MENU
 	if(TheMemoryCard.StillToFadeOut){
 		if(CTimer::GetTimeInMilliseconds() - TheMemoryCard.TimeStartedCountingForFade > TheMemoryCard.TimeToStayFadedBeforeFadeOut){
