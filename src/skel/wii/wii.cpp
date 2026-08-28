@@ -904,12 +904,11 @@ int main(int argc, char *argv[]) {
                 gGcDidSyntheticFirstRestart = true;
             }
             GcResetPadStateForGameplay();
-            // Let the shared game lifecycle consume the first script frame
-            // before the Wii loop submits a visible gameplay frame.  The
-            // script creates cutscene objects and assigns their animations
-            // after START_CUTSCENE; rendering immediately here exposes their
-            // temporary bind-pose and bypasses the initial fade.
-            Idle(NULL);
+            // Enter through the shared visible frame path.  A logic-only
+            // Idle(NULL) here advances the camera fade without calling DoFade
+            // or submitting a raster, which drops the intro's first black
+            // transition.  The normal game loop remains responsible for the
+            // first rendered frame and its cutscene animation state.
             SYS_Report("[reVC-WII] Game world loaded. Entering game loop.\n");
             break;
         }
