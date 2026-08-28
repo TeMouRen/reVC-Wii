@@ -3777,11 +3777,6 @@ CCamera::ProcessFade(void)
 			if (m_fFLOATingFade <= 0.0f) {
 				m_bFading = false;
 				m_fFLOATingFade = 0.0f;
-#ifdef WII
-				// The splash overlay is only the target of this fade.  Once the
-				// intro image has faded out, later script fades must draw normally.
-				m_FadeTargetIsSplashScreen = false;
-#endif
 			}
 		}else if(m_iFadingDirection == FADE_OUT){
 			if(m_fTimeToFadeOut != 0.0f)
