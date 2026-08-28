@@ -169,26 +169,6 @@ WiiNotifyIntroCutsceneStarted(void)
 {
 	gIntroSplashPendingCutscene = false;
 }
-
-void
-WiiPrepareIntroSplashFade(const char *name)
-{
-	if(!SplashNameStartsWith(name, "intro"))
-		return;
-
-	// LOAD_SPLASH_SCREEN is followed by SET_FADE_COLOUR/DO_FADE in the
-	// script.  Seed the camera at the fully covered state so the script's
-	// FADE_IN has a real range even when a Wii loading hold was just cleared.
-	StillToFadeOut = false;
-	JustLoadedDontFadeInYet = false;
-	TimeStartedCountingForFade = 0;
-	TimeToStayFadedBeforeFadeOut = 0;
-	TheCamera.SetFadeColour(2, 2, 2);
-	TheCamera.m_bFading = false;
-	TheCamera.m_FadeTargetIsSplashScreen = true;
-	TheCamera.m_fFLOATingFade = 255.0f;
-	CDraw::FadeValue = 255;
-}
 #endif
 #ifdef WII
 struct WiiFrameDiagnostics {

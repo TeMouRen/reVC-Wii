@@ -964,7 +964,6 @@ int8 CRunningScript::ProcessCommands1100To1199(int32 command)
 			(int)CDraw::FadeValue,
 			TheCamera.m_FadeTargetIsSplashScreen ? 1 : 0,
 			(void*)(loadedSplash != nil ? loadedSplash->m_pTexture : nil));
-		WiiPrepareIntroSplashFade(tmp);
 		printf("[INTRO-PROBE] script LOAD_SPLASH name='%s' after-arm fade=%.1f value=%d target=%d fading=%d\n",
 			tmp,
 			TheCamera.m_fFLOATingFade,
