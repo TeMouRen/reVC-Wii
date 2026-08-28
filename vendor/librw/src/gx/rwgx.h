@@ -13,6 +13,7 @@ namespace rw {
 struct Texture;  // forward declare rw::Texture (defined in rwobjects.h)
 struct Raster;   // forward declare rw::Raster (defined in rwobjects.h)
 struct Material; // forward declare rw::Material (defined in rwobjects.h)
+struct Geometry;  // forward declare rw::Geometry (defined in rwobjects.h)
 struct Stream;  // forward declare rw::Stream (defined in rwbase.h)
 namespace gx {
 
@@ -155,6 +156,10 @@ void *destroyNativeData(void *object, int, int);  // geometry buffer cleanup
 bool gxMatFXEnvReady(Material *mat, bool hasNormals);
 bool gxMatFXSetupEnv(Material *mat, bool baseTextured, bool vertexAlpha);
 bool gxMatFXEnvUsesAlpha(Material *mat);
+bool gxMatFXEnvOnlyDebugActive(void);
+void gxMatFXRecordEnvUVStats(Material *mat, Geometry *geo,
+                             const uint16_t *meshIdx, uint32_t numIdx,
+                             uint32_t meshIndex, uint32_t passIndex);
 
 // ── Device lifecycle ────────────────────────────────────────
 struct EngineOpenParams;

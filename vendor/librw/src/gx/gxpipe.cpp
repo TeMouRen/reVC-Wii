@@ -1518,6 +1518,7 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
 
     // Normal matrix (same as modelView for now)
     GX_LoadNrmMtxImm(modelView, GX_PNMTX0);
+    const bool envOnlyDiag = gxMatFXEnvOnlyDebugActive();
 
     // �?Reload camera projection �?Im2D overwrites it with ortho
     GX_LoadProjectionMtx(gxProjMtx, gxProjType);
@@ -1685,26 +1686,37 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
             continue;
         }
 
-        drawPipeMesh(geo, meshIdx, numIdx,
-                     inst->hasNormals, inst->hasColors,
-                     inst->numTexCoords, prim, trace, m, 0);
-        if(passCount > 1) {
-            setMaterial(md->material, effectiveVertexAlpha, inst->hasColors,
-                        (geo->flags & Geometry::MODULATE) != 0, lights, 1,
-                        &stateCache);
+        if(!envOnlyDiag){
             drawPipeMesh(geo, meshIdx, numIdx,
                          inst->hasNormals, inst->hasColors,
-                         inst->numTexCoords, prim, trace, m, 1);
+                         inst->numTexCoords, prim, trace, m, 0);
+            if(passCount > 1) {
+                setMaterial(md->material, effectiveVertexAlpha, inst->hasColors,
+                            (geo->flags & Geometry::MODULATE) != 0, lights, 1,
+                            &stateCache);
+                drawPipeMesh(geo, meshIdx, numIdx,
+                             inst->hasNormals, inst->hasColors,
+                             inst->numTexCoords, prim, trace, m, 1);
+            }
         }
 
-        // MatFX ENVMAP is a separate reflection contribution. The base pass
-        // above remains identical to the default pipe, while this pass uses
-        // generated normal coordinates and does not write depth. Alpha is
-        // masked in TEV for translucent materials. Reapply the material setup
-        // afterward so texture unit 1 and all MatFX state cannot leak.
+        // MatFX ENVMAP is a separate reflection contribution. In env-only
+        // debug mode, skip the base draw and isolate just this pass.
         if(matFXEnvReady &&
            gxMatFXSetupEnv(md->material, matFXBaseTextured,
                            effectiveVertexAlpha)) {
+            if(envOnlyDiag){
+                gxMatFXRecordEnvUVStats(md->material, geo, meshIdx, numIdx,
+                                        modelView, m, 0);
+                drawPipeMesh(geo, meshIdx, numIdx,
+                             inst->hasNormals, inst->hasColors,
+                             inst->numTexCoords, prim, trace, m, 0);
+                gxSetTexture(nil, 1);
+                setMaterial(md->material, effectiveVertexAlpha, inst->hasColors,
+                            (geo->flags & Geometry::MODULATE) != 0, lights, 0,
+                            &stateCache);
+                continue;
+            }
             setZCompLocCached(&stateCache, GX_FALSE);
             setZModeCached(&stateCache,
                            gxState.zTest ? GX_TRUE : GX_FALSE,

@@ -8,6 +8,8 @@
 #ifdef GAMECUBE
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "../rwbase.h"
 #include "../rwerror.h"
@@ -43,6 +45,106 @@ static MatFxTraceKey s_matFxReadyTrace[GX_MATFX_TRACE_LIMIT];
 static uint32 s_matFxReadyTraceCount = 0;
 static uint32 s_matFxSetupTraceCount = 0;
 static uint32 s_matFxMatrixTraceCount = 0;
+static bool s_envOnlyDebug = false;
+static bool s_envOnlyDebugInit = false;
+
+static const MatFX::Env *getEnvMap(Material *mat);
+
+struct EnvUvStats
+{
+    bool active;
+    uint32 meshIndex;
+    uint32 passIndex;
+    uint32 count;
+    float minU;
+    float minV;
+    float maxU;
+    float maxV;
+    double sumU;
+    double sumV;
+};
+
+static EnvUvStats s_envUvStats = { false, 0u, 0u, 0u, 0.0f, 0.0f, 0.0f, 0.0f, 0.0, 0.0 };
+
+static bool
+envOnlyDebugEnabled(void)
+{
+    if(!s_envOnlyDebugInit){
+        s_envOnlyDebugInit = true;
+        const char *value = getenv("GX_MATFX_ENV_ONLY_DEBUG");
+        if(value == nil || value[0] == '\0' || value[0] == '0')
+            s_envOnlyDebug = false;
+        else
+            s_envOnlyDebug = true;
+    }
+    return s_envOnlyDebug;
+}
+
+bool
+gxMatFXEnvOnlyDebugActive(void)
+{
+    return envOnlyDebugEnabled();
+}
+
+static bool
+envUvStatsStart(uint32 meshIndex, uint32 passIndex)
+{
+    if(!envOnlyDebugEnabled())
+        return false;
+
+    s_envUvStats.active = true;
+    s_envUvStats.meshIndex = meshIndex;
+    s_envUvStats.passIndex = passIndex;
+    s_envUvStats.count = 0u;
+    s_envUvStats.minU = 1.0e30f;
+    s_envUvStats.minV = 1.0e30f;
+    s_envUvStats.maxU = -1.0e30f;
+    s_envUvStats.maxV = -1.0e30f;
+    s_envUvStats.sumU = 0.0;
+    s_envUvStats.sumV = 0.0;
+    return true;
+}
+
+static void
+envUvStatsAdd(float u, float v)
+{
+    if(!s_envUvStats.active)
+        return;
+
+    if(u < s_envUvStats.minU) s_envUvStats.minU = u;
+    if(v < s_envUvStats.minV) s_envUvStats.minV = v;
+    if(u > s_envUvStats.maxU) s_envUvStats.maxU = u;
+    if(v > s_envUvStats.maxV) s_envUvStats.maxV = v;
+    s_envUvStats.sumU += u;
+    s_envUvStats.sumV += v;
+    s_envUvStats.count++;
+}
+
+static void
+envUvStatsFinish(const Material *mat, const Texture *envTex)
+{
+    if(!s_envUvStats.active)
+        return;
+
+    double avgU = s_envUvStats.count ? s_envUvStats.sumU / s_envUvStats.count : 0.0;
+    double avgV = s_envUvStats.count ? s_envUvStats.sumV / s_envUvStats.count : 0.0;
+    fprintf(stdout,
+            "[GX-MATFX-UV] mat=%p envTex=%p name=%s mesh=%u pass=%u n=%u "
+            "u=[%.5f,%.5f] v=[%.5f,%.5f] avg=(%.5f,%.5f)\n",
+            (void*)mat,
+            (void*)envTex,
+            envTex && envTex->name[0] ? envTex->name : "<none>",
+            (unsigned)s_envUvStats.meshIndex,
+            (unsigned)s_envUvStats.passIndex,
+            (unsigned)s_envUvStats.count,
+            (double)s_envUvStats.minU,
+            (double)s_envUvStats.maxU,
+            (double)s_envUvStats.minV,
+            (double)s_envUvStats.maxV,
+            avgU,
+            avgV);
+    s_envUvStats.active = false;
+}
 
 static bool
 matFxTraceReadyOnce(const Material *mat, const Texture *envTex)
@@ -126,6 +228,81 @@ matFxTraceMatrix(const char *mode, const MatFX::Env *env, const Mtx matrix)
             (double)matrix[1][2], (double)matrix[1][3],
             (double)matrix[2][0], (double)matrix[2][1],
             (double)matrix[2][2], (double)matrix[2][3]);
+}
+
+static bool
+buildEnvTexMatrix(const MatFX::Env *env, Mtx envMtx)
+{
+    Mtx mapMtx;
+    guMtxIdentity(mapMtx);
+    mapMtx[0][0] = MatFX::envMapFlipU ? -0.5f : 0.5f;
+    mapMtx[0][3] = 0.5f;
+    mapMtx[1][1] = -0.5f;
+    mapMtx[1][3] = 0.5f;
+
+    if(env == nil)
+        return false;
+
+    if(env->frame == nil){
+        memcpy(envMtx, mapMtx, sizeof(Mtx));
+        return true;
+    }
+
+    Mtx frameMtx;
+    Mtx invFrame;
+    Mtx invView;
+    Mtx normalMtx;
+    rwMatToGxMtx(frameMtx, env->frame->getLTM());
+    if(!guMtxInverse(frameMtx, invFrame)){
+        memcpy(envMtx, mapMtx, sizeof(Mtx));
+        return true;
+    }
+
+    if(!guMtxInverse(gxInvCamLTM, invView))
+        guMtxIdentity(invView);
+
+    invFrame[0][3] = 0.0f;
+    invFrame[1][3] = 0.0f;
+    invFrame[2][3] = 0.0f;
+    guMtxConcat(invFrame, invView, normalMtx);
+    guMtxConcat(mapMtx, normalMtx, envMtx);
+    return true;
+}
+
+void
+gxMatFXRecordEnvUVStats(Material *mat, Geometry *geo, const uint16_t *meshIdx,
+                        uint32_t numIdx, const Mtx normalMtx,
+                        uint32_t meshIndex, uint32_t passIndex)
+{
+    if(!envOnlyDebugEnabled() || mat == nil || geo == nil || meshIdx == nil || numIdx == 0)
+        return;
+
+    const MatFX::Env *env = getEnvMap(mat);
+    V3d *normals = geo->morphTargets && geo->morphTargets[0].normals ?
+                   geo->morphTargets[0].normals : nil;
+    if(env == nil || normals == nil)
+        return;
+
+    Mtx envMtx;
+    if(!buildEnvTexMatrix(env, envMtx))
+        return;
+
+    if(!s_envUvStats.active || s_envUvStats.meshIndex != meshIndex ||
+       s_envUvStats.passIndex != passIndex){
+        envUvStatsStart(meshIndex, passIndex);
+    }
+
+    for(uint32 i = 0; i < numIdx; i++){
+        uint16 vi = meshIdx[i];
+        const V3d &n = normals[vi];
+        float x = normalMtx[0][0] * n.x + normalMtx[0][1] * n.y + normalMtx[0][2] * n.z;
+        float y = normalMtx[1][0] * n.x + normalMtx[1][1] * n.y + normalMtx[1][2] * n.z;
+        float z = normalMtx[2][0] * n.x + normalMtx[2][1] * n.y + normalMtx[2][2] * n.z;
+        float tu = envMtx[0][0] * x + envMtx[0][1] * y + envMtx[0][2] * z + envMtx[0][3];
+        float tv = envMtx[1][0] * x + envMtx[1][1] * y + envMtx[1][2] * z + envMtx[1][3];
+        envUvStatsAdd(tu, tv);
+    }
+    envUvStatsFinish(mat, env->tex);
 }
 
 static GxRaster*
