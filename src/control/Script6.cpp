@@ -35,9 +35,11 @@
 #include "Timer.h"
 #include "Weather.h"
 #include "Zones.h"
+#include "Draw.h"
 #include "main.h"
 #include "GameLogic.h"
 #include "Sprite.h"
+#include "Sprite2d.h"
 #include "CarAI.h"
 #include "Pickups.h"
 #include "Fluff.h"
@@ -947,6 +949,7 @@ int8 CRunningScript::ProcessCommands1100To1199(int32 command)
 		return 0;
 	*/
 	case COMMAND_LOAD_SPLASH_SCREEN:
+	{
 		CTheScripts::ReadTextLabelFromScript(&m_nIp, tmp);
 		tmp[KEY_LENGTH_IN_SCRIPT] = '\0';
 		for (int i = 0; i < KEY_LENGTH_IN_SCRIPT; i++)
@@ -954,9 +957,23 @@ int8 CRunningScript::ProcessCommands1100To1199(int32 command)
 		m_nIp += KEY_LENGTH_IN_SCRIPT;
 		LoadSplash(tmp);
 #ifdef WII
+		CSprite2d *loadedSplash = LoadSplash(nil);
+		printf("[INTRO-PROBE] script LOAD_SPLASH name='%s' before-arm fade=%.1f value=%d target=%d texture=%p\n",
+			tmp,
+			TheCamera.m_fFLOATingFade,
+			(int)CDraw::FadeValue,
+			TheCamera.m_FadeTargetIsSplashScreen ? 1 : 0,
+			(void*)(loadedSplash != nil ? loadedSplash->m_pTexture : nil));
 		WiiPrepareIntroSplashFade(tmp);
+		printf("[INTRO-PROBE] script LOAD_SPLASH name='%s' after-arm fade=%.1f value=%d target=%d fading=%d\n",
+			tmp,
+			TheCamera.m_fFLOATingFade,
+			(int)CDraw::FadeValue,
+			TheCamera.m_FadeTargetIsSplashScreen ? 1 : 0,
+			TheCamera.m_bFading ? 1 : 0);
 #endif
 		return 0;
+	}
 	/*
 	case COMMAND_SET_CAR_IGNORE_LEVEL_TRANSITIONS:
 	{

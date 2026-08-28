@@ -693,6 +693,31 @@ DoFade(void)
 
 		TheCamera.GetScreenRect(rect);
 		CSprite2d::DrawRect(rect, fadeColor);
+	#ifdef WII
+		if(CurrentSplashIsIntroSequence()){
+			static int s_lastLoggedFade = -1;
+			static int s_logBudget = 64;
+			int probeFade = (int)CDraw::FadeValue;
+			if(s_logBudget > 0 &&
+			   (s_lastLoggedFade < 0 || probeFade == 0 || probeFade == 255 ||
+			    Abs(probeFade - s_lastLoggedFade) >= 32)){
+				printf("[INTRO-PROBE] DoFade name='%s' value=%d drawFade=%d target=%d useSplash=%d splash=%p tex=%p hold=%d pending=%d playing=%d cutscene=%d\n",
+					gCurrentSplashName,
+					(int)CDraw::FadeValue,
+					fadeValue,
+					TheCamera.m_FadeTargetIsSplashScreen ? 1 : 0,
+					useSplashFade ? 1 : 0,
+					(void*)splash,
+					(void*)(splash != nil ? splash->m_pTexture : nil),
+					StillToFadeOut ? 1 : 0,
+					gIntroSplashPendingCutscene ? 1 : 0,
+					CGame::playingIntro ? 1 : 0,
+					CCutsceneMgr::IsRunning() ? 1 : 0);
+				s_lastLoggedFade = probeFade;
+				s_logBudget--;
+			}
+		}
+	#endif
 
 		if(CDraw::FadeValue != 0 && useSplashFade){
 			RwRenderStateSet(rwRENDERSTATETEXTUREFILTER, (void*)rwFILTERLINEAR);

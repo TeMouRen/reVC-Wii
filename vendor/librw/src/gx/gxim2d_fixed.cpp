@@ -5,6 +5,8 @@
 #include <gccore.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <stdarg.h>
 
 #include "../rwbase.h"
 #include "../rwplg.h"
@@ -18,6 +20,15 @@
 #ifndef GX_PIPELINE_DIAGNOSTICS
 #define printf(...) ((void)sizeof((::printf)(__VA_ARGS__)))
 #endif
+
+static void
+gxIntroProbePrintf(const char *format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    vprintf(format, args);
+    va_end(args);
+}
 
 namespace rw {
 namespace gx {
@@ -37,6 +48,42 @@ static Mtx44 s_im2dProj;
 static Mtx s_im2dView;
 static Im2DVertex s_tmpVerts[3];
 static int s_radarIm2dLogBudget = 120;
+
+static void
+logIntroIm2D(const Im2DVertex *v, int32 n)
+{
+    if(v == nil || n < 4)
+        return;
+
+    float minX = v[0].x, maxX = v[0].x;
+    float minY = v[0].y, maxY = v[0].y;
+    for(int32 i = 1; i < n; i++){
+        if(v[i].x < minX) minX = v[i].x;
+        if(v[i].x > maxX) maxX = v[i].x;
+        if(v[i].y < minY) minY = v[i].y;
+        if(v[i].y > maxY) maxY = v[i].y;
+    }
+
+    if(minX > 1.0f || maxX < 639.0f || minY > 1.0f || maxY < 479.0f)
+        return;
+
+    static int s_budget = 80;
+    static int s_lastAlpha = -1;
+    uint8 alpha = (uint8)v[0].color;
+    if(s_budget <= 0 ||
+       (s_lastAlpha >= 0 && alpha != 0 && alpha != 255 &&
+        abs((int)alpha - s_lastAlpha) < 32))
+        return;
+
+    gxIntroProbePrintf("[INTRO-PROBE] GX Im2D fullscreen tex=%p alpha=%u zT=%d zW=%d src=%u dst=%u vtxA=%d aFunc=%d aRef=%d\n",
+                       gxState.textures[0], (unsigned)alpha,
+                       gxState.zTest ? 1 : 0, gxState.zWrite ? 1 : 0,
+                       (unsigned)gxState.srcBlend, (unsigned)gxState.dstBlend,
+                       gxState.vertexAlpha ? 1 : 0,
+                       gxState.alphaTestFunc, gxState.alphaTestRef);
+    s_lastAlpha = alpha;
+    s_budget--;
+}
 
 static u8
 gxAlphaFuncFromState(int32 f)
@@ -224,6 +271,7 @@ im2DRenderPrimitive(PrimitiveType primType, void *vertices, int32 numVertices)
 
     Im2DVertex *v = (Im2DVertex*)vertices;
     logRadarIm2D("direct-before", primType, v, numVertices);
+    logIntroIm2D(v, numVertices);
     im2dSetup();
 
     bool depthOnly = isDepthOnlyIm2DPass();

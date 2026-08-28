@@ -4,6 +4,7 @@
 #include "ScriptCommands.h"
 
 #include "Camera.h"
+#include "Draw.h"
 #include "CarCtrl.h"
 #include "CarGen.h"
 #include "CivilianPed.h"
@@ -426,11 +427,25 @@ int8 CRunningScript::ProcessCommands300To399(int32 command)
 		return 0;
 	case COMMAND_SET_FADING_COLOUR:
 		CollectParameters(&m_nIp, 3);
+	#ifdef WII
+		printf("[INTRO-PROBE] script SET_FADING_COLOUR rgb=(%d,%d,%d) fade=%.1f target=%d fading=%d\n",
+			ScriptParams[0], ScriptParams[1], ScriptParams[2],
+			TheCamera.m_fFLOATingFade,
+			TheCamera.m_FadeTargetIsSplashScreen ? 1 : 0,
+			TheCamera.m_bFading ? 1 : 0);
+	#endif
 		TheCamera.SetFadeColour(ScriptParams[0], ScriptParams[1], ScriptParams[2]);
 		return 0;
 	case COMMAND_DO_FADE:
 		CollectParameters(&m_nIp, 2);
 		TheCamera.Fade(ScriptParams[0] / 1000.0f, ScriptParams[1]);
+	#ifdef WII
+		printf("[INTRO-PROBE] script DO_FADE ms=%d dir=%d fade=%.1f target=%d fading=%d\n",
+			ScriptParams[0], ScriptParams[1],
+			TheCamera.m_fFLOATingFade,
+			TheCamera.m_FadeTargetIsSplashScreen ? 1 : 0,
+			TheCamera.m_bFading ? 1 : 0);
+	#endif
 		return 0;
 	case COMMAND_GET_FADING_STATUS:
 		UpdateCompareFlag(TheCamera.GetFading());
