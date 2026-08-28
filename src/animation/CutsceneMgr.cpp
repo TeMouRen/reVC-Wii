@@ -284,6 +284,9 @@ CCutsceneMgr::LoadCutsceneData(const char *szCutsceneName)
 #if GX_CONSOLE
 	if (IsIntroCutsceneName(ms_cutsceneName)) {
 		CGame::playingIntro = true;
+	#ifdef WII
+		WiiNotifyIntroCutsceneStarted();
+	#endif
 		rw::gx::pushCriticalUiUploadContext(ms_cutsceneName);
 		rw::gx::texPoolSetSoftBudget(GxIntroCutsceneTexBudget());
 		GxEnforceCutsceneTexBudget("intro-cutscene-preload");

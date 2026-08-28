@@ -47,6 +47,9 @@ void LoadingScreen(const char *str1, const char *str2, const char *splashscreen)
 void LoadingIslandScreen(const char *levelName);
 CSprite2d *LoadSplash(const char *name);
 void DestroySplashScreen(void);
+#ifdef WII
+void WiiNotifyIntroCutsceneStarted(void);
+#endif
 Const char *GetLevelSplashScreen(int level);
 Const char *GetRandomSplashScreen(void);
 #ifdef WII

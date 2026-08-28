@@ -117,6 +117,7 @@ GlobalScene Scene;
 // its name separate from the TXD slot so synchronous Wii loading screens
 // cannot silently replace it between LOAD_SPLASH_SCREEN and DoFade.
 static char gCurrentSplashName[32];
+static bool gIntroSplashPendingCutscene;
 
 static char
 SplashLowerAscii(char c)
@@ -148,7 +149,8 @@ static bool
 WiiShouldPreserveScriptSplash(void)
 {
 	return CurrentSplashIsIntroSequence() &&
-		(CGame::playingIntro ||
+		(gIntroSplashPendingCutscene ||
+		 CGame::playingIntro ||
 		 CCutsceneMgr::IsRunning() ||
 		 CCutsceneMgr::IsCutsceneProcessing() ||
 		 CCutsceneMgr::ms_cutsceneLoadStatus != 0);
@@ -160,6 +162,12 @@ ShouldProtectActiveIntroSplash(const char *name)
 	return name != nil && WiiShouldPreserveScriptSplash() &&
 		(SplashNameStartsWith(name, "loadsc") ||
 		 SplashNameStartsWith(name, "splash"));
+}
+
+void
+WiiNotifyIntroCutsceneStarted(void)
+{
+	gIntroSplashPendingCutscene = false;
 }
 #endif
 #ifdef WII
@@ -1017,6 +1025,7 @@ LoadSplash(const char *name)
 			if(splash.m_pTexture != nil){
 				strncpy(gCurrentSplashName, name, sizeof(gCurrentSplashName) - 1);
 				gCurrentSplashName[sizeof(gCurrentSplashName) - 1] = '\0';
+				gIntroSplashPendingCutscene = SplashNameStartsWith(name, "intro");
 			}
 		#endif
 		}
@@ -1038,6 +1047,7 @@ DestroySplashScreen(void)
 	splashTxdId = -1;
 #ifdef WII
 	gCurrentSplashName[0] = '\0';
+	gIntroSplashPendingCutscene = false;
 #endif
 }
 
