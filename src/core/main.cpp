@@ -648,8 +648,11 @@ DoFade(void)
 			splash != nil && splash->m_pTexture != nil;
 #ifdef WII
 		// A missing or replaced intro TXD must fall back to the ordinary black
-		// fade.  The upstream splash path suppresses that rectangle by design.
-		useSplashFade = useSplashFade && CurrentSplashIsIntroSequence();
+		// fade.  During the Wii cutscene preload wait, keep that black cover
+		// until LoadCutsceneData has started; otherwise the newly loaded splash
+		// is shown at full alpha while the actors are still being prepared.
+		useSplashFade = useSplashFade && CurrentSplashIsIntroSequence() &&
+			!gIntroSplashPendingCutscene;
 #endif
 
 		if(useSplashFade)
