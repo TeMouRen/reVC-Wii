@@ -904,11 +904,11 @@ int main(int argc, char *argv[]) {
                 gGcDidSyntheticFirstRestart = true;
             }
             GcResetPadStateForGameplay();
-            // Submit the first gameplay frame before waiting for another
-            // retrace.  InitialiseGame() ends by presenting its current splash;
-            // delaying the shared Idle() path leaves that full-bright image on
-            // screen and skips the intro's first visible DoFade() result.
-            Idle((void*)0x00000001);
+            // The first gameplay frame is submitted immediately below.  The
+            // loading path has just presented its current splash; waiting for
+            // another retrace before the first shared Idle() leaves that
+            // full-bright image on screen and skips the intro's first visible
+            // DoFade() result.
             SYS_Report("[reVC-WII] Game world loaded. Entering game loop.\n");
             break;
         }
@@ -936,8 +936,11 @@ int main(int argc, char *argv[]) {
     SYS_Report("[reVC-WII] Entering Game Loop...\n");
     WiiResetLoopTimingMarks();
     int gameFrames = 0;
+    bool firstGameFrame = true;
     while (!RsGlobal.quit) {
-        WiiWaitForVideoSyncAndMeasure(false);
+        if (!firstGameFrame)
+            WiiWaitForVideoSyncAndMeasure(false);
+        firstGameFrame = false;
 
         PAD_ScanPads();
         if (gWiiExitRequested)
