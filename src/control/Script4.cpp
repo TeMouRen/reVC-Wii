@@ -1396,48 +1396,30 @@ int8 CRunningScript::ProcessCommands900To999(int32 command)
 	case COMMAND_LOAD_SPRITE:
 	{
 		CollectParameters(&m_nIp, 1);
-		CTheScripts::ReadTextLabelFromScript(&m_nIp, str);
-		str[KEY_LENGTH_IN_SCRIPT] = '\0';
+		strncpy(str, (char*)&CTheScripts::ScriptSpace[m_nIp], KEY_LENGTH_IN_SCRIPT);
 		for (int i = 0; i < KEY_LENGTH_IN_SCRIPT; i++)
 			str[i] = tolower((unsigned char)str[i]);
+		str[KEY_LENGTH_IN_SCRIPT] = '\0';
 		m_nIp += KEY_LENGTH_IN_SCRIPT;
 		int slot = CTxdStore::FindTxdSlot("script");
-		if (slot == -1) {
-			printf("[SCRIPT-SPRITE] missing script TXD for sprite %d ('%s')\n",
-			       ScriptParams[0] - 1, str);
-			return 0;
-		}
 		CTxdStore::PushCurrentTxd();
 		CTxdStore::SetCurrentTxd(slot);
 		CTheScripts::ScriptSprites[ScriptParams[0] - 1].SetTexture(str);
 		CTxdStore::PopCurrentTxd();
-		if (CTheScripts::ScriptSprites[ScriptParams[0] - 1].m_pTexture == nil)
-			printf("[SCRIPT-SPRITE] texture miss sprite=%d name='%s' txdSlot=%d\n",
-			       ScriptParams[0] - 1, str, slot);
-		else
-			printf("[SCRIPT-SPRITE] texture ready sprite=%d name='%s' txdSlot=%d\n",
-			       ScriptParams[0] - 1, str, slot);
 		return 0;
 	}
 	case COMMAND_LOAD_TEXTURE_DICTIONARY:
 	{
-		char dictName[KEY_LENGTH_IN_SCRIPT + 1];
-		CTheScripts::ReadTextLabelFromScript(&m_nIp, dictName);
-		dictName[KEY_LENGTH_IN_SCRIPT] = '\0';
 		strcpy(str, "models\\");
-		strcat(str, dictName);
+		strncpy(str + sizeof("models\\") - 1, (char*)&CTheScripts::ScriptSpace[m_nIp], KEY_LENGTH_IN_SCRIPT);
+		str[sizeof("models\\") - 1 + KEY_LENGTH_IN_SCRIPT] = '\0';
 		strcat(str, ".txd");
 		m_nIp += KEY_LENGTH_IN_SCRIPT;
 		int slot = CTxdStore::FindTxdSlot("script");
 		if (slot == -1)
 			slot = CTxdStore::AddTxdSlot("script");
-		if (CTxdStore::LoadTxd(slot, str)) {
-			CTxdStore::AddRef(slot);
-			printf("[SCRIPT-TXD] loaded '%s' slot=%d refs=%d\n",
-			       str, slot, CTxdStore::GetNumRefs(slot));
-		} else {
-			printf("[SCRIPT-TXD] failed '%s' slot=%d\n", str, slot);
-		}
+		CTxdStore::LoadTxd(slot, str);
+		CTxdStore::AddRef(slot);
 		return 0;
 	}
 	case COMMAND_REMOVE_TEXTURE_DICTIONARY:

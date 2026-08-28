@@ -861,112 +861,18 @@ int main(int argc, char *argv[]) {
 
     SYS_Report("[reVC-WII] Engine Ready. Entering Game Loop...\n");
 
-#ifdef WII
-    // === Minimal Menu Bootstrap ===
-    // Direct TXD load â?bypasses LoadAllTextures() to avoid pulling in
-    // CTimer / CStreaming / CText â?Miles audio static data dependency
-    {
-        int slot;
-
-        SYS_Report("[reVC-WII] Bootstrap: loading frontend1.txd...\n");
-        slot = CTxdStore::FindTxdSlot("frontend1");
-        if (slot == -1) slot = CTxdStore::AddTxdSlot("frontend1");
-        CTxdStore::LoadTxd(slot, "MODELS/FRONTEN1.TXD");
-        CTxdStore::AddRef(slot);
-        CTxdStore::SetCurrentTxd(slot);
-
-        FrontEndMenuManager.m_aFrontEndSprites[0].SetTexture("background", "");
-        FrontEndMenuManager.m_aFrontEndSprites[0].SetAddressing(rwTEXTUREADDRESSBORDER);
-        FrontEndMenuManager.m_aFrontEndSprites[1].SetTexture("vc_logo", "vc_logom");
-        FrontEndMenuManager.m_aFrontEndSprites[1].SetAddressing(rwTEXTUREADDRESSBORDER);
-        FrontEndMenuManager.m_aFrontEndSprites[2].SetTexture("mouse", "mousea");
-        FrontEndMenuManager.m_aFrontEndSprites[2].SetAddressing(rwTEXTUREADDRESSBORDER);
-
-        CTxdStore::PopCurrentTxd();
-        SYS_Report("[reVC-WII] Bootstrap: frontend1 OK.\n");
-
-        // frontend2.txd: radio station icons + scroll arrows (sprites 3-25)
-        SYS_Report("[reVC-WII] Bootstrap: loading frontend2.txd...\n");
-        slot = CTxdStore::FindTxdSlot("frontend2");
-        if (slot == -1) slot = CTxdStore::AddTxdSlot("frontend2");
-        CTxdStore::LoadTxd(slot, "MODELS/FRONTEN2.TXD");
-        CTxdStore::AddRef(slot);
-        CTxdStore::SetCurrentTxd(slot);
-
-        static const char* const spriteNames[23][2] = {
-            {"mapTop01",   "mapTop01A"},
-            {"mapTop02",   "mapTop02A"},
-            {"mapTop03",   "mapTop03A"},
-            {"mapMid01",   "mapMid01A"},
-            {"mapMid02",   "mapMid02A"},
-            {"mapMid03",   "mapMid03A"},
-            {"mapBot01",   "mapBot01A"},
-            {"mapBot02",   "mapBot02A"},
-            {"mapBot03",   "mapBot03A"},
-            {"wildstyle",  "wildstyleA"},
-            {"flash",      "flashA"},
-            {"kchat",      "kchatA"},
-            {"fever",      "feverA"},
-            {"vrock",      "vrockA"},
-            {"vcpr",       "vcprA"},
-            {"espantoso",  "espantosoA"},
-            {"emotion",    "emotionA"},
-            {"wave103",    "wave103A"},
-            {"mp3",        "mp3A"},
-            {"downOff",    "buttonA"},
-            {"downOn",     "buttonA"},
-            {"upOff",      "buttonA"},
-            {"upOn",       "buttonA"},
-        };
-        for (int i = 0; i < 23; i++) {
-            FrontEndMenuManager.m_aFrontEndSprites[3 + i].SetTexture(
-                spriteNames[i][0], spriteNames[i][1]);
-            FrontEndMenuManager.m_aFrontEndSprites[3 + i].SetAddressing(
-                rwTEXTUREADDRESSBORDER);
-        }
-
-        CTxdStore::PopCurrentTxd();
-        SYS_Report("[reVC-WII] Bootstrap: frontend2 OK.\n");
-
-        // Load GXT text database â?was skipped in original bootstrap
-        // to avoid Miles audio dependency, but CText has no audio deps.
-        SYS_Report("[reVC-WII] Bootstrap: loading text (AMERICAN.GXT)...\n");
-        TheText.Load();
-        SYS_Report("[reVC-WII] Bootstrap: text OK.\n");
-        SYS_Report("[reVC-WII] Bootstrap: loading frontend settings...\n");
-        FrontEndMenuManager.LoadSettings();
-        SYS_Report("[reVC-WII] Bootstrap: settings ready (language=%d).\n",
-            FrontEndMenuManager.m_PrefsLanguage);
-        CFileMgr::SetDir("");
-        SYS_Report("[reVC-WII] Bootstrap: scanning save slots for cold-start menu...\n");
-        PcSaveHelper.PopulateSlotInfo();
-
-        FrontEndMenuManager.m_bSpritesLoaded = true;
-        FrontEndMenuManager.m_bMenuActive = true;
-        FrontEndMenuManager.m_nCurrScreen = 33;   // MENUPAGE_NONE (constructor might not run on GC)
-        FrontEndMenuManager.m_bGameNotLoaded = true;
-
-        // C++ static initializers may not run on GC â?explicitly init critical globals
-        // Fill guard arrays with known pattern
-        for (int i = 0; i < 64; i++) {
-            _guard_before[i] = 0xDEADBEEF;
-            _guard_after[i]  = 0xBEEFDEAD;
-        }
-        RsGlobal.width  = 640;
-        RsGlobal.height = 480;
-        CDraw::CalculateAspectRatio();            // Wii/system aspect ratio
-        extern RwRGBA gColourTop;
-		SYS_Report("[reVC-WII] MEM: &RsGlobal=%p xfb0=%p xfb1=%p sz=0x%x\n", (void*)&RsGlobal, xfb, (void*)s_gx_xfb[1], (unsigned)sizeof(RsGlobal));
-		SYS_Report("[reVC-WII] MEM: GXfifo=%p (256KB)\n", (void*)rw::gx::s_gxFifo);
-        SYS_Report("[reVC-WII] Bootstrap: DONE. Menu active.\n");
-	}
-#endif
-
     SYS_Report("[reVC-WII] Running InitialiseOnceAfterRW before frontend loop...\n");
     if (!CGame::InitialiseOnceAfterRW()) {
         SYS_Report("[reVC-WII] FATAL: InitialiseOnceAfterRW failed.\n");
         while (true) { VIDEO_WaitVSync(); }
     }
+    // Frontend resources and fade state are initialized by the shared menu
+    // state machine.  Do not bind frontend1/frontend2 or set menu flags here:
+    // that bypassed CMenuManager::Initialise/LoadAllTextures and loaded text
+    // twice, which in turn broke the intro fade and scene labels.
+    FrontEndMenuManager.LoadSettings();
+    FrontEndMenuManager.m_bGameNotLoaded = true;
+    FrontEndMenuManager.RequestFrontEndStartUp();
     WiiApplyFrontendAudioSettings();
 
     // FrontendIdle() â?PC/PS2 èåä¸»å¾ªç?(å®ä¹å?main.cpp)
@@ -1021,12 +927,9 @@ int main(int argc, char *argv[]) {
             DMAudio.ChangeMusicMode(MUSICMODE_GAME);
             CMBlur::ResetHistory();
             SYS_Report("[reVC-WII] Reset blur history after InitialiseGame()\n");
-            if (!WiiShouldPreserveScriptSplash()) {
-                DestroySplashScreen();
-                SYS_Report("[reVC-WII] Cleared bootstrap splash state before gameplay handoff\n");
-            } else {
-                SYS_Report("[reVC-WII] Preserving script splash ownership into intro/cutscene handoff\n");
-            }
+            // Splash ownership remains with the script/cutscene lifecycle.
+            // Destroying it here made DoFade() lose the intro picture before
+            // the black-to-picture transition could be rendered.
             FrontEndMenuManager.m_bGameNotLoaded = false;
             FrontEndMenuManager.m_bWantToRestart = false;
             if (!gGcDidSyntheticFirstRestart) {
@@ -1103,12 +1006,8 @@ int main(int argc, char *argv[]) {
             FrontEndMenuManager.m_bWantToRestart = false;
             CMBlur::ResetHistory();
             SYS_Report("[reVC-WII] Reset blur history after restart/load\n");
-            if (!WiiShouldPreserveScriptSplash()) {
-                DestroySplashScreen();
-                SYS_Report("[reVC-WII] Cleared restart/load splash state before resuming gameplay\n");
-            } else {
-                SYS_Report("[reVC-WII] Preserving script splash ownership after restart/load\n");
-            }
+            // Keep script-owned splash textures alive across restart/load;
+            // LoadSplash/ShutdownRenderWare release them at their boundary.
             GcResetPadStateForGameplay();
 
             gameFrames = 0;

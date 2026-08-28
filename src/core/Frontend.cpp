@@ -679,7 +679,7 @@ CMenuManager::CMenuManager()
 	m_KeyPressedCode = -1;
 	m_bFrontEnd_ReloadObrTxtGxt = false;
 	m_PrefsMP3BoostVolume = 0;
-	m_PrefsShowSubtitles = 1;
+	m_PrefsShowSubtitles = 0;
 	m_PrefsShowLegends = 1;
 #ifdef ASPECT_RATIO_SCALE
 	m_PrefsUseWideScreen = AR_AUTO;
@@ -814,11 +814,9 @@ CMenuManager::Initialise(void)
 
 	DMAudio.SetMP3BoostVolume(m_PrefsMP3BoostVolume);
 	if (DMAudio.IsMP3RadioChannelAvailable()) {
-		if (m_PrefsRadioStation != RADIO_MODERN_TALKING &&
-		    (m_PrefsRadioStation < WILDSTYLE || m_PrefsRadioStation > USERTRACK))
+		if (m_PrefsRadioStation < WILDSTYLE || m_PrefsRadioStation > USERTRACK)
 			m_PrefsRadioStation = CGeneral::GetRandomNumber() % (USERTRACK + 1);
-	} else if (m_PrefsRadioStation != RADIO_MODERN_TALKING &&
-	           (m_PrefsRadioStation < WILDSTYLE || m_PrefsRadioStation > WAVE))
+	} else if (m_PrefsRadioStation < WILDSTYLE || m_PrefsRadioStation > WAVE)
 		m_PrefsRadioStation = CGeneral::GetRandomNumber() % (WAVE + 1);
 
 	CFileMgr::SetDir("");
@@ -1144,20 +1142,13 @@ CMenuManager::DoSettingsBeforeStartingAGame()
 void
 CMenuManager::DrawStandardMenus(bool activeScreen)
 {
-	DIAG_LOG("[MENU] DrawStdMenu start, screen=%d\n", m_nCurrScreen);
 	float nextYToUse = 0.0f; // III leftover, set but unused in VC
 	bool itemsAreSelectable = true;
-	DIAG_LOG("[MENU] DrawStdMenu: CFont1\n");
 	CFont::SetBackgroundOff();
-	DIAG_LOG("[MENU] DrawStdMenu: CFont2\n");
 	CFont::SetPropOn();
-	DIAG_LOG("[MENU] DrawStdMenu: CFont3\n");
 	CFont::SetCentreOff();
-	DIAG_LOG("[MENU] DrawStdMenu: CFont4\n");
 	CFont::SetJustifyOn();
-	DIAG_LOG("[MENU] DrawStdMenu: CFont5\n");
 	CFont::SetBackGroundOnlyTextOff();
-	DIAG_LOG("[MENU] DrawStdMenu: CFont6\n");
 	CFont::SetAlphaFade(255.0f);
 
 #ifdef CUSTOM_FRONTEND_OPTIONS
@@ -1166,25 +1157,18 @@ CMenuManager::DrawStandardMenus(bool activeScreen)
 	const int xMargin = MENU_X_MARGIN;
 #endif
 
-	DIAG_LOG("[MENU] DrawStdMenu: CFont7 SetWrapx\n");
 	CFont::SetWrapx(MENU_X_RIGHT_ALIGNED(xMargin));
-	DIAG_LOG("[MENU] DrawStdMenu: CFont8 SetRightJustifyWrap\n");
 	CFont::SetRightJustifyWrap(MENU_X_LEFT_ALIGNED(xMargin));
 #ifdef ASPECT_RATIO_SCALE
-		DIAG_LOG("[MENU] CFont9: w=%d h=%d ar=%.3f val=%.1f\n", (int)RsGlobal.width, (int)RsGlobal.height, CDraw::GetAspectRatio(), (float)SCREEN_SCALE_X(DEFAULT_SCREEN_WIDTH));
 	CFont::SetCentreSize(SCREEN_SCALE_X(DEFAULT_SCREEN_WIDTH));
-	DIAG_LOG("[MENU] CFont9: OK, screen=%d\n", m_nCurrScreen);
 #else
-	DIAG_LOG("[MENU] DrawStdMenu: CFont9 SetCentreSize\n");
 	CFont::SetCentreSize(SCREEN_WIDTH);
 #endif
 
-	DIAG_LOG("[MENU] DrawStdMenu: before switch, screen=%d\n", m_nCurrScreen);
 	switch (m_nCurrScreen) {
 		case MENUPAGE_CHOOSE_LOAD_SLOT:
 		case MENUPAGE_CHOOSE_DELETE_SLOT:
 		case MENUPAGE_CHOOSE_SAVE_SLOT:
-			DIAG_LOG("[MENU] DrawStdMenu: slot bg polygon\n");
 			CSprite2d::Draw2DPolygon(MENU_X_LEFT_ALIGNED(38.0f), MENU_Y(85.0f),
 				MENU_X_LEFT_ALIGNED(615.0f), MENU_Y(75.0f),
 				MENU_X_LEFT_ALIGNED(30.0f), MENU_Y(320.0f),
@@ -1200,21 +1184,16 @@ CMenuManager::DrawStandardMenus(bool activeScreen)
 			PrintBriefs();
 			break;
 	}
-		DIAG_LOG("[MENU] DrawStdMenu: after switch, screen=%d\n", m_nCurrScreen);
 
 	// Page name
 	if (aScreens[m_nCurrScreen].m_ScreenName[0] != '\0') {
-		DIAG_LOG("[MENU] DrawStdMenu: header text '%s'\n", aScreens[m_nCurrScreen].m_ScreenName);
 
 		SET_FONT_FOR_MENU_HEADER
 		CFont::SetColor(CRGBA(30, 30, 30, FadeIn(255)));
-		DIAG_LOG("[MENU] DrawStdMenu: PrintString shadow...\n");
 		CFont::PrintString(SCREEN_STRETCH_FROM_RIGHT(MENUHEADER_POS_X) - MENU_X(7.f), SCREEN_SCALE_Y(MENUHEADER_POS_Y + 7.f), TheText.Get(aScreens[m_nCurrScreen].m_ScreenName));
-		DIAG_LOG("[MENU] DrawStdMenu: PrintString main...\n");
 
 		CFont::SetColor(CRGBA(HEADER_COLOR.r, HEADER_COLOR.g, HEADER_COLOR.b, FadeIn(255)));
 		CFont::PrintString(SCREEN_STRETCH_FROM_RIGHT(MENUHEADER_POS_X), SCREEN_SCALE_Y(MENUHEADER_POS_Y), TheText.Get(aScreens[m_nCurrScreen].m_ScreenName));
-		DIAG_LOG("[MENU] DrawStdMenu: header done\n");
 	}
 
 	// Label
@@ -2547,13 +2526,9 @@ CMenuManager::DrawControllerSetupScreen()
 void
 CMenuManager::DrawFrontEnd()
 {
-	DIAG_LOG("[MENU] DrawFrontEnd start, screen=%d, sprites=%d, fade=%d, startCtr=%d\n",
-		m_nCurrScreen, m_bSpritesLoaded, m_nMenuFadeAlpha, m_firstStartCounter);
-
 	CFont::SetAlphaFade(255.0f);
 	CSprite2d::InitPerFrame();
 	CFont::InitPerFrame();
-	DIAG_LOG("[MENU] SetFrontEndRenderStates...\n");
 	SetFrontEndRenderStates();
 	m_NoEmptyBinding = true;
 
@@ -2572,33 +2547,26 @@ CMenuManager::DrawFrontEnd()
 	if (m_firstStartCounter == 255 && m_nMenuFadeAlpha == 255)
 		bMenuChangeOngoing = false;
 
-	DIAG_LOG("[MENU] DrawBackground...\n");
 	DrawBackground(false);
-	DIAG_LOG("[MENU] DrawFrontEnd done\n");
 }
 
 void
 CMenuManager::DrawBackground(bool transitionCall)
 {
 	if (!m_bSpritesLoaded) {
-		DIAG_LOG("[MENU] DrawBackground: sprites not loaded, skip\n");
 		return;
 	}
 
 	SetFrontEndRenderStates();
-	DIAG_LOG("[MENU] DrawBackground: fade=%d startCtr=%d\n", m_nMenuFadeAlpha, m_firstStartCounter);
 
 	if (m_firstStartCounter < 255) {
-		DIAG_LOG("[MENU] DrawBackground: DrawRect black (startCounter)\n");
 		CSprite2d::DrawRect(CRect(0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT), CRGBA(0, 0, 0, 255));
-		DIAG_LOG("[MENU] DrawBackground: DrawRect done\n");
 	}
 
 	if (m_nMenuFadeAlpha != 0) {
 
 		if (m_nMenuFadeAlpha < 255) {
 
-			DIAG_LOG("[MENU] DrawBackground: fade<255, draw bg sprite...\n");
 			menuBg.Translate(m_nMenuFadeAlpha);
 			SetFrontEndRenderStates();
 			m_aFrontEndSprites[MENUSPRITE_BACKGROUND].Draw(CRect(0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT), CRGBA(255, 255, 255, FadeIn(255)));
@@ -2621,12 +2589,9 @@ CMenuManager::DrawBackground(bool transitionCall)
 			CSprite2d::Draw2DPolygon(SCREEN_WIDTH, SCREEN_HEIGHT, SCREEN_STRETCH_X(menuBg.bottomRight_x), SCREEN_STRETCH_Y(menuBg.bottomRight_y),
 				SCREEN_WIDTH, 0.0f, SCREEN_STRETCH_X(menuBg.topRight_x), SCREEN_STRETCH_Y(menuBg.topRight_y), CRGBA(0, 0, 0, 255));
 		} else {
-			DIAG_LOG("[MENU] DrawBackground: fade=255 full draw\n");
 			m_nMenuFadeAlpha = 255;
 			m_firstStartCounter = 255;
-			DIAG_LOG("[MENU] DrawBackground: sprite draw...\n");
 			m_aFrontEndSprites[MENUSPRITE_BACKGROUND].Draw(CRect(0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT), CRGBA(255, 255, 255, FadeIn(255)));
-			DIAG_LOG("[MENU] DrawBackground: sprite done\n");
 			if (m_nCurrScreen == MENUPAGE_MAP)
 				PrintMap();
 
@@ -2647,7 +2612,6 @@ CMenuManager::DrawBackground(bool transitionCall)
 				SCREEN_WIDTH, 0.0f, SCREEN_STRETCH_X(menuBg.topRight_x), SCREEN_STRETCH_Y(menuBg.topRight_y), CRGBA(0, 0, 0, 255));
 		}
 	} else {
-		DIAG_LOG("[MENU] DrawBackground: fade=0, save coords for screen=%d\n", m_nCurrScreen);
 		menuBg.SaveCurrentCoors();
 		switch (m_nCurrScreen) {
 			case MENUPAGE_STATS:
@@ -2727,11 +2691,8 @@ CMenuManager::DrawBackground(bool transitionCall)
 		if (m_firstStartCounter == 255)
 			m_nOptionHighlightTransitionBlend = 0;
 
-		DIAG_LOG("[MENU] DrawBackground: fade=0 path done, screen switch OK\n");
 	}
 
-	DIAG_LOG("[MENU] DrawBackground: fade logic done, now fade timer (fade=%d startCtr=%d)\n",
-		m_nMenuFadeAlpha, m_firstStartCounter);
 	static uint32 LastFade = 0;
 
 	if (m_nMenuFadeAlpha < 255) {
@@ -2782,7 +2743,6 @@ CMenuManager::DrawBackground(bool transitionCall)
 		}
 	}
 
-	DIAG_LOG("[MENU] DrawBackground: fade timer done, now draw screen content (screen=%d)\n", m_nCurrScreen);
 
 	switch (m_nCurrScreen) {
 		case MENUPAGE_SKIN_SELECT:
@@ -2795,25 +2755,19 @@ CMenuManager::DrawBackground(bool transitionCall)
 			DrawQuitGameScreen();
 			break;
 		default:
-			DIAG_LOG("[MENU] DrawBackground: DrawStandardMenus...\n");
 			DrawStandardMenus(true);
-			DIAG_LOG("[MENU] DrawBackground: DrawStandardMenus done\n");
 			break;
 	}
 
-	DIAG_LOG("[MENU] DrawBackground: CFont::DrawFonts...\n");
 	CFont::DrawFonts();
-	DIAG_LOG("[MENU] DrawBackground: CFont done\n");
 	SetFrontEndRenderStates();
 
 	if (m_nCurrScreen != MENUPAGE_OUTRO) {
-		DIAG_LOG("[MENU] DrawBackground: VC logo sprite...\n");
 		if (m_firstStartCounter == 255) {
 			m_aFrontEndSprites[MENUSPRITE_VCLOGO].Draw(CRect(SCREEN_STRETCH_X(27.0f), MENU_Y(8.0f), SCREEN_STRETCH_X(27.0f) + MENU_X(130.f), MENU_Y(138.0f)), CRGBA(255, 255, 255, 255));
 		} else {
 			m_aFrontEndSprites[MENUSPRITE_VCLOGO].Draw(CRect(SCREEN_STRETCH_X(27.0f), MENU_Y(8.0f), SCREEN_STRETCH_X(27.0f) + MENU_X(130.f), MENU_Y(138.0f)), CRGBA(255, 255, 255, FadeIn(255)));
 		}
-		DIAG_LOG("[MENU] DrawBackground: VC logo done\n");
 	}
 
 	if (m_ShowEmptyBindingError) {
@@ -2832,7 +2786,6 @@ CMenuManager::DrawBackground(bool transitionCall)
 	}
 
 	if (m_bShowMouse) {
-		DIAG_LOG("[MENU] DrawBackground: mouse sprite...\n");
 		CRect mouse(0.0f, 0.0f, MENU_X(35.0f), MENU_Y(35.0f));
 		CRect shad(MENU_X(10.0f), MENU_Y(3.0f), MENU_X(45.0f), MENU_Y(38.0f));
 
@@ -2840,9 +2793,7 @@ CMenuManager::DrawBackground(bool transitionCall)
 		shad.Translate(m_nMousePosX, m_nMousePosY);
 		m_aFrontEndSprites[MENUSPRITE_MOUSE].Draw(shad, CRGBA(100, 100, 100, 50));
 		m_aFrontEndSprites[MENUSPRITE_MOUSE].Draw(mouse, CRGBA(255, 255, 255, 255));
-		DIAG_LOG("[MENU] DrawBackground: mouse done\n");
 	}
-	DIAG_LOG("[MENU] DrawBackground: END\n");
 }
 
 void
@@ -3372,7 +3323,6 @@ CMenuManager::LoadAllTextures()
 	if(frontendTxdSlot1 == -1)
 		frontendTxdSlot1 = CTxdStore::AddTxdSlot("frontend1");
 
-	printf("LOAD frontend1\n");
 	CTxdStore::LoadTxd(frontendTxdSlot1, "MODELS/FRONTEN1.TXD");
 	CTxdStore::AddRef(frontendTxdSlot1);
 	CTxdStore::SetCurrentTxd(frontendTxdSlot1);
@@ -3395,7 +3345,6 @@ CMenuManager::LoadAllTextures()
 		if (frontendTxdSlot2 == -1)
 			frontendTxdSlot2 = CTxdStore::AddTxdSlot("frontend2");
 
-		printf("LOAD frontend2\n");
 		CTxdStore::LoadTxd(frontendTxdSlot2, "MODELS/FRONTEN2.TXD");
 		CTxdStore::AddRef(frontendTxdSlot2);
 		CTxdStore::SetCurrentTxd(frontendTxdSlot2);
@@ -3875,6 +3824,7 @@ CMenuManager::Process(void)
 	if (m_bMenuActive) {
 		UserInput();
 		ProcessFileActions();
+		DMAudio.Service();
 #ifdef USE_TEXTURE_POOL
 		// TODO
 #endif
@@ -5325,7 +5275,7 @@ CMenuManager::ProcessUserInput(uint8 goDown, uint8 goUp, uint8 optionSelected, u
 					m_PrefsVsync = true;
 #endif
 					CRenderer::ms_lodDistScale = m_PrefsLOD;
-					m_PrefsShowSubtitles = true;
+					m_PrefsShowSubtitles = false;
 #ifdef ASPECT_RATIO_SCALE
 					m_PrefsUseWideScreen = AR_AUTO;
 #else
@@ -6133,7 +6083,6 @@ CMenuManager::UnloadTextures()
 	DMAudio.PlayFrontEndSound(SOUND_FRONTEND_MENU_STARTING, 0);
 	DMAudio.ChangeMusicMode(MUSICMODE_GAME);
 	if (m_bSpritesLoaded) {
-		printf("REMOVE frontend\n");
 		int frontend = CTxdStore::FindTxdSlot("frontend1");
 		for (int i = 0; i < 3; ++i)
 			m_aFrontEndSprites[i].Delete();

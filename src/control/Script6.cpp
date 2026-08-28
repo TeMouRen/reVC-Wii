@@ -952,7 +952,6 @@ int8 CRunningScript::ProcessCommands1100To1199(int32 command)
 		for (int i = 0; i < KEY_LENGTH_IN_SCRIPT; i++)
 			tmp[i] = tolower((unsigned char)tmp[i]);
 		m_nIp += KEY_LENGTH_IN_SCRIPT;
-		printf("[SCRIPT-SPLASH] request '%s'\n", tmp);
 		LoadSplash(tmp);
 		return 0;
 	/*

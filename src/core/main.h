@@ -49,8 +49,6 @@ CSprite2d *LoadSplash(const char *name);
 void DestroySplashScreen(void);
 Const char *GetLevelSplashScreen(int level);
 Const char *GetRandomSplashScreen(void);
-void ForceScriptSplashNow(const char *name);
-bool WiiShouldPreserveScriptSplash(void);
 #ifdef WII
 bool WiiPrepareIslandTransitionSplash(int level);
 void WiiBeginIslandTransitionSplash(int level);

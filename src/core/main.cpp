@@ -107,7 +107,6 @@ void gxMemGetPoolStats(uint32 *capacityBytes, uint32 *usedBytes,
 #endif
 
 GlobalScene Scene;
-static char gCurrentSplashName[32];
 #ifdef WII
 struct WiiFrameDiagnostics {
 	uint32 sequence;
@@ -859,19 +858,7 @@ Terminate3D(void)
 CSprite2d splash;
 int splashTxdId = -1;
 
-void
-ForceScriptSplashNow(const char *name)
-{
-	(void)name;
-}
-
 #ifdef WII
-bool
-WiiShouldPreserveScriptSplash(void)
-{
-	return false;
-}
-
 bool
 WiiPrepareIslandTransitionSplash(int level)
 {
@@ -908,15 +895,6 @@ LoadSplash(const char *name)
 	RwTexDictionary *txd;
 	char filename[140];
 	RwTexture *tex = nil;
-#ifdef WII
-	char previousSplashName[32];
-	double missReleaseMs = 0.0;
-	double missLoadMs = 0.0;
-	double missBindMs = 0.0;
-	double missTotalStartMs = 0.0;
-	strncpy(previousSplashName, gCurrentSplashName, sizeof(previousSplashName) - 1);
-	previousSplashName[sizeof(previousSplashName) - 1] = '\0';
-#endif
 
 	if(name == nil)
 		return &splash;
@@ -926,25 +904,11 @@ LoadSplash(const char *name)
 	txd = CTxdStore::GetSlot(splashTxdId)->texDict;
 	if(txd)
 		tex = RwTexDictionaryFindNamedTexture(txd, name);
-	if(tex &&
-	   (splash.m_pTexture == nil || strcmp(gCurrentSplashName, name) != 0)){
-		CTxdStore::PushCurrentTxd();
-		CTxdStore::SetCurrentTxd(splashTxdId);
-		splash.SetTexture(name);
-		CTxdStore::PopCurrentTxd();
-#ifdef WII
-		printf("[LOADSC] rebound cached texture='%s' slot=%d refs=%d\n",
-		       name, splashTxdId, CTxdStore::GetNumRefs(splashTxdId));
-#endif
-	}
+	// if texture is found, splash was already set up below
 
 	if(tex == nil){
 		CFileMgr::SetDir("TXD\\");
 		sprintf(filename, "%s.txd", name);
-#ifdef WII
-		missTotalStartMs = RsTimer();
-		double missStageStartMs = missTotalStartMs;
-#endif
 		if(splash.m_pTexture) {
 #ifdef WII
 			RwRenderStateSet(rwRENDERSTATETEXTURERASTER, nil);
@@ -953,76 +917,20 @@ LoadSplash(const char *name)
 		}
 		if(txd)
 			CTxdStore::RemoveTxd(splashTxdId);
-#ifdef WII
-		missReleaseMs = RsTimer() - missStageStartMs;
-		missStageStartMs = RsTimer();
-#endif
 #ifdef RW_GX
-		// [GC-LOADSC] Give full-screen splash/intro uploads a short-lived
-		// aggressive window so image-raster/raster-unlock does not fail first.
 		rw::gx::pushCriticalUiUploadContext(name);
 #endif
-#ifdef WII
-		bool loadOk = CTxdStore::LoadTxd(splashTxdId, filename);
-		missLoadMs = RsTimer() - missStageStartMs;
-		missStageStartMs = RsTimer();
-		if(loadOk){
-#else
-		if(CTxdStore::LoadTxd(splashTxdId, filename)){
-#endif
-			if(CTxdStore::GetNumRefs(splashTxdId) == 0)
-				CTxdStore::AddRef(splashTxdId);
-			CTxdStore::PushCurrentTxd();
-			CTxdStore::SetCurrentTxd(splashTxdId);
-			splash.SetTexture(name);
-			CTxdStore::PopCurrentTxd();
-#ifdef WII
-			missBindMs = RsTimer() - missStageStartMs;
-#endif
-			strncpy(gCurrentSplashName, name, sizeof(gCurrentSplashName) - 1);
-			gCurrentSplashName[sizeof(gCurrentSplashName) - 1] = '\0';
-			printf("[LOADSC] loaded '%s' texture='%s' slot=%d refs=%d sprite=%p raster=%p\n",
-			       filename, name, splashTxdId, CTxdStore::GetNumRefs(splashTxdId),
-			       (void*)splash.m_pTexture,
-			       (void*)(splash.m_pTexture ? RwTextureGetRaster(splash.m_pTexture) : nil));
-		}else{
-			printf("[LOADSC] failed '%s' texture='%s' slot=%d\n",
-			       filename, name, splashTxdId);
-		}
+		CTxdStore::LoadTxd(splashTxdId, filename);
+		CTxdStore::AddRef(splashTxdId);
+		CTxdStore::PushCurrentTxd();
+		CTxdStore::SetCurrentTxd(splashTxdId);
+		splash.SetTexture(name);
+		CTxdStore::PopCurrentTxd();
 #ifdef RW_GX
 		rw::gx::popCriticalUiUploadContext(name);
-		if(splash.m_pTexture == nil)
-			printf("[LOADSC-GX] splash texture missing after critical upload: %s\n", name);
 #endif
 		CFileMgr::SetDir("");
-#ifdef WII
-		printf("[WII-LOADSC-MISS] name='%s' prev='%s' release=%.2fms loadTxd=%.2fms bind=%.2fms total=%.2fms ok=%d\n",
-		       name,
-		       previousSplashName[0] != '\0' ? previousSplashName : "<none>",
-		       missReleaseMs, missLoadMs, missBindMs,
-		       RsTimer() - missTotalStartMs,
-		       splash.m_pTexture != nil);
-#endif
-	}else{
-		strncpy(gCurrentSplashName, name, sizeof(gCurrentSplashName) - 1);
-		gCurrentSplashName[sizeof(gCurrentSplashName) - 1] = '\0';
-		printf("[LOADSC] cache hit texture='%s' slot=%d\n", name, splashTxdId);
 	}
-
-#ifdef WII
-	if(name != nil &&
-	   strncmp(name, "intro", 5) == 0 &&
-	   (previousSplashName[0] == '\0' ||
-	    strncmp(previousSplashName, "intro", 5) != 0)){
-		CMBlur::ResetHistory();
-		printf("[LOADSC] reset blur history for intro '%s' prev='%s'\n",
-		       name,
-		       previousSplashName[0] != '\0' ? previousSplashName : "<none>");
-	}
-#endif
-
-	if(splash.m_pTexture == nil)
-		printf("[LOADSC] texture bind missing for '%s'\n", name);
 
 	return &splash;
 }
@@ -1034,7 +942,6 @@ DestroySplashScreen(void)
 	if(splashTxdId != -1)
 		CTxdStore::RemoveTxdSlot(splashTxdId);
 	splashTxdId = -1;
-	gCurrentSplashName[0] = '\0';
 }
 
 Const char*
@@ -1182,11 +1089,6 @@ LoadingIslandScreen(const char *levelName)
 	splash->Draw(CRect(0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT), col, col, col, col);
 	CFont::DrawFonts();
 	DoRWStuffEndOfFrame();
-#ifdef WII
-	printf("[WII-ISLAND-SPLASH] present-existing level='%s' current='%s'\n",
-	       levelName ? levelName : "<none>",
-	       gCurrentSplashName[0] ? gCurrentSplashName : "<none>");
-#endif
 }
 
 void
@@ -2336,57 +2238,32 @@ popret:	POP_MEMID();	// MEMID_RENDER
 void
 FrontendIdle(void)
 {
-	DIAG_LOG("[FE] Step1 CDraw::CalculateAspectRatio\n");
 	CDraw::CalculateAspectRatio();
-
-	DIAG_LOG("[FE] Step1b RsGlobal w=%d h=%d\n", (int)RsGlobal.width, (int)RsGlobal.height);
-	DIAG_LOG("[FE] Step2 CTimer::Update\n");
 	CTimer::Update();
-
-	DIAG_LOG("[FE] Step3 SpriteInit\n");
 	CSprite2d::SetRecipNearClip(); // this should be on InitialiseRenderWare according to PS2 asm. seems like a bug fix
 	CSprite2d::InitPerFrame();
 	CFont::InitPerFrame();
-
-	DIAG_LOG("[FE] Step3b RsGlobal w=%d h=%d\n", (int)RsGlobal.width, (int)RsGlobal.height);
-	DIAG_LOG("[FE] Step4 Pad\n");
 	CPad::UpdatePads();
-
-	DIAG_LOG("[FE] Step5 ProcessMenu\n");
-	DIAG_LOG("[FE] Step5b RsGlobal w=%d h=%d\n", (int)RsGlobal.width, (int)RsGlobal.height);
 	FrontEndMenuManager.Process();
-	DMAudio.Service();
 
 	if(RsGlobal.quit)
 		return;
 
-	DIAG_LOG("[FE] Step6 Camera+Clear\n");
 	CameraSize(Scene.camera, nil, SCREEN_VIEWWINDOW, SCREEN_ASPECT_RATIO);
 	CVisibilityPlugins::SetRenderWareCamera(Scene.camera);
 	RwCameraClear(Scene.camera, &gColourTop, CLEARMODE);
-
-	if(!RsCameraBeginUpdate(Scene.camera)) {
-		DIAG_ERROR("CameraBeginUpdate FAILED! camera=%p\n", Scene.camera);
+	if(!RsCameraBeginUpdate(Scene.camera))
 		return;
-	}
 
-	DIAG_LOG("[FE] Step7a DefinedState\n");
 	DefinedState(); // seems redundant, but breaks resolution change.
-
-	DIAG_LOG("[FE] Step7b RenderMenus\n");
 	RenderMenus();
 #ifdef XBOX_MESSAGE_SCREEN
-	DIAG_LOG("[FE] Step7c DrawOverlays\n");
 	FrontEndMenuManager.DrawOverlays();
 #endif
-
-	DIAG_LOG("[FE] Step8 Fade+Fonts+EndOfFrame\n");
 	DoFade();
 	Render2dStuffAfterFade();
 	CFont::DrawFonts();
 	DoRWStuffEndOfFrame();
-
-	DIAG_LOG("[FE] Step9 Done\n");
 }
 
 void

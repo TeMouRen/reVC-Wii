@@ -79,9 +79,6 @@
 #include "WaterCannon.h"
 #include "WaterLevel.h"
 
-#ifdef WII
-#include <ogc/lwp_watchdog.h>
-#endif
 #include "Weapon.h"
 #include "WeaponEffects.h"
 #include "Weather.h"
@@ -107,15 +104,6 @@ void texPoolEnforceBudgetImmediate(const char *reason, int maxSteps);
 void texPoolResetSoftBudget(void);
 } }
 extern "C" void WiiMemoryDumpStats(const char *reason);
-#endif
-
-#if REAL_GAMECUBE
-// [OLD-GC-FRAME] Per-frame CGame::Process cutscene timing trace from intro /
-// collision bring-up. Disabled to keep Dolphin log focused on texture and
-// material diagnostics.
-#define GC_CUT_FRAME_LOG(stage) ((void)0)
-#else
-#define GC_CUT_FRAME_LOG(stage) ((void)0)
 #endif
 
 eLevelName CGame::currLevel;
@@ -219,20 +207,14 @@ void ReplaceAtomicPipeCallback();
 bool
 CGame::InitialiseRenderWare(void)
 {
-    // 鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣
-    // [GC-FIX] 姣忔鍔?printf锛屾柟渚挎棩蹇楀畾浣嶅穿婧冧綅缃?
-    // 鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣
-    printf("[reVC-WII] IRW: Step 1 ValidateVersion\n");
     ValidateVersion();
 
 #ifdef USE_TEXTURE_POOL
     _TexturePoolsInitialise();
 #endif
 
-    printf("[reVC-WII] IRW: Step 2 CTxdStore::Initialise\n");
     CTxdStore::Initialise();
 
-    printf("[reVC-WII] IRW: Step 3 CVisibilityPlugins::Initialise\n");
     CVisibilityPlugins::Initialise();
 
 #ifdef GTA_PS2
@@ -242,78 +224,45 @@ CGame::InitialiseRenderWare(void)
     PreAllocateRwObjects();
 #endif
 
-    // 鈹€鈹€ 鍒涘缓鐩告満 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 #if REAL_GAMECUBE
-    // 鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹?
-    // [GC-FIX-A] 淇 printf 杈撳嚭
-    //   SCREEN_WIDTH = ((float)RsGlobal.width) 鏄?float macro
-    //   鍦?PPC 涓?float鈫扚PR锛?d 璇?GPR 鈫?鍨冨溇鍊?
-    //   鏀圭敤 (int)RsGlobal.width 鐩存帴鎵撳嵃
-    //
-    // [GC-FIX-B] 闃插尽鎬х淮搴︽鏌?
-    //   濡傛灉 Initialise3D 閲嶇疆浜?RsGlobal.width/height 鑰?
-    //   RsSelectDevice 妗╂病鏈夎缃紙鐞嗚涓婂凡淇锛夛紝鍦ㄦ鍏滃簳
-    // 鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹?
     if (RsGlobal.width == 0 || RsGlobal.height == 0) {
-        printf("[reVC-WII] IRW: WARN: RsGlobal w/h = 0, forcing 640x480!\n");
         RsGlobal.width  = 640;
         RsGlobal.height = 480;
     }
-    printf("[reVC-WII] IRW: Step 4 CameraCreate %dx%d\n",
-           (int)RsGlobal.width, (int)RsGlobal.height);  // 鈫?鐢?int 涓嶇敤 SCREEN_WIDTH 瀹?
-#else
-    printf("[reVC-WII] IRW: Step 4 CameraCreate %dx%d\n",
-           (int)RsGlobal.width, (int)RsGlobal.height);
 #endif
     Scene.camera = CameraCreate(SCREEN_WIDTH, SCREEN_HEIGHT, TRUE);
     ASSERT(Scene.camera != nil);
     if (!Scene.camera)
     {
-        printf("[reVC-WII] FATAL: CameraCreate returned NULL! (w=%d h=%d)\n",
-               (int)RsGlobal.width, (int)RsGlobal.height);
         return (false);
     }
-    printf("[reVC-WII] IRW: camera OK\n");
 
     RwCameraSetFarClipPlane(Scene.camera, 2000.0f);
     RwCameraSetNearClipPlane(Scene.camera, 0.9f);
     CameraSize(Scene.camera, nil, DEFAULT_VIEWWINDOW, DEFAULT_ASPECT_RATIO);
 
-    // 鈹€鈹€ 鍒涘缓涓栫晫 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    printf("[reVC-WII] IRW: Step 5 RpWorldCreate\n");
     RwBBox bbox;
-    bbox.sup.x = bbox.sup.y = bbox.sup.z =  10000.0f;
+    bbox.sup.x = bbox.sup.y = bbox.sup.z = 10000.0f;
     bbox.inf.x = bbox.inf.y = bbox.inf.z = -10000.0f;
 
     Scene.world = RpWorldCreate(&bbox);
     ASSERT(Scene.world != nil);
     if (!Scene.world)
     {
-        printf("[reVC-WII] FATAL: RpWorldCreate returned NULL!\n");
         CameraDestroy(Scene.camera);
         Scene.camera = nil;
         return (false);
     }
-    printf("[reVC-WII] IRW: world OK\n");
 
     RpWorldAddCamera(Scene.world, Scene.camera);
 
-    printf("[reVC-WII] IRW: Step 6 LightsCreate\n");
     LightsCreate(Scene.world);
 
-    // 鈹€鈹€ Debug 瀛椾綋 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 #if REAL_GAMECUBE
-    // [GC-FIX] rw::Charset::create() 琚々涓鸿繑鍥?NULL
-    // 鑻?Charset 鍚櫄鍑芥暟锛孨ULL->vfunc() 浼氱粡 vtable 宕╂簝
-    // GC 涓婃病鏈夎皟璇曟覆鏌撻渶姹傦紝鐩存帴璺宠繃
-    printf("[reVC-WII] IRW: Step 7 CreateDebugFont (SKIPPED on GC)\n");
 #else
-    printf("[reVC-WII] IRW: Step 7 CreateDebugFont\n");
     CreateDebugFont();
 #endif
 
-    // 鈹€鈹€ librw MatFX 閰嶇疆 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    printf("[reVC-WII] IRW: Step 8 MatFX setup\n");
 #ifdef LIBRW
 #ifdef PS2_MATFX
     rw::MatFX::envMapApplyLight    = true;
@@ -342,33 +291,22 @@ CGame::InitialiseRenderWare(void)
 #endif
 #endif // LIBRW
 
-    // 鈹€鈹€ 瀛椾綋 / HUD / 鐨偆 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    printf("[reVC-WII] IRW: Step 9 CFont::Initialise\n");
     PUSH_MEMID(MEMID_TEXTURES);
     CFont::Initialise();
 
-    printf("[reVC-WII] IRW: Step 10 CHud::Initialise\n");
     CHud::Initialise();
 
-    printf("[reVC-WII] IRW: Step 11 CPlayerSkin::Initialise\n");
     CPlayerSkin::Initialise();
     POP_MEMID();
 
-    // 鈹€鈹€ 鎵╁睍绠＄嚎 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    // [GC-FIX] config.h 閲屽凡缁?#undef EXTENDED_PIPELINES on GAMECUBE
-    // 姝ゅ #ifdef 鍧椾笉浼氱紪璇戯紝CustomPipeInit 涓嶄細琚皟鐢?
 #ifdef EXTENDED_PIPELINES
-    printf("[reVC-WII] IRW: Step 12 CustomPipeInit\n");
     CustomPipes::CustomPipeInit();
 #endif
 
-    // [GC-FIX] 鍚屼笂锛孲CREEN_DROPLETS 宸茶 #undef on GAMECUBE
 #ifdef SCREEN_DROPLETS
-    printf("[reVC-WII] IRW: Step 13 ScreenDroplets::InitDraw\n");
     ScreenDroplets::InitDraw();
 #endif
 
-    printf("[reVC-WII] IRW: InitialiseRenderWare complete!\n");
     return (true);
 }
 
@@ -416,7 +354,6 @@ bool CGame::InitialiseOnceAfterRW(void)
 {
 #if REAL_GAMECUBE
 	if (gGcInitialiseOnceAfterRWDone) {
-		printf("[reVC-WII] InitialiseOnceAfterRW: already initialised, skipping duplicate pass\n");
 		return true;
 	}
 #endif
@@ -426,26 +363,6 @@ bool CGame::InitialiseOnceAfterRW(void)
 	mod_HandlingManager.Initialise();
 #if REAL_GAMECUBE
 	GcVehicleInitHandlingSnapshots();
-	{
-		static const tVehicleType sDiagHandlingIds[] = {
-			HANDLING_ADMIRAL,
-			HANDLING_WASHING,
-			HANDLING_MOPED,
-			HANDLING_MAVERICK,
-		};
-		for(uint32 i = 0; i < ARRAY_SIZE(sDiagHandlingIds); i++){
-			tHandlingData *h = mod_HandlingManager.GetHandlingData(sDiagHandlingIds[i]);
-			printf("[HANDLING-INIT] id=%d mass=%f turnMass=%f gears=%d maxVel=%f revVel=%f accel=%f flags=0x%x\n",
-			       (int)sDiagHandlingIds[i],
-			       h ? h->fMass : 0.0f,
-			       h ? h->fTurnMass : 0.0f,
-			       h ? (int)h->Transmission.nNumberOfGears : -1,
-			       h ? h->Transmission.fMaxVelocity : 0.0f,
-			       h ? h->Transmission.fMaxReverseVelocity : 0.0f,
-			       h ? h->Transmission.fEngineAcceleration : 0.0f,
-			       h ? h->Flags : 0);
-		}
-	}
 #endif
 	CSurfaceTable::Initialise("DATA\\SURFACE.DAT");
 	CPedStats::Initialise();
@@ -454,7 +371,6 @@ bool CGame::InitialiseOnceAfterRW(void)
 	LoadingScreen("Loading the Game", "Initialising audio", GetRandomSplashScreen());
 #endif
 		DMAudio.Initialise();
-		printf("[BREADCRUMB] - AUDIO Initialised\n");
 
 #if !REAL_GAMECUBE
 #ifndef GTA_PS2
@@ -585,70 +501,44 @@ bool CGame::Initialise(const char* datFile)
 	CPickups::Init();
 	CTheCarGenerators::Init();
 
-	printf("[GAME-INIT] Loading gta3.img...\n");
 	CdStreamAddImage("MODELS\\GTA3.IMG");
-	printf("[GAME-INIT] LoadLevel DEFAULT.DAT...\n");
 	CFileLoader::LoadLevel("DATA\\DEFAULT.DAT");
-	printf("[GAME-INIT] LoadLevel %s...\n", datFile);
 	CFileLoader::LoadLevel(datFile);
-	printf("\n[BREADCRUMB] 01 - LoadLevel FINISHED! NOT dead in OBJECT.DAT!\n");
-	printf("[GAME-INIT] LoadLevels DONE\n");
 
-	printf("[BREADCRUMB] 02 - About to render LoadingScreen (Add Particles)\n");
 	LoadingScreen("Loading the Game", "Add Particles", nil);
-	printf("[BREADCRUMB] 03 - About to AddParticles\n");
 	CWorld::AddParticles();
-	printf("[BREADCRUMB] 04 - About to LoadVehicleColours\n");
 	CVehicleModelInfo::LoadVehicleColours();
-	printf("[BREADCRUMB] 05 - About to LoadEnvironmentMaps\n");
 	CVehicleModelInfo::LoadEnvironmentMaps();
-	printf("[BREADCRUMB] 06 - About to PostZoneCreation\n");
 	CTheZones::PostZoneCreation();
 	POP_MEMID();
 
-	printf("[BREADCRUMB] 07 - About to PreparePathData (navigation)\n");
+	LoadingScreen("Loading the Game", "Setup paths", nil);
 	ThePaths.PreparePathData();
 	for (int i = 0; i < NUMPLAYERS; i++)
 		CWorld::Players[i].Clear();
 	CWorld::Players[0].LoadPlayerSkin();
 	TestModelIndices();
 
-	printf("[BREADCRUMB] 08 - About to CWaterLevel::Initialise\n");
+	LoadingScreen("Loading the Game", "Setup water", nil);
 	CWaterLevel::Initialise("DATA\\WATER.DAT");
-	printf("[BREADCRUMB] 08 - CWaterLevel done\n");
 	TheConsole.Init();
 	CDraw::SetFOV(120.0f);
 	CDraw::ms_fLODDistance = 500.0f;
 
-	printf("[BREADCRUMB] 09 - About to CStreaming streaming load\n");
+	LoadingScreen("Loading the Game", "Setup streaming", nil);
 	CStreaming::LoadInitialVehicles();
 	CStreaming::LoadInitialPeds();
-	printf("[BREADCRUMB] 09 - Vehicles/Peds loaded\n");
 	CStreaming::RequestBigBuildings(LEVEL_GENERIC);
+	CStreaming::LoadAllRequestedModels(false);
+	CStreaming::RemoveIslandsNotUsed(currLevel);
 
-	// GC: MUST load animations before models 鈥?ConvertBufferToObject
-	// checks that a model's anim block is loaded before loading the model.
-	// Without this, models that need unloaded anim blocks get stuck in
-	// an infinite ReRequestModel 鈫?LoadAllRequestedModels loop.
+	LoadingScreen("Loading the Game", "Load animations", GetRandomSplashScreen());
 	PUSH_MEMID(MEMID_ANIMATION);
-		CAnimManager::LoadAnimFiles();
-		SYS_Report("[BREADCRUMB] 10.5 - Anims loaded (early)\n");
+	CAnimManager::LoadAnimFiles();
 	POP_MEMID();
 
-	CStreaming::LoadAllRequestedModels(false);
-	printf("[BREADCRUMB] 10 - Streaming load ALL PASSED!!!\n");
-	CStreaming::RemoveIslandsNotUsed(currLevel);
-	printf("Streaming uses %zuK of its memory", CStreaming::ms_memoryUsed / 1024); // original modifier was %d
-
-        SYS_Report("[BREADCRUMB] 10.5 - Anims already loaded\n");
-
-                SYS_Report("[BREADCRUMB] 10.6 - LoadInitialWeapons START\n");
-                CStreaming::LoadInitialWeapons();
-		SYS_Report("[BREADCRUMB] 10.7 - Weapons loaded\n");
-		SYS_Report("[BREADCRUMB] 10.8 - LoadAllRequestedModels(0) START\n");
-		CStreaming::LoadAllRequestedModels(0);
-		SYS_Report("[BREADCRUMB] 10.9 - LoadAllRequestedModels(0) DONE\n");
-		SYS_Report("[BREADCRUMB] 10.10 - CPed::Initialise START\n");
+	CStreaming::LoadInitialWeapons();
+	CStreaming::LoadAllRequestedModels(0);
 	CPed::Initialise();
 	CRouteNode::Initialise();
 	CEventList::Initialise();
@@ -844,7 +734,6 @@ void CGame::ReInitGameObjectVariables(void)
 	CStreaming::RemoveIslandsNotUsed(LEVEL_BEACH);
 	CStreaming::RemoveIslandsNotUsed(LEVEL_MAINLAND);
 	CStreaming::LoadAllRequestedModels(false);
-	((void)0); // [GC-DEBUG-DISABLED]
 	currArea = AREA_MAIN_MAP;
 	CPed::Initialise();
 	CEventList::Initialise();
@@ -1024,20 +913,9 @@ void CGame::InitialiseWhenRestarting(void)
 
 void CGame::Process(void)
 {
-#ifdef WII
-	uint64 wiiProcessStartTicks = gettime();
-	uint64 wiiAfterTidyTicks = wiiProcessStartTicks;
-	uint64 wiiAfterFrontendTicks = wiiProcessStartTicks;
-	uint64 wiiAfterStreamingTicks = wiiProcessStartTicks;
-	uint64 wiiAfterScriptsTicks = wiiProcessStartTicks;
-	uint64 wiiAfterWorldTicks = wiiProcessStartTicks;
-#endif
 	CPad::UpdatePads();
 #ifdef USE_CUSTOM_ALLOCATOR
 	ProcessTidyUpMemory();
-#endif
-#ifdef WII
-	wiiAfterTidyTicks = gettime();
 #endif
 #ifdef DEBUGMENU
 	DebugMenuProcess();
@@ -1048,9 +926,6 @@ void CGame::Process(void)
 		FrontEndMenuManager.Process();
 
 	CTheZones::Update();
-#ifdef WII
-	wiiAfterFrontendTicks = gettime();
-#endif
 #ifdef SECUROM
 	if (CTimer::GetTimeInMilliseconds() >= (35 * 60 * 1000) && gameProcessPirateCheck == 0){
 		// if game not pirated
@@ -1062,11 +937,6 @@ void CGame::Process(void)
 	uint32 startTime = CTimer::GetCurrentTimeInCycles() / CTimer::GetCyclesPerMillisecond();
 	CStreaming::Update();
 	uint32 processTime = CTimer::GetCurrentTimeInCycles() / CTimer::GetCyclesPerMillisecond() - startTime;
-#ifdef WII
-	wiiAfterStreamingTicks = gettime();
-	wiiAfterScriptsTicks = wiiAfterStreamingTicks;
-	wiiAfterWorldTicks = wiiAfterStreamingTicks;
-#endif
 	CWindModifiers::Number = 0;
 	if (!CTimer::GetIsPaused())
 	{
@@ -1085,21 +955,15 @@ void CGame::Process(void)
 		CClock::Update();
 		CWeather::Update();
 
-		GC_CUT_FRAME_LOG("before-scripts");
 		PUSH_MEMID(MEMID_SCRIPT);
 		CTheScripts::Process();
 		POP_MEMID();
-#ifdef WII
-		wiiAfterScriptsTicks = gettime();
-#endif
-		GC_CUT_FRAME_LOG("after-scripts");
 
 		CCollision::Update();
 		CScriptPaths::Update();
 		CTrain::UpdateTrains();
 		CPlane::UpdatePlanes();
 		CHeli::UpdateHelis();
-		GC_CUT_FRAME_LOG("after-vehicles");
 		CDarkel::Update();
 		CSkidmarks::Update();
 		CAntennas::Update();
@@ -1136,13 +1000,8 @@ void CGame::Process(void)
 		CReplay::Update();
 
 		PUSH_MEMID(MEMID_WORLD);
-		GC_CUT_FRAME_LOG("before-world");
 		CWorld::Process();
-		GC_CUT_FRAME_LOG("after-world");
 		POP_MEMID();
-#ifdef WII
-		wiiAfterWorldTicks = gettime();
-#endif
 
 		gAccidentManager.Update();
 		CPacManPickups::Update();
@@ -1154,7 +1013,6 @@ void CGame::Process(void)
 		CTimeCycle::Update();
 		if (CReplay::ShouldStandardCameraBeProcessed())
 			TheCamera.Process();
-		GC_CUT_FRAME_LOG("after-camera");
 		CCullZones::Update();
 		if (!CReplay::IsPlayingBack())
 			CGameLogic::Update();
@@ -1174,25 +1032,9 @@ void CGame::Process(void)
 			CCarCtrl::RemoveCarsIfThePoolGetsFull();
 			POP_MEMID();
 		}
-		GC_CUT_FRAME_LOG("end");
 	}
 #ifdef GTA_PS2
 	CMemCheck::DoTest();
-#endif
-#ifdef WII
-	uint64 wiiProcessEndTicks = gettime();
-	uint32 wiiProcessMs = (uint32)ticks_to_millisecs(
-		wiiProcessEndTicks - wiiProcessStartTicks);
-	if(wiiProcessMs >= 50u)
-		SYS_Report("[WII-GAME-STAGE] total=%ums tidy=%ums frontend=%ums streaming=%ums scripts=%ums world=%ums tail=%ums pending=%d\n",
-		           (unsigned)wiiProcessMs,
-		           (unsigned)ticks_to_millisecs(wiiAfterTidyTicks - wiiProcessStartTicks),
-		           (unsigned)ticks_to_millisecs(wiiAfterFrontendTicks - wiiAfterTidyTicks),
-		           (unsigned)ticks_to_millisecs(wiiAfterStreamingTicks - wiiAfterFrontendTicks),
-		           (unsigned)ticks_to_millisecs(wiiAfterScriptsTicks - wiiAfterStreamingTicks),
-		           (unsigned)ticks_to_millisecs(wiiAfterWorldTicks - wiiAfterScriptsTicks),
-		           (unsigned)ticks_to_millisecs(wiiProcessEndTicks - wiiAfterWorldTicks),
-		           CStreaming::ms_numModelsRequested);
 #endif
 }
 
@@ -1455,11 +1297,7 @@ void CGame::DrasticTidyUpMemory(bool flushDraw)
 
 void CGame::TidyUpMemory(bool moveTextures, bool flushDraw)
 {
-#ifdef WII
-	uint64 wiiTidyStartTicks = gettime();
-#endif
 #ifdef USE_CUSTOM_ALLOCATOR
-	printf("Largest free block before tidy %d\n", gMainHeap.GetLargestFreeBlock());
 
 	if (moveTextures) {
 		if (flushDraw) {
@@ -1501,24 +1339,8 @@ void CGame::TidyUpMemory(bool moveTextures, bool flushDraw)
 		TidyUpModelInfo(mi, false);
 	}
 
-	printf("Largest free block after tidy %d\n", gMainHeap.GetLargestFreeBlock());
 #endif
-#ifdef WII
-	// Normal streaming pressure is handled by whole-TXD retirement. GX
-	// compaction remains the allocator's exceptional direct-failure fallback.
-	uint32 wiiTidyMs = (uint32)ticks_to_millisecs(gettime() - wiiTidyStartTicks);
-	if(wiiTidyMs >= 20u){
-		uint32 largestFree = 0;
-#ifdef USE_CUSTOM_ALLOCATOR
-		largestFree = gMainHeap.GetLargestFreeBlock();
-#endif
-		SYS_Report("[WII-TIDY-STAGE] total=%ums moveTextures=%d flushDraw=%d largest=%uKB\n",
-		           (unsigned)wiiTidyMs, moveTextures ? 1 : 0,
-		           flushDraw ? 1 : 0,
-		           (unsigned)(largestFree / 1024u));
-	}
-#endif
-	}
+}
 
 void CGame::ProcessTidyUpMemory(void)
 {
