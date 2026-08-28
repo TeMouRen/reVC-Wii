@@ -30,6 +30,11 @@
 #include "Shadows.h"
 #ifdef WII
 extern "C" void VIDEO_WaitVSync(void);
+extern "C" bool WiiBeginSharedFrame(bool frontendLoop);
+extern "C" void WiiResetSharedFrameTiming(void);
+extern "C" void WiiPrepareSharedGameplay(void);
+extern "C" void WiiRestoreSharedAudioAfterLoad(void);
+extern "C" bool WiiIsExitRequested(void);
 #endif
 #include "Skidmarks.h"
 #include "Antennas.h"
@@ -2022,15 +2027,8 @@ Idle(void *arg)
 		return;
 
 	PUSH_MEMID(MEMID_RENDER);
-	#ifdef WII
-	const bool wiiIslandTransitionSplash = WiiIsIslandTransitionSplashActive();
-	#endif
 
-	if(!FrontEndMenuManager.m_bMenuActive && TheCamera.GetScreenFadeStatus() != FADE_2
-	#ifdef WII
-	   && !wiiIslandTransitionSplash
-	#endif
-	  )
+	if(!FrontEndMenuManager.m_bMenuActive && TheCamera.GetScreenFadeStatus() != FADE_2)
 	{
 		// This is from SA, but it's nice for windowed mode
 #if defined(GTA_PC) && !defined(RW_GL3)
@@ -2151,13 +2149,6 @@ Idle(void *arg)
 #endif
 	}
 
-	#ifdef WII
-	if(wiiIslandTransitionSplash){
-		WiiDrawIslandTransitionSplash();
-		wiiStageAfterRender2dMs = RsTimer();
-	}
-	#endif
-
 	tbStartTimer(0, "RenderMenus");
 	RenderMenus();
 	tbEndTimer("RenderMenus");
@@ -2269,12 +2260,107 @@ FrontendIdle(void)
 void
 InitialiseGame(void)
 {
-	printf("[GAME-INIT] InitialiseGame: loading loadsc0...\n");
 	LoadingScreen(nil, nil, "loadsc0");
-	printf("[GAME-INIT] InitialiseGame: calling CGame::Initialise...\n");
 	CGame::Initialise("DATA\\GTA_VC.DAT");
-	printf("[GAME-INIT] InitialiseGame: DONE\n");
 }
+
+#ifdef WII
+void
+WiiRunGameLifecycle(void)
+{
+	enum WiiGameState {
+		WII_INIT_FRONTEND,
+		WII_FRONTEND,
+		WII_INIT_PLAYING_GAME,
+		WII_PLAYING_GAME
+	};
+
+	WiiGameState state = WII_INIT_FRONTEND;
+
+	while (!RsGlobal.quit && !WiiIsExitRequested()) {
+		switch (state) {
+		case WII_INIT_FRONTEND:
+			// Keep the same loading-frame boundary as the upstream GS_INIT_FRONTEND
+			// state.  FrontendIdle must see this state on its first frame.
+			LoadingScreen(nil, nil, "loadsc0");
+			FrontEndMenuManager.m_bGameNotLoaded = true;
+			FrontEndMenuManager.RequestFrontEndStartUp();
+			WiiResetSharedFrameTiming();
+			state = WII_FRONTEND;
+			break;
+
+		case WII_FRONTEND:
+			if (!WiiBeginSharedFrame(true))
+				return;
+			FrontendIdle();
+			if (RsGlobal.quit || WiiIsExitRequested())
+				return;
+			if (!FrontEndMenuManager.m_bMenuActive ||
+				FrontEndMenuManager.m_bWantToLoad ||
+				FrontEndMenuManager.m_bWantToRestart)
+				state = WII_INIT_PLAYING_GAME;
+			break;
+
+		case WII_INIT_PLAYING_GAME:
+		{
+			const bool wantsInitialLoad = FrontEndMenuManager.m_bWantToLoad;
+			InitialiseGame();
+
+			// The Wii save backend marks a load before InitialiseGame.  Preserve
+			// the existing restart/load boundary, but keep it in the shared
+			// lifecycle instead of making it a platform-loop special case.
+			if (wantsInitialLoad) {
+				CPad::ResetCheats();
+				CPad::StopPadsShaking();
+				DMAudio.ChangeMusicMode(MUSICMODE_DISABLE);
+				CGame::ShutDownForRestart();
+				CTimer::Stop();
+				CGame::InitialiseWhenRestarting();
+				FrontEndMenuManager.m_bWantToRestart = false;
+			}
+
+			WiiRestoreSharedAudioAfterLoad();
+			DMAudio.ChangeMusicMode(MUSICMODE_GAME);
+			FrontEndMenuManager.m_bGameNotLoaded = false;
+			FrontEndMenuManager.m_bWantToRestart = false;
+			WiiPrepareSharedGameplay();
+			WiiResetSharedFrameTiming();
+			state = WII_PLAYING_GAME;
+			break;
+		}
+
+		case WII_PLAYING_GAME:
+			if (!WiiBeginSharedFrame(false))
+				return;
+			Idle((void*)TRUE);
+			if (RsGlobal.quit || WiiIsExitRequested())
+				return;
+
+			if (FrontEndMenuManager.m_bWantToRestart ||
+				b_FoundRecentSavedGameWantToLoad) {
+				CPad::ResetCheats();
+				CPad::StopPadsShaking();
+				DMAudio.ChangeMusicMode(MUSICMODE_DISABLE);
+				CGame::ShutDownForRestart();
+				CTimer::Stop();
+
+				if (b_FoundRecentSavedGameWantToLoad) {
+					FrontEndMenuManager.m_bWantToRestart = true;
+					FrontEndMenuManager.m_bWantToLoad = true;
+				}
+
+				CGame::InitialiseWhenRestarting();
+				WiiRestoreSharedAudioAfterLoad();
+				DMAudio.ChangeMusicMode(MUSICMODE_GAME);
+				FrontEndMenuManager.m_bWantToRestart = false;
+				WiiPrepareSharedGameplay();
+				WiiResetSharedFrameTiming();
+			}
+			break;
+		}
+	}
+}
+#endif
 
 RsEventStatus
 AppEventHandler(RsEvent event, void *param)

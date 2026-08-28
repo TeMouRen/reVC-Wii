@@ -60,6 +60,7 @@ static u32         gWiiNextGameRetrace = 0;
 static bool        gWiiGameRetraceTargetValid = false;
 
 extern "C" void WiiRecordOuterVSyncWait(double waitMs, double frameLoopMs);
+static void GcResetPadStateForGameplay(void);
 
 static void
 WiiResetLoopTimingMarks(void)
@@ -124,6 +125,47 @@ WiiWaitForVideoSyncAndMeasure(bool frontendLoop)
         }
         gWiiOuterVsyncDiagSeq++;
     }
+}
+
+// The shared lifecycle in core/main.cpp owns the state machine.  These small
+// callbacks are the only frame-boundary work that belongs to the Wii port.
+extern "C" bool
+WiiBeginSharedFrame(bool frontendLoop)
+{
+    if (gWiiExitRequested || RsGlobal.quit)
+        return false;
+
+    WiiWaitForVideoSyncAndMeasure(frontendLoop);
+    PAD_ScanPads();
+    if (gWiiExitRequested || RsGlobal.quit)
+        return false;
+
+    gWiiPresentedThisFrame = false;
+    return true;
+}
+
+extern "C" void
+WiiResetSharedFrameTiming(void)
+{
+    WiiResetLoopTimingMarks();
+}
+
+extern "C" void
+WiiPrepareSharedGameplay(void)
+{
+    GcResetPadStateForGameplay();
+}
+
+extern "C" bool
+WiiIsExitRequested(void)
+{
+    return gWiiExitRequested;
+}
+
+extern "C" void
+WiiRestoreSharedAudioAfterLoad(void)
+{
+    WiiRestoreAudioFadeAfterLoad();
 }
 
 static const char*
@@ -833,150 +875,15 @@ int main(int argc, char *argv[]) {
         SYS_Report("[reVC-WII] FATAL: InitialiseOnceAfterRW failed.\n");
         while (true) { VIDEO_WaitVSync(); }
     }
-    // Frontend resources and fade state are initialized by the shared menu
-    // state machine.  Do not bind frontend1/frontend2 or set menu flags here:
-    // that bypassed CMenuManager::Initialise/LoadAllTextures and loaded text
-    // twice, which in turn broke the intro fade and scene labels.
+    // Keep settings loading in the platform bootstrap.  Frontend startup and
+    // gameplay transitions are owned by the shared lifecycle in main.cpp.
     FrontEndMenuManager.LoadSettings();
-    FrontEndMenuManager.m_bGameNotLoaded = true;
-    FrontEndMenuManager.RequestFrontEndStartUp();
     WiiApplyFrontendAudioSettings();
 
-    // FrontendIdle() â?PC/PS2 èåä¸»å¾ªç?(å®ä¹å?main.cpp)
-    // æ¯å®æ?Idle() æ´è½»é? ä¸å è½½æ¸¸ææ°æ®ãä¸åå§åä¸çãä¸æ¸²æ3D
-    extern void FrontendIdle(void);
-    extern void Idle(void *arg);
-    extern void InitialiseGame(void);
-    extern bool b_FoundRecentSavedGameWantToLoad;
-
-    enum WiiGameState {
-        WII_FRONTEND,
-        WII_INIT_PLAYING_GAME,
-        WII_PLAYING_GAME
-    };
-    WiiGameState gameState = WII_FRONTEND;
-    bool firstGameFrame = true;
-    int gameFrames = 0;
-
+    // Shared FrontendIdle/Idle lifecycle is implemented in core/main.cpp.
     SYS_Report("[reVC-WII] Entering shared frontend/game lifecycle...\n");
-    WiiResetLoopTimingMarks();
-
-    while (!RsGlobal.quit) {
-        if (gameState == WII_FRONTEND) {
-            WiiWaitForVideoSyncAndMeasure(true);
-            PAD_ScanPads();
-            if (gWiiExitRequested)
-                break;
-
-            gWiiPresentedThisFrame = false;
-            FrontendIdle();
-            if (gWiiExitRequested)
-                break;
-
-            if (!FrontEndMenuManager.m_bMenuActive ||
-                FrontEndMenuManager.m_bWantToLoad ||
-                FrontEndMenuManager.m_bWantToRestart) {
-                gameState = WII_INIT_PLAYING_GAME;
-                continue;
-            }
-
-            g_diagFrame++;
-            if (g_diagFrame == 1) {
-                int errs = 0;
-                for (int i = 0; i < 64; i++) {
-                    if (_guard_before[i] != 0xDEADBEEF) errs++;
-                    if (_guard_after[i]  != 0xBEEFDEAD) errs++;
-                }
-                if (errs > 0)
-                    DIAG_ERROR("GUARD CORRUPTED: %d words damaged!\n", errs);
-                else
-                    SYS_Report("[reVC-WII] GUARD: OK, no memory corruption detected\n");
-            }
-            continue;
-        }
-
-        if (gameState == WII_INIT_PLAYING_GAME) {
-            const bool wantsInitialLoad = FrontEndMenuManager.m_bWantToLoad;
-            if (FrontEndMenuManager.m_bSpritesLoaded) {
-                FrontEndMenuManager.UnloadTextures();
-                FrontEndMenuManager.m_bMenuActive = false;
-            }
-
-            SYS_Report("[reVC-WII] InitialiseGame() START\n");
-            InitialiseGame();
-            SYS_Report("[reVC-WII] InitialiseGame() DONE\n");
-
-            if (wantsInitialLoad) {
-                CPad::ResetCheats();
-                CPad::StopPadsShaking();
-                DMAudio.ChangeMusicMode(MUSICMODE_DISABLE);
-                CGame::ShutDownForRestart();
-                CTimer::Stop();
-                CGame::InitialiseWhenRestarting();
-                FrontEndMenuManager.m_bWantToRestart = false;
-            }
-
-            WiiRestoreAudioFadeAfterLoad();
-            DMAudio.ChangeMusicMode(MUSICMODE_GAME);
-            FrontEndMenuManager.m_bGameNotLoaded = false;
-            FrontEndMenuManager.m_bWantToRestart = false;
-            GcResetPadStateForGameplay();
-
-            gameState = WII_PLAYING_GAME;
-            firstGameFrame = true;
-            gameFrames = 0;
-            WiiResetLoopTimingMarks();
-        }
-
-        if (gameState != WII_PLAYING_GAME)
-            continue;
-
-        // The first frame after initialization is submitted immediately.
-        // Subsequent frames follow the Wii retrace bridge, while shared Idle
-        // owns all rendering and fade processing.
-        if (!firstGameFrame)
-            WiiWaitForVideoSyncAndMeasure(false);
-        firstGameFrame = false;
-
-        PAD_ScanPads();
-        if (gWiiExitRequested)
-            break;
-
-        gWiiPresentedThisFrame = false;
-        Idle((void*)0x00000001);
-        if (gWiiExitRequested)
-            break;
-
-        if (FrontEndMenuManager.m_bWantToRestart ||
-            b_FoundRecentSavedGameWantToLoad) {
-            SYS_Report("[reVC-WII] Restart/load requested; reinitialising game.\n");
-
-            CPad::ResetCheats();
-            CPad::StopPadsShaking();
-            DMAudio.ChangeMusicMode(MUSICMODE_DISABLE);
-            CGame::ShutDownForRestart();
-            CTimer::Stop();
-
-            if (b_FoundRecentSavedGameWantToLoad) {
-                FrontEndMenuManager.m_bWantToRestart = true;
-                FrontEndMenuManager.m_bWantToLoad = true;
-            }
-
-            CGame::InitialiseWhenRestarting();
-            WiiRestoreAudioFadeAfterLoad();
-            DMAudio.ChangeMusicMode(MUSICMODE_GAME);
-            FrontEndMenuManager.m_bWantToRestart = false;
-            GcResetPadStateForGameplay();
-
-            firstGameFrame = true;
-            gameFrames = 0;
-            WiiResetLoopTimingMarks();
-            continue;
-        }
-        gameFrames++;
-    }
-
-    SYS_Report("[reVC-WII] Game loop exited. Total frames: %d\n", gameFrames);
+    WiiRunGameLifecycle();
+    SYS_Report("[reVC-WII] Shared lifecycle exited.\n");
 
     if (gWiiExitRequested) {
         WiiFinishExitRequest();
