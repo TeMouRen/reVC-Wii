@@ -1602,7 +1602,7 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
                     meshEnv->tex->name : "<none>";
                 fprintf(stdout,
                         "[GX-MATFX-TRACE] mesh atomic=%p geo=%p mesh=%u "
-                        "mat=%p baseTex=%s envTex=%s coef=%.5f "
+                        "mat=%p baseTex=%s envTex=%s coefRaw=%.5f intensity=%.3f coefEff=%.5f "
                         "normals=%d texCoords=%u baseTextured=%d "
                         "vtxAlpha=%d effVtxAlpha=%d matAlpha=%u "
                         "usesAlpha=%d envFbAlpha=%d envFrame=%p indices=%u\n",
@@ -1613,6 +1613,8 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
                         meshTexName ? meshTexName : "<none>",
                         envName ? envName : "<none>",
                         meshEnv ? (double)meshEnv->coefficient : 0.0,
+                        (double)matFXEnvMapIntensity,
+                        meshEnv ? (double)(meshEnv->coefficient * matFXEnvMapIntensity) : 0.0,
                         inst->hasNormals ? 1 : 0,
                         (unsigned)inst->numTexCoords,
                         matFXBaseTextured ? 1 : 0,

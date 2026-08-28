@@ -324,6 +324,13 @@ CGame::InitialiseRenderWare(void)
     rw::MatFX::envMapUseMatColor   = false;
     rw::MatFX::envMapFlipU         = false;
 #endif
+#ifdef GAMECUBE
+    // GX uses a separate backend scale for its additive env-map approximation.
+    // The streamed material coefficient remains the PS2/RW source value.
+    rw::matFXEnvMapIntensity = 0.25f;
+#else
+    rw::matFXEnvMapIntensity = 1.0f;
+#endif
     rw::RGBA envcol = { 64, 64, 64, 255 };
     rw::MatFX::envMapColor = envcol;
 #else

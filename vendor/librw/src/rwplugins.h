@@ -166,6 +166,8 @@ struct MatFX
 	static RGBA envMapColor;	// if !envMapUseMatColor, use this
 };
 
+extern float32 matFXEnvMapIntensity;
+
 struct MatFXGlobals
 {
 	int32 atomicOffset;

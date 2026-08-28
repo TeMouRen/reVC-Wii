@@ -47,6 +47,7 @@ static wchar ChineseNeoText[] = { 'N', 'e', 'o', '\0' };
 static wchar ChinesePedRimLightText[] = { 'r', 'i', 'm', ' ', 'l', 'i', 'g', 'h', 't', 0x8FB9, 0x7F18, 0x5149, '\0' };
 static wchar ChineseWorldLightingText[] = { 0x4E16, 0x754C, 0x5149, 0x7167, 0x8D34, 0x56FE, '\0' };
 static wchar ChineseRoadGlossText[] = { 0x8DEF, 0x9762, 0x5149, 0x6CFD, '\0' };
+static wchar ChineseMatFxIntensityText[] = { 'M', 'a', 't', 'F', 'X', ' ', 0x53CD, 0x5C04, 0x5F3A, 0x5EA6, '\0' };
 
 static ChineseBuiltinTextEntry gChineseBuiltinMenuTexts[] = {
 	{ "FET_GFX", ChineseGraphicsMenuText },
@@ -66,6 +67,7 @@ static ChineseBuiltinTextEntry gChineseBuiltinMenuTexts[] = {
 	{ "FED_PRM", ChinesePedRimLightText },
 	{ "FED_WLM", ChineseWorldLightingText },
 	{ "FED_RGL", ChineseRoadGlossText },
+	{ "FED_MXI", ChineseMatFxIntensityText },
 };
 
 static wchar *

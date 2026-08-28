@@ -151,6 +151,16 @@ getEnvMap(Material *mat)
     return &matfx->fx[index].env;
 }
 
+static float
+clamp01(float value)
+{
+    if(value < 0.0f)
+        return 0.0f;
+    if(value > 1.0f)
+        return 1.0f;
+    return value;
+}
+
 bool
 gxMatFXEnvReady(Material *mat, bool hasNormals)
 {
@@ -164,8 +174,10 @@ gxMatFXEnvReady(Material *mat, bool hasNormals)
     const MatFX::Env *env = getEnvMap(mat);
     Texture *envTex = env ? env->tex : nil;
     GxRaster *raster = envTex ? getNativeRaster(envTex) : nil;
+    float intensity = clamp01(matFXEnvMapIntensity);
+    float effective = env != nil ? env->coefficient * intensity : 0.0f;
     bool ready = hasNormals && env != nil && envTex != nil &&
-                 env->coefficient > 0.0f && raster != nil &&
+                 effective > 0.0f && raster != nil &&
                  raster->texObjValid;
 
     if(matFxTraceReadyOnce(mat, envTex)){
@@ -173,12 +185,12 @@ gxMatFXEnvReady(Material *mat, bool hasNormals)
             !hasNormals ? "no-normals" :
             env == nil ? "no-env-record" :
             envTex == nil ? "no-env-texture" :
-            env->coefficient <= 0.0f ? "nonpositive-coefficient" :
+            effective <= 0.0f ? "nonpositive-effective" :
             raster == nil ? "no-native-raster" : "invalid-texobj";
         fprintf(stdout,
                 "[GX-MATFX-TRACE] ready=%d reason=%s mat=%p matfx=%p "
                 "type=%s hasNormals=%d env=%p envTex=%p envName=%s "
-                "coef=%.5f fbAlpha=%d frame=%p matRGBA=%u,%u,%u,%u "
+                "coefRaw=%.5f intensity=%.5f coefEff=%.5f fbAlpha=%d frame=%p matRGBA=%u,%u,%u,%u "
                 "globals=light:%d matColor:%d flipU:%d\n",
                 ready ? 1 : 0,
                 reason,
@@ -190,6 +202,8 @@ gxMatFXEnvReady(Material *mat, bool hasNormals)
                 (void*)envTex,
                 envTex && envTex->name[0] ? envTex->name : "<none>",
                 env ? (double)env->coefficient : 0.0,
+                (double)intensity,
+                (double)effective,
                 env && env->fbAlpha ? 1 : 0,
                 env ? (void*)env->frame : nil,
                 (unsigned)mat->color.red,
@@ -289,7 +303,7 @@ getEnvColor(Material *mat, const MatFX::Env *env)
 {
     const RGBA &color = MatFX::envMapUseMatColor ?
                         mat->color : MatFX::envMapColor;
-    float coefficient = env->coefficient;
+    float coefficient = env->coefficient * clamp01(matFXEnvMapIntensity);
     GXColor result = {
         colorByte((float)color.red / 255.0f * coefficient),
         colorByte((float)color.green / 255.0f * coefficient),
@@ -414,7 +428,8 @@ gxMatFXSetupEnv(Material *mat, bool baseTextured, bool vertexAlpha)
         s_matFxSetupTraceCount++;
         fprintf(stdout,
                 "[GX-MATFX-TRACE] setup mat=%p envTex=%p name=%s "
-                "baseTextured=%d vertexAlpha=%d envColor=%u,%u,%u,%u "
+                "baseTextured=%d vertexAlpha=%d intensity=%.3f "
+                "envColor=%u,%u,%u,%u "
                 "applyLight=%d matColor=%d flipU=%d fbAlpha=%d usesAlpha=%d "
                 "stages=%u\n",
                 (void*)mat,
@@ -422,6 +437,7 @@ gxMatFXSetupEnv(Material *mat, bool baseTextured, bool vertexAlpha)
                 env->tex->name[0] ? env->tex->name : "<unnamed>",
                 baseTextured ? 1 : 0,
                 vertexAlpha ? 1 : 0,
+                (double)clamp01(matFXEnvMapIntensity),
                 (unsigned)envColor.r,
                 (unsigned)envColor.g,
                 (unsigned)envColor.b,

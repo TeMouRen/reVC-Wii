@@ -99,6 +99,7 @@ static int8 gWiiRoadGloss = 0;
 		MENUACTION_CFO_SELECT, "FED_CLF", { new CCFOSelect(&gWiiColourFilter, "Graphics", "ColourFilter", filterNames, ARRAY_SIZE(filterNames), false) }, 0, 0, MENUALIGN_LEFT,
 	#define WII_PIPELINE_SELECTORS \
 		MENUACTION_CFO_SELECT, "FED_VPL", { new CCFOSelect(&gWiiVehiclePipeline, "Graphics", "VehiclePipeline", vehiclePipelineNames, ARRAY_SIZE(vehiclePipelineNames), false) }, 0, 0, MENUALIGN_LEFT, \
+		MENUACTION_CFO_SLIDER, "FED_MXI", { new CCFOSlider(&rw::matFXEnvMapIntensity, "Graphics", "MatFXEnvMapIntensity", 0.0f, 1.0f) }, 0, 0, MENUALIGN_LEFT, \
 		MENUACTION_CFO_SELECT, "FED_PRM", { new CCFOSelect(&gWiiPedRimLight, "Graphics", "NeoRimLight", off_on, ARRAY_SIZE(off_on), false) }, 0, 0, MENUALIGN_LEFT, \
 		MENUACTION_CFO_SELECT, "FED_WLM", { new CCFOSelect(&gWiiWorldLightmaps, "Graphics", "NeoLightMaps", off_on, ARRAY_SIZE(off_on), false) }, 0, 0, MENUALIGN_LEFT, \
 		MENUACTION_CFO_SELECT, "FED_RGL", { new CCFOSelect(&gWiiRoadGloss, "Graphics", "NeoRoadGloss", off_on, ARRAY_SIZE(off_on), false) }, 0, 0, MENUALIGN_LEFT,
@@ -149,6 +150,7 @@ void RestoreDefGraphics(int8 action) {
 		gWiiPedRimLight = 0;
 		gWiiWorldLightmaps = 0;
 		gWiiRoadGloss = 0;
+		rw::matFXEnvMapIntensity = 0.25f;
 	#endif
 	#if defined(NO_ISLAND_LOADING) && !defined(WII)
 		if (!FrontEndMenuManager.m_bGameNotLoaded) {

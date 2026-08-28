@@ -669,6 +669,9 @@ bool LoadINISettings()
 #ifdef EXTENDED_COLOURFILTER
 	ReadIniIfExists("CustomPipesValues", "PostFXIntensity", &CPostFX::Intensity);
 #endif
+#ifdef LIBRW
+	ReadIniIfExists("CustomPipesValues", "MatFXEnvMapIntensity", &rw::matFXEnvMapIntensity);
+#endif
 #ifdef EXTENDED_PIPELINES
 	ReadIniIfExists("CustomPipesValues", "NeoVehicleShininess", &CustomPipes::VehicleShininess);
 	ReadIniIfExists("CustomPipesValues", "NeoVehicleSpecularity", &CustomPipes::VehicleSpecularity);
@@ -782,6 +785,9 @@ void SaveINISettings()
 
 #ifdef EXTENDED_COLOURFILTER
 	StoreIni("CustomPipesValues", "PostFXIntensity", CPostFX::Intensity);
+#endif
+#ifdef LIBRW
+	StoreIni("CustomPipesValues", "MatFXEnvMapIntensity", rw::matFXEnvMapIntensity);
 #endif
 #ifdef EXTENDED_PIPELINES
 	StoreIni("CustomPipesValues", "NeoVehicleShininess", CustomPipes::VehicleShininess);
@@ -1227,6 +1233,7 @@ extern bool gbRenderWorld2;
 		DebugMenuAddVarBool32("Render", "MatFX env map apply light", &rw::MatFX::envMapApplyLight, nil);
 		DebugMenuAddVarBool32("Render", "MatFX env map flip U", &rw::MatFX::envMapFlipU, nil);
 		DebugMenuAddVarBool32("Render", "MatFX env map use matcolor", &rw::MatFX::envMapUseMatColor, nil);
+		DebugMenuAddVar("Render", "MatFX env map intensity", &rw::matFXEnvMapIntensity, nil, 0.05f, 0, 1.0f);
 #endif
 #ifdef EXTENDED_PIPELINES
 		static const char *vehpipenames[] = { "MatFX", "Neo" };
