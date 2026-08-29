@@ -2434,11 +2434,20 @@ WiiRunGameLifecycle(void)
 		case WII_INIT_PLAYING_GAME:
 		{
 			const bool wantsInitialLoad = FrontEndMenuManager.m_bWantToLoad;
-			InitialiseGame();
 
-			// The Wii save backend marks a load before InitialiseGame.  Preserve
-			// the existing restart/load boundary, but keep it in the shared
-			// lifecycle instead of making it a platform-loop special case.
+			if (wantsInitialLoad) {
+				// The PS2 path enters CGame::Initialise directly when a save is
+				// pending.  Keep the explicit LOADSC0 wrapper for a new game only;
+				// the save path must begin with the normal random progress splash
+				// and switch to splash1 in InitialiseWhenRestarting().
+				CGame::Initialise("DATA\\GTA_VC.DAT");
+			} else {
+				InitialiseGame();
+			}
+
+			// The Wii save backend marks a load before entering this state.
+			// Preserve the existing restart/load boundary in the shared lifecycle
+			// instead of making it a platform-loop special case.
 			if (wantsInitialLoad) {
 				CPad::ResetCheats();
 				CPad::StopPadsShaking();
