@@ -306,7 +306,9 @@ enum Config {
 #	define USE_MY_DOCUMENTS	// use my documents directory for user files
 #else
 	// not in any game
-#	define CHATTYSPLASH	// print what the game is loading
+#	ifndef CHATTYSPLASH
+#	define CHATTYSPLASH 0	// print what the game is loading
+#	endif
 #	define TIMEBARS		// print debug timers
 #endif
 

@@ -1202,7 +1202,7 @@ LoadingScreen(const char *str1, const char *str2, const char *splashscreen)
 			CFont::SetDropColor(CRGBA(0, 0, 0, 255));
 			CFont::SetFontStyle(FONT_HEADING);
 
-#ifdef CHATTYSPLASH
+#if CHATTYSPLASH
 			// my attempt
 			static wchar tmpstr[80];
 			float yscale = SCREEN_SCALE_Y(0.9f);

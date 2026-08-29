@@ -10,6 +10,7 @@ if(NOT (WII OR GAMECUBE))
 endif()
 
 option(ENABLE_MISSION_REPLAY "Enable mobile mission replay support on PC_MENU targets" OFF)
+option(CHATTYSPLASH "Draw detailed loading-stage text on loading screens" OFF)
 option(WII_STREAM_MEMORY_DIAGNOSTICS "Enable detailed Wii streaming diagnostics" OFF)
 option(WII_STREAM_MEMORY_DIAGNOSTIC_EVENTS "Emit per-resource Wii streaming diagnostic events" OFF)
 option(WII_STREAM_LIFECYCLE_AUDIT "Emit bounded Wii streaming lifecycle audit events" OFF)
@@ -44,6 +45,7 @@ endif()
 message(STATUS "  Renderer:        GX (librw GX backend)")
 message(STATUS "  Audio:           NULL")
 message(STATUS "  Mission Replay:  ${ENABLE_MISSION_REPLAY}")
+message(STATUS "  Chatty loading text: ${CHATTYSPLASH}")
 message(STATUS "------------------------------------------------")
 
 if(NOT COMMAND reVC_platform_target)
@@ -296,6 +298,10 @@ endif()
 
 if(ENABLE_MISSION_REPLAY)
     target_compile_definitions(${EXECUTABLE} PUBLIC ENABLE_MISSION_REPLAY)
+endif()
+
+if(CHATTYSPLASH)
+    target_compile_definitions(${EXECUTABLE} PUBLIC CHATTYSPLASH=1)
 endif()
 
 message(STATUS "[reVC] Nintendo GX compile definitions configured")
