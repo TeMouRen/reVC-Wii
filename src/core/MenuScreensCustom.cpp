@@ -171,7 +171,7 @@ void RestoreDefGraphics(int8 action) {
 		gWiiPedRimLight = 0;
 		gWiiWorldLightmaps = 0;
 		gWiiRoadGloss = 0;
-		rw::matFXEnvMapIntensity = 0.25f;
+		rw::matFXEnvMapIntensity = 0.5f;
 	#endif
 	#if defined(NO_ISLAND_LOADING) && !defined(WII)
 		if (!FrontEndMenuManager.m_bGameNotLoaded) {
