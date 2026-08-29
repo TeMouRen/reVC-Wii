@@ -33,55 +33,6 @@ int gBuildings;
 int g_iLastRenderedObject;
 #endif
 
-static const char*
-GetSafeModelName(int32 modelIndex)
-{
-	CBaseModelInfo *mi = modelIndex >= 0 ? CModelInfo::GetModelInfo(modelIndex) : nil;
-	return mi ? mi->GetModelName() : "<unknown>";
-}
-
-static RwFrame*
-EnsureRwObjectFrame(RwObject *obj, int32 modelIndex, const char *context)
-{
-	if (obj == nil)
-		return nil;
-
-	RwFrame *frame = nil;
-	switch (RwObjectGetType(obj)) {
-	case rpATOMIC:
-		frame = RpAtomicGetFrame((RpAtomic*)obj);
-		if (frame == nil) {
-			frame = RwFrameCreate();
-			if (frame) {
-				RpAtomicSetFrame((RpAtomic*)obj, frame);
-				printf("[RW-FRAME] %s created missing atomic frame for model %d (%s)\n",
-				       context, modelIndex, GetSafeModelName(modelIndex));
-			} else {
-				printf("[RW-FRAME] %s FAILED to create atomic frame for model %d (%s)\n",
-				       context, modelIndex, GetSafeModelName(modelIndex));
-			}
-		}
-		break;
-	case rpCLUMP:
-		frame = RpClumpGetFrame((RpClump*)obj);
-		if (frame == nil) {
-			frame = RwFrameCreate();
-			if (frame) {
-				RpClumpSetFrame((RpClump*)obj, frame);
-				printf("[RW-FRAME] %s created missing clump frame for model %d (%s)\n",
-				       context, modelIndex, GetSafeModelName(modelIndex));
-			} else {
-				printf("[RW-FRAME] %s FAILED to create clump frame for model %d (%s)\n",
-				       context, modelIndex, GetSafeModelName(modelIndex));
-			}
-		}
-		break;
-	default:
-		break;
-	}
-	return frame;
-}
-
 CEntity::CEntity(void)
 {
 	m_type = ENTITY_TYPE_NOTHING;
@@ -172,23 +123,12 @@ CEntity::CreateRwObject(void)
 	POP_MEMID();
 
 	if(m_rwObject){
-		RwFrame *frame = EnsureRwObjectFrame(m_rwObject, m_modelIndex, "CreateRwObject");
-		if((RwObjectGetType(m_rwObject) == rpATOMIC || RwObjectGetType(m_rwObject) == rpCLUMP) && frame == nil){
-			printf("[RW-FRAME] CreateRwObject dropping model %d (%s) due to missing frame\n",
-			       m_modelIndex, GetSafeModelName(m_modelIndex));
-			if(RwObjectGetType(m_rwObject) == rpATOMIC)
-				RpAtomicDestroy((RpAtomic*)m_rwObject);
-			else if(RwObjectGetType(m_rwObject) == rpCLUMP)
-				RpClumpDestroy((RpClump*)m_rwObject);
-			m_rwObject = nil;
-			return;
-		}
 		if(IsBuilding())
 			gBuildings++;
 		if(RwObjectGetType(m_rwObject) == rpATOMIC)
-			GetMatrix().AttachRW(RwFrameGetMatrix(frame), false);
+			GetMatrix().AttachRW(RwFrameGetMatrix(RpAtomicGetFrame((RpAtomic *)m_rwObject)), false);
 		else if(RwObjectGetType(m_rwObject) == rpCLUMP)
-			GetMatrix().AttachRW(RwFrameGetMatrix(frame), false);
+			GetMatrix().AttachRW(RwFrameGetMatrix(RpClumpGetFrame((RpClump *)m_rwObject)), false);
 
 		mi->AddRef();
 	}
@@ -199,11 +139,10 @@ CEntity::AttachToRwObject(RwObject *obj)
 {
 	m_rwObject = obj;
 	if(m_rwObject){
-		RwFrame *frame = EnsureRwObjectFrame(m_rwObject, m_modelIndex, "AttachToRwObject");
 		if(RwObjectGetType(m_rwObject) == rpATOMIC)
-			GetMatrix().Attach(RwFrameGetMatrix(frame), false);
+			GetMatrix().Attach(RwFrameGetMatrix(RpAtomicGetFrame((RpAtomic *)m_rwObject)), false);
 		else if(RwObjectGetType(m_rwObject) == rpCLUMP)
-			GetMatrix().Attach(RwFrameGetMatrix(frame), false);
+			GetMatrix().Attach(RwFrameGetMatrix(RpClumpGetFrame((RpClump *)m_rwObject)), false);
 
 		CModelInfo::GetModelInfo(m_modelIndex)->AddRef();
 	}
@@ -268,13 +207,6 @@ CEntity::GetBoundRect(void)
 	CVector v;
 	CColModel *col = CModelInfo::GetColModel(m_modelIndex);
 
-	// [GC-FIX] Some models lack collision data (col = NULL).
-	// PC crashes on NULL deref; GameCube reads garbage from 0x0 interrupt vectors.
-	if (col == nil) {
-		rect.ContainPoint(GetPosition());
-		return rect;
-	}
-
 	rect.ContainPoint(GetMatrix() * col->boundingBox.min);
 	rect.ContainPoint(GetMatrix() * col->boundingBox.max);
 
@@ -292,10 +224,7 @@ CEntity::GetBoundRect(void)
 CVector
 CEntity::GetBoundCentre(void)
 {
-	CColModel *col = CModelInfo::GetColModel(m_modelIndex);
-	// [GC-FIX] NULL col model 鈫?GameCube reads 0x0 (interrupt vectors) as garbage
-	if (col == nil) return GetPosition();
-	return GetMatrix() * col->boundingSphere.center;
+	return GetMatrix() * CModelInfo::GetColModel(m_modelIndex)->boundingSphere.center;
 }
 
 #ifdef GTA_PS2
@@ -308,18 +237,14 @@ CEntity::GetBoundCentre(CVuVector &out)
 void
 CEntity::GetBoundCentre(CVector &out)
 {
-	CColModel *col = CModelInfo::GetColModel(m_modelIndex);
-	if (col == nil) { out = GetPosition(); return; }
-	out = GetMatrix() * col->boundingSphere.center;
+	out = GetMatrix() * CModelInfo::GetColModel(m_modelIndex)->boundingSphere.center;
 }
 #endif
 
 float
 CEntity::GetBoundRadius(void)
 {
-	CColModel *col = CModelInfo::GetColModel(m_modelIndex);
-	if (col == nil) return 1.0f;	// [GC-FIX] NULL col model 鈫?safe default radius
-	return col->boundingSphere.radius;
+	return CModelInfo::GetColModel(m_modelIndex)->boundingSphere.radius;
 }
 
 void
@@ -332,13 +257,8 @@ CEntity::UpdateRwFrame(void)
 void
 CEntity::UpdateRpHAnim(void)
 {
-	if(m_rwObject == nil || RwObjectGetType(m_rwObject) != rpCLUMP)
-		return;
-	RpClump *clump = GetClump();
-	if(IsClumpSkinned(clump)){
-		RpHAnimHierarchy *hier = GetAnimHierarchyFromSkinClump(clump);
-		if(hier == nil)
-			return;
+	if(IsClumpSkinned(GetClump())){
+		RpHAnimHierarchy *hier = GetAnimHierarchyFromSkinClump(GetClump());
 		RpHAnimHierarchyUpdateMatrices(hier);
 #if 0
 	int i;
@@ -597,16 +517,12 @@ CEntity::Add(void)
 	ystart = CWorld::GetSectorIndexY(bounds.top);
 	yend   = CWorld::GetSectorIndexY(bounds.bottom);
 	ymid   = CWorld::GetSectorIndexY((bounds.top + bounds.bottom)/2.0f);
-	// [GC-FIX] Skip entities with garbage bounds (missing col model)
-	// Without this, a garbage ystart=INT_MIN causes a 2-billion-iteration
-	// for-loop, exhausting the CPtrNode pool instantly.
-	if (xstart < 0 || xend >= NUMSECTORS_X || ystart < 0 || yend >= NUMSECTORS_Y) {
-		printf("[ENT-DBG] SKIP model=%d bounds=(%.1f,%.1f,%.1f,%.1f)\n",
-		       m_modelIndex, bounds.left, bounds.top, bounds.right, bounds.bottom);
-		return;
-	}
+	assert(xstart >= 0);
+	assert(xend < NUMSECTORS_X);
+	assert(ystart >= 0);
+	assert(yend < NUMSECTORS_Y);
 
-for(y = ystart; y <= yend; y++)
+	for(y = ystart; y <= yend; y++)
 		for(x = xstart; x <= xend; x++){
 			s = CWorld::GetSector(x, y);
 			if(x == xmid && y == ymid) switch(m_type){
@@ -661,8 +577,10 @@ CEntity::Remove(void)
 	ystart = CWorld::GetSectorIndexY(bounds.top);
 	yend   = CWorld::GetSectorIndexY(bounds.bottom);
 	ymid   = CWorld::GetSectorIndexY((bounds.top + bounds.bottom)/2.0f);
-	if (xstart < 0 || xend >= NUMSECTORS_X || ystart < 0 || yend >= NUMSECTORS_Y)
-		return;
+	assert(xstart >= 0);
+	assert(xend < NUMSECTORS_X);
+	assert(ystart >= 0);
+	assert(yend < NUMSECTORS_Y);
 
 	for(y = ystart; y <= yend; y++)
 		for(x = xstart; x <= xend; x++){

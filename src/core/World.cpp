@@ -48,118 +48,6 @@ bool CWorld::bIncludeBikers;
 
 CColPoint CWorld::m_aTempColPts[MAX_COLLISION_POINTS];
 
-#if GX_CONSOLE
-static bool
-GxWorldProcDiagActive(void)
-{
-	return CCutsceneMgr::ms_cutsceneLoadStatus != 0;
-}
-
-static bool
-GxWorldFiniteFloat(float f)
-{
-	return isfinite(f) != 0;
-}
-
-static bool
-GxWorldFiniteVec(const CVector &v)
-{
-	return GxWorldFiniteFloat(v.x) && GxWorldFiniteFloat(v.y) && GxWorldFiniteFloat(v.z);
-}
-
-static bool
-GxWorldQuarantineNaNEntity(CEntity *ent, const char *stage)
-{
-	if(ent == nil)
-		return false;
-	if(GxWorldFiniteVec(ent->GetPosition()))
-		return false;
-
-	printf("[WORLD-QUARANTINE] %s ent=%p type=%u status=%u model=%d remove=%d cut=%s status2=%u running=%d\n",
-	       stage, (void*)ent, ent->GetType(), ent->GetStatus(), ent->GetModelIndex(),
-	       ent->bRemoveFromWorld, CCutsceneMgr::GetCutsceneName(),
-	       CCutsceneMgr::ms_cutsceneLoadStatus, CCutsceneMgr::IsRunning());
-
-	ent->bRemoveFromWorld = true;
-	if(!ent->GetIsStatic())
-		((CPhysical*)ent)->RemoveFromMovingList();
-	return true;
-}
-
-static int
-GxWorldMovingCount(void)
-{
-	int count = 0;
-	for(CPtrNode *node = CWorld::GetMovingEntityList().first; node && count < 4096; node = node->next)
-		count++;
-	return count;
-}
-
-static void
-GxWorldProcStage(const char *stage)
-{
-	if(!GxWorldProcDiagActive())
-		return;
-	/* [OLD-WORLD-PROC] High-frequency world processing stage trace from
-	 * collision/cutscene bring-up. Disabled to keep Dolphin log focused on
-	 * texture/material diagnostics. */
-	/* printf("[WORLD-PROC] %s cut=%s status=%u running=%d frame=%u moving=%d\n",
-	       stage, CCutsceneMgr::GetCutsceneName(), CCutsceneMgr::ms_cutsceneLoadStatus,
-	       CCutsceneMgr::IsRunning(), CTimer::GetFrameCounter(), GxWorldMovingCount()); */
-	(void)stage;
-}
-
-static void
-GxWorldProcEntity(const char *stage, CEntity *ent, CPtrNode *node, CPtrNode *next, int pass)
-{
-	if(ent == nil) {
-		if(!GxWorldProcDiagActive())
-			return;
-		printf("[WORLD-PROC] %s pass=%d node=%p next=%p ent=nil\n",
-		       stage, pass, (void*)node, (void*)next);
-		return;
-	}
-	const CVector &pos = ent->GetPosition();
-	if(!GxWorldFiniteVec(pos)){
-		printf("[WORLD-NAN] %s pass=%d node=%p next=%p ent=%p type=%u status=%u model=%d pos=(%f,%f,%f) safe=%d remove=%d cut=%s status2=%u running=%d\n",
-		       stage, pass, (void*)node, (void*)next, (void*)ent, ent->GetType(), ent->GetStatus(),
-		       ent->GetModelIndex(), pos.x, pos.y, pos.z, ent->bIsInSafePosition,
-		       ent->bRemoveFromWorld, CCutsceneMgr::GetCutsceneName(),
-		       CCutsceneMgr::ms_cutsceneLoadStatus, CCutsceneMgr::IsRunning());
-	}
-	if(!GxWorldProcDiagActive())
-		return;
-	/* [OLD-WORLD-PROC] High-frequency per-entity traversal trace from
-	 * collision/cutscene bring-up. Keep the NaN guard above, but mute the
-	 * normal per-entity spam. */
-	/* printf("[WORLD-PROC] %s pass=%d node=%p next=%p ent=%p type=%u status=%u model=%d static=%d remove=%d safe=%d stuck=%d pos=%.2f,%.2f,%.2f\n",
-	       stage, pass, (void*)node, (void*)next, (void*)ent, ent->GetType(), ent->GetStatus(),
-	       ent->GetModelIndex(), ent->GetIsStatic(), ent->bRemoveFromWorld, ent->bIsInSafePosition,
-	       ent->bIsStuck, pos.x, pos.y, pos.z); */
-}
-
-static void
-GxWorldProcRemoved(const char *stage, CEntity *ent, CPtrNode *node, CPtrNode *next, int pass)
-{
-	if(!GxWorldProcDiagActive())
-		return;
-	/* [OLD-WORLD-PROC] Per-entity removal trace from collision/cutscene
-	 * bring-up. Disabled with the rest of the traversal spam. */
-	/* printf("[WORLD-PROC] %s pass=%d node=%p next=%p ent=%p removed\n",
-	       stage, pass, (void*)node, (void*)next, (void*)ent); */
-	(void)stage;
-	(void)ent;
-	(void)node;
-	(void)next;
-	(void)pass;
-}
-#else
-#define GxWorldProcStage(stage) ((void)0)
-#define GxWorldProcEntity(stage, ent, node, next, pass) ((void)0)
-#define GxWorldProcRemoved(stage, ent, node, next, pass) ((void)0)
-#define GxWorldQuarantineNaNEntity(ent, stage) (false)
-#endif
-
 void
 CWorld::Initialise()
 {
@@ -2033,16 +1921,12 @@ CWorld::RemoveStaticObjects()
 void
 CWorld::Process(void)
 {
-	GxWorldProcStage("begin");
 	if(!(CTimer::GetFrameCounter() & 63)) CReferences::PruneAllReferencesInWorld();
-	GxWorldProcStage("after-prune");
 
 	if(bProcessCutsceneOnly) {
-		GxWorldProcStage("cutscene-only-begin");
 		for(int i = 0; i < NUMCUTSCENEOBJECTS; i++) {
 			CCutsceneObject *csObj = CCutsceneMgr::GetCutsceneObject(i);
 			if(csObj && csObj->m_entryInfoList.first) {
-				GxWorldProcEntity("cutscene-object-begin", csObj, nil, nil, i);
 				if(csObj->m_rwObject && RwObjectGetType(csObj->m_rwObject) == rpCLUMP &&
 				   RpAnimBlendClumpGetFirstAssociation(csObj->GetClump())) {
 					if (csObj->IsObject())
@@ -2057,21 +1941,13 @@ CWorld::Process(void)
 				csObj->ProcessCollision();
 				csObj->GetMatrix().UpdateRW();
 				csObj->UpdateRwFrame();
-				GxWorldProcEntity("cutscene-object-end", csObj, nil, nil, i);
 			}
 		}
-		GxWorldProcStage("cutscene-only-after-objects");
 		CRecordDataForChase::ProcessControlCars();
-		GxWorldProcStage("cutscene-only-after-record-control");
 		CRecordDataForChase::SaveOrRetrieveCarPositions();
-		GxWorldProcStage("cutscene-only-end");
 	} else {
-		GxWorldProcStage("main-anim-begin");
 		for(CPtrNode *node = ms_listMovingEntityPtrs.first; node; node = node->next) {
 			CEntity *movingEnt = (CEntity *)node->item;
-			GxWorldProcEntity("main-anim-begin-ent", movingEnt, node, node->next, 0);
-			if(GxWorldQuarantineNaNEntity(movingEnt, "main-anim-begin-ent"))
-				continue;
 			if(!movingEnt->bRemoveFromWorld && movingEnt->m_rwObject && RwObjectGetType(movingEnt->m_rwObject) == rpCLUMP &&
 			   RpAnimBlendClumpGetFirstAssociation(movingEnt->GetClump())) {
 				if (movingEnt->IsObject())
@@ -2082,129 +1958,81 @@ CWorld::Process(void)
 					RpAnimBlendClumpUpdateAnimations(movingEnt->GetClump(), CTimer::GetTimeStepInSeconds(), !movingEnt->bOffscreen);
 				}
 			}
-			GxWorldProcEntity("main-anim-end-ent", movingEnt, node, node->next, 0);
 		}
-		GxWorldProcStage("main-control-begin");
-		for(CPtrNode *node = ms_listMovingEntityPtrs.first, *next; node; node = next) {
-			next = node->next;
+		for(CPtrNode *node = ms_listMovingEntityPtrs.first; node; node = node->next) {
 			CPhysical *movingEnt = (CPhysical *)node->item;
-			GxWorldProcEntity("main-control-begin-ent", movingEnt, node, next, 0);
-			if(GxWorldQuarantineNaNEntity(movingEnt, "main-control-begin-ent")) {
-				RemoveEntityInsteadOfProcessingIt(movingEnt);
-				GxWorldProcRemoved("main-control-quarantine-ent", movingEnt, node, next, 0);
-				continue;
-			}
 			if(movingEnt->bRemoveFromWorld) {
 				RemoveEntityInsteadOfProcessingIt(movingEnt);
-				GxWorldProcRemoved("main-control-removed-ent", movingEnt, node, next, 0);
 			} else {
 				movingEnt->ProcessControl();
 				if(movingEnt->GetIsStatic()) { movingEnt->RemoveFromMovingList(); }
-				GxWorldProcEntity("main-control-end-ent", movingEnt, node, next, 0);
 			}
 		}
-		GxWorldProcStage("main-control-end");
 		bForceProcessControl = true;
-		for(CPtrNode *node = ms_listMovingEntityPtrs.first, *next; node; node = next) {
-			next = node->next;
+		for(CPtrNode *node = ms_listMovingEntityPtrs.first; node; node = node->next) {
 			CPhysical *movingEnt = (CPhysical *)node->item;
 			if(movingEnt->bWasPostponed) {
-				GxWorldProcEntity("postponed-control-begin-ent", movingEnt, node, next, 1);
-				if(GxWorldQuarantineNaNEntity(movingEnt, "postponed-control-begin-ent")) {
-					RemoveEntityInsteadOfProcessingIt(movingEnt);
-					GxWorldProcRemoved("postponed-control-quarantine-ent", movingEnt, node, next, 1);
-					continue;
-				}
 				if(movingEnt->bRemoveFromWorld) {
 					RemoveEntityInsteadOfProcessingIt(movingEnt);
-					GxWorldProcRemoved("postponed-control-removed-ent", movingEnt, node, next, 1);
 				} else {
 					movingEnt->ProcessControl();
 					if(movingEnt->GetIsStatic()) { movingEnt->RemoveFromMovingList(); }
-					GxWorldProcEntity("postponed-control-end-ent", movingEnt, node, next, 1);
 				}
 			}
 		}
 		bForceProcessControl = false;
-		GxWorldProcStage("postponed-control-end");
 		if(CReplay::IsPlayingBack()) {
-			GxWorldProcStage("replay-begin");
 			for(CPtrNode *node = ms_listMovingEntityPtrs.first; node; node = node->next) {
 				CEntity *movingEnt = (CEntity *)node->item;
 				movingEnt->bIsInSafePosition = true;
 				movingEnt->GetMatrix().UpdateRW();
 				movingEnt->UpdateRwFrame();
 			}
-			GxWorldProcStage("replay-end");
 		} else {
 			bNoMoreCollisionTorque = false;
-			GxWorldProcStage("collision-pass0-begin");
 			for(CPtrNode *node = ms_listMovingEntityPtrs.first; node; node = node->next) {
 				CEntity *movingEnt = (CEntity *)node->item;
 				if(!movingEnt->bIsInSafePosition) {
-					GxWorldProcEntity("collision-pass0-begin-ent", movingEnt, node, node->next, 0);
-					if(GxWorldQuarantineNaNEntity(movingEnt, "collision-pass0-begin-ent"))
-						continue;
 					movingEnt->ProcessCollision();
 					movingEnt->GetMatrix().UpdateRW();
 					movingEnt->UpdateRwFrame();
-					GxWorldProcEntity("collision-pass0-end-ent", movingEnt, node, node->next, 0);
 				}
 			}
 			bNoMoreCollisionTorque = true;
-			GxWorldProcStage("collision-extra-begin");
 			for(int i = 0; i < 4; i++) {
 				for(CPtrNode *node = ms_listMovingEntityPtrs.first; node; node = node->next) {
 					CEntity *movingEnt = (CEntity *)node->item;
 					if(!movingEnt->bIsInSafePosition) {
-						GxWorldProcEntity("collision-extra-begin-ent", movingEnt, node, node->next, i);
-						if(GxWorldQuarantineNaNEntity(movingEnt, "collision-extra-begin-ent"))
-							continue;
 						movingEnt->ProcessCollision();
 						movingEnt->GetMatrix().UpdateRW();
 						movingEnt->UpdateRwFrame();
-						GxWorldProcEntity("collision-extra-end-ent", movingEnt, node, node->next, i);
 					}
 				}
 			}
-			GxWorldProcStage("collision-final-begin");
 			for(CPtrNode *node = ms_listMovingEntityPtrs.first; node; node = node->next) {
 				CEntity *movingEnt = (CEntity *)node->item;
 				if(!movingEnt->bIsInSafePosition) {
-					GxWorldProcEntity("collision-final-begin-ent", movingEnt, node, node->next, 0);
-					if(GxWorldQuarantineNaNEntity(movingEnt, "collision-final-begin-ent"))
-						continue;
 					movingEnt->bIsStuck = true;
 					movingEnt->ProcessCollision();
 					movingEnt->GetMatrix().UpdateRW();
 					movingEnt->UpdateRwFrame();
 					if(!movingEnt->bIsInSafePosition) { movingEnt->bIsStuck = true; }
-					GxWorldProcEntity("collision-final-end-ent", movingEnt, node, node->next, 0);
 				}
 			}
 			bSecondShift = false;
-			GxWorldProcStage("shift-pass0-begin");
 			for(CPtrNode *node = ms_listMovingEntityPtrs.first; node; node = node->next) {
 				CEntity *movingEnt = (CEntity *)node->item;
 				if(!movingEnt->bIsInSafePosition) {
-					GxWorldProcEntity("shift-pass0-begin-ent", movingEnt, node, node->next, 0);
-					if(GxWorldQuarantineNaNEntity(movingEnt, "shift-pass0-begin-ent"))
-						continue;
 					movingEnt->ProcessShift();
 					movingEnt->GetMatrix().UpdateRW();
 					movingEnt->UpdateRwFrame();
 					if(!movingEnt->bIsInSafePosition) { movingEnt->bIsStuck = true; }
-					GxWorldProcEntity("shift-pass0-end-ent", movingEnt, node, node->next, 0);
 				}
 			}
 			bSecondShift = true;
-			GxWorldProcStage("shift-pass1-begin");
 			for(CPtrNode *node = ms_listMovingEntityPtrs.first; node; node = node->next) {
 				CPhysical *movingEnt = (CPhysical *)node->item;
 				if(!movingEnt->bIsInSafePosition) {
-					GxWorldProcEntity("shift-pass1-begin-ent", movingEnt, node, node->next, 1);
-					if(GxWorldQuarantineNaNEntity(movingEnt, "shift-pass1-begin-ent"))
-						continue;
 					movingEnt->ProcessShift();
 					movingEnt->GetMatrix().UpdateRW();
 					movingEnt->UpdateRwFrame();
@@ -2217,17 +2045,12 @@ CWorld::Process(void)
 							movingEnt->ApplyTurnSpeed();
 						}
 					}
-					GxWorldProcEntity("shift-pass1-end-ent", movingEnt, node, node->next, 1);
 				}
 			}
 		}
-		GxWorldProcStage("ped-vehicle-pos-begin");
 		for(CPtrNode *node = ms_listMovingEntityPtrs.first; node; node = node->next) {
 			CPed *movingPed = (CPed *)node->item;
 			if(movingPed->IsPed()) {
-				GxWorldProcEntity("ped-vehicle-pos-begin-ent", movingPed, node, node->next, 0);
-				if(GxWorldQuarantineNaNEntity(movingPed, "ped-vehicle-pos-begin-ent"))
-					continue;
 				if(movingPed->bInVehicle && movingPed->m_nPedState != PED_EXIT_TRAIN ||
 				   movingPed->EnteringCar()) {
 					CVehicle *movingCar = movingPed->m_pMyVehicle;
@@ -2263,24 +2086,17 @@ CWorld::Process(void)
 					movingPed->GetMatrix().UpdateRW();
 					movingPed->UpdateRwFrame();
 				}
-				GxWorldProcEntity("ped-vehicle-pos-end-ent", movingPed, node, node->next, 0);
 			}
 		}
-		GxWorldProcStage("messages-begin");
 		CMessages::Process();
-		GxWorldProcStage("player-begin");
 		Players[PlayerInFocus].Process();
-		GxWorldProcStage("record-save-begin");
 		CRecordDataForChase::SaveOrRetrieveCarPositions();
-		GxWorldProcStage("cleanup-begin");
 		if((CTimer::GetFrameCounter() & 7) == 1) {
 			RemoveFallenPeds();
 		} else if((CTimer::GetFrameCounter() & 7) == 5) {
 			RemoveFallenCars();
 		}
-		GxWorldProcStage("main-end");
 	}
-	GxWorldProcStage("end");
 }
 
 void

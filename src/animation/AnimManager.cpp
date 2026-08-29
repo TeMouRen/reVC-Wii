@@ -1234,12 +1234,8 @@ void
 CAnimManager::LoadAnimFiles(void)
 {
 	LoadAnimFile("ANIM\\PED.IFP");
-	SYS_Report("[ANIM] LoadAnimFiles: PED.IFP done, about to new...\n");
 	ms_aAnimAssocGroups = new CAnimBlendAssocGroup[NUM_ANIM_ASSOC_GROUPS];
-	// GC: re-entry guard in CreateAnimAssocGroups now prevents deadlock,
-	// so we can safely call this here even if models aren't all loaded
 	CreateAnimAssocGroups();
-	SYS_Report("[ANIM] LoadAnimFiles: DONE\n");
 }
 
 void
@@ -1247,62 +1243,35 @@ CAnimManager::CreateAnimAssocGroups(void)
 {
 	int i, j;
 
-	// GC: prevent re-entry — CreateInstance can trigger streaming
-	// which loads another IFP and calls us again before assocList is set
-	static bool s_bInsideCreateAssocGroups = false;
-	if (s_bInsideCreateAssocGroups) return;
-	s_bInsideCreateAssocGroups = true;
-
 	for(i = 0; i < NUM_ANIM_ASSOC_GROUPS; i++){
 		CAnimBlock *block = GetAnimationBlock(ms_aAnimAssocDefinitions[i].blockName);
 		if(block == nil || !block->isLoaded || ms_aAnimAssocGroups[i].assocList)
 			continue;
 
 		CBaseModelInfo *mi = CModelInfo::GetModelInfo(ms_aAnimAssocDefinitions[i].modelIndex);
-		if (mi == nil) continue;
 		RpClump *clump = (RpClump*)mi->CreateInstance();
-		// GC: model may not be loaded yet; skip and retry on next IFP load
-		if (clump == nil) continue;
 		RpAnimBlendClumpInit(clump);
 		CAnimBlendAssocGroup *group = &ms_aAnimAssocGroups[i];
 		const AnimAssocDefinition *def = &ms_aAnimAssocDefinitions[i];
 		group->groupId = i;
 		group->firstAnimId = def->animDescs[0].animId;
 		group->CreateAssociations(def->blockName, clump, def->animNames, def->numAnims);
-		if(group->assocList == nil || group->numAssociations != def->numAnims){
-			printf("[ANIM-GROUP] Deferring incomplete group=%d block=%s\n", i, def->blockName);
-			if(IsClumpSkinned(clump))
-				RpClumpForAllAtomics(clump, AtomicRemoveAnimFromSkinCB, nil);
-			RpClumpDestroy(clump);
-			continue;
-		}
-		for(j = 0; j < def->numAnims; j++){
-			// Published gameplay groups are dense, so configured IDs retain direct indexing.
-			CAnimBlendAssociation *assoc = group->GetAnimation(def->animDescs[j].animId);
-			if(assoc)
-				assoc->flags |= def->animDescs[j].flags;
-			else
-				printf("[ANIM-GROUP] Missing configured animation id=%d group=%d\n",
-				       (int)def->animDescs[j].animId, i);
-		}
+		for(j = 0; j < group->numAssociations; j++)
+			// GetAnimation(i) in III (but it's in LoadAnimFiles), GetAnimation(group->animDesc[j].animId) in VC
+			group->GetAnimation(def->animDescs[j].animId)->flags |= def->animDescs[j].flags;
 		if(IsClumpSkinned(clump))
 			RpClumpForAllAtomics(clump, AtomicRemoveAnimFromSkinCB, nil);
 		RpClumpDestroy(clump);
 	}
-
-	s_bInsideCreateAssocGroups = false;
 }
 
 void
 CAnimManager::LoadAnimFile(const char *filename)
 {
 	RwStream *stream;
-	printf("[ANIM] LoadAnimFile: opening '%s'...\n", filename);
 	stream = RwStreamOpen(rwSTREAMFILENAME, rwSTREAMREAD, filename);
-	printf("[ANIM] LoadAnimFile: stream=%p\n", stream);
 	assert(stream);
 	LoadAnimFile(stream, true);
-	printf("[ANIM] LoadAnimFile: '%s' DONE\n", filename);
 	RwStreamClose(stream, nil);
 }
 
@@ -1320,12 +1289,11 @@ CAnimManager::LoadAnimFile(RwStream *stream, bool compress, char (*uncompressedA
 	float *fbuf = (float*)buf;
 
 	// block name
-	((rw::Stream*)stream)->read32(&anpk, sizeof(IfpHeader));
+	RwStreamRead(stream, &anpk, sizeof(IfpHeader));
 	ROUNDSIZE(anpk.size);
-	((rw::Stream*)stream)->read32(&info, sizeof(IfpHeader));
+	RwStreamRead(stream, &info, sizeof(IfpHeader));
 	ROUNDSIZE(info.size);
 	RwStreamRead(stream, buf, info.size);
-	rw::memNative32(buf, 4); // LE int32 -> BE
 	CAnimBlock *animBlock = GetAnimationBlock(buf+4);
 	if(animBlock){
 		if(animBlock->numAnims == 0){
@@ -1348,7 +1316,7 @@ CAnimManager::LoadAnimFile(RwStream *stream, bool compress, char (*uncompressedA
 		CAnimBlendHierarchy *hier = &ms_aAnimations[animIndex++];
 
 		// animation name
-		((rw::Stream*)stream)->read32(&name, sizeof(IfpHeader));
+		RwStreamRead(stream, &name, sizeof(IfpHeader));
 		ROUNDSIZE(name.size);
 		RwStreamRead(stream, buf, name.size);
 		hier->SetName(buf);
@@ -1371,24 +1339,22 @@ CAnimManager::LoadAnimFile(RwStream *stream, bool compress, char (*uncompressedA
 		hier->keepCompressed = false;
 
 		// DG info has number of nodes/sequences
-		((rw::Stream*)stream)->read32((char*)&dgan, sizeof(IfpHeader));
+		RwStreamRead(stream, (char*)&dgan, sizeof(IfpHeader));
 		ROUNDSIZE(dgan.size);
-		((rw::Stream*)stream)->read32((char*)&info, sizeof(IfpHeader));
+		RwStreamRead(stream, (char*)&info, sizeof(IfpHeader));
 		ROUNDSIZE(info.size);
 		RwStreamRead(stream, buf, info.size);
-		rw::memNative32(buf, 4); // LE int32 -> BE
 		hier->numSequences = *(int*)buf;
 		hier->sequences = new CAnimBlendSequence[hier->numSequences];
 
 		CAnimBlendSequence *seq = hier->sequences;
 		for(k = 0; k < hier->numSequences; k++, seq++){
 			// Each node has a name and key frames
-			((rw::Stream*)stream)->read32(&cpan, sizeof(IfpHeader));
+			RwStreamRead(stream, &cpan, sizeof(IfpHeader));
 			ROUNDSIZE(dgan.size);
-			((rw::Stream*)stream)->read32(&anim, sizeof(IfpHeader));
+			RwStreamRead(stream, &anim, sizeof(IfpHeader));
 			ROUNDSIZE(anim.size);
 			RwStreamRead(stream, buf, anim.size);
-			rw::memNative32(buf+28, 4); rw::memNative32(buf+40, 4); // LE int32 -> BE
 			int numFrames = *(int*)(buf+28);
 			seq->SetName(buf);
 			if(anim.size == 44)
@@ -1414,7 +1380,6 @@ CAnimManager::LoadAnimFile(RwStream *stream, bool compress, char (*uncompressedA
 			for(l = 0; l < numFrames; l++){
 				if(hasScale){
 					RwStreamRead(stream, buf, 0x2C);
-					rw::memNative32(buf, 0x2C); // LE floats -> BE
 					CQuaternion rot(fbuf[0], fbuf[1], fbuf[2], fbuf[3]);
 					rot.Invert();
 					CVector trans(fbuf[4], fbuf[5], fbuf[6]);
@@ -1434,7 +1399,6 @@ CAnimManager::LoadAnimFile(RwStream *stream, bool compress, char (*uncompressedA
 					}
 				}else if(hasTranslation){
 					RwStreamRead(stream, buf, 0x20);
-					rw::memNative32(buf, 0x20); // LE floats -> BE
 					CQuaternion rot(fbuf[0], fbuf[1], fbuf[2], fbuf[3]);
 					rot.Invert();
 					CVector trans(fbuf[4], fbuf[5], fbuf[6]);
@@ -1452,7 +1416,6 @@ CAnimManager::LoadAnimFile(RwStream *stream, bool compress, char (*uncompressedA
 					}
 				}else{
 					RwStreamRead(stream, buf, 0x14);
-					rw::memNative32(buf, 0x14); // LE floats -> BE
 					CQuaternion rot(fbuf[0], fbuf[1], fbuf[2], fbuf[3]);
 					rot.Invert();
 

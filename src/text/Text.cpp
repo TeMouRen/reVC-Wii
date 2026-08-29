@@ -157,7 +157,7 @@ CText::Load(void)
     file = CFileMgr::OpenFile(filename, "rb");
 
     // Guard against a missing language file before reading its chunks.
-    if (file < 0) {
+	if (file == 0) {
         printf("[reVC-WII] FATAL: Cannot open text file: %s\n", filename);
         CFileMgr::SetDir("");
         return;
@@ -384,7 +384,7 @@ CText::LoadMissionText(char *MissionTableName)
     int file = CFileMgr::OpenFile(filename, "rb");
 
     // Mission text files need the same missing-file guard as the main table.
-    if (file < 0) {
+	if (file == 0) {
         printf("[reVC-WII] FATAL: LoadMissionText: Cannot open %s\n", filename);
         CTimer::Resume();
         CFileMgr::SetDir("");

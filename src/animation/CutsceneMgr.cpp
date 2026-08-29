@@ -24,10 +24,6 @@
 #include "Radar.h"
 #include "Pools.h"
 
-#ifdef USE_CUSTOM_ALLOCATOR
-#include "MemoryHeap.h"
-#endif
-
 #if GX_CONSOLE
 #include "gxmemory.h"
 #ifdef WII
@@ -84,16 +80,6 @@ IsIntroCutsceneName(const char *name)
 {
 	return name != nil &&
 		!CGeneral::faststrncmp(name, "INT_", 4);
-}
-
-static int32
-CutsceneLargestFreeBlockForLog(void)
-{
-#ifdef USE_CUSTOM_ALLOCATOR
-	return gMainHeap.GetLargestFreeBlock();
-#else
-	return -1;
-#endif
 }
 
 const struct {
@@ -269,24 +255,15 @@ CCutsceneMgr::LoadCutsceneData(const char *szCutsceneName)
 	if (!bIsEverythingRemovedFromTheWorldForTheBiggestFuckoffCutsceneEver)
 		CStreaming::RemoveCurrentZonesModels();
 
-	// Match upstream: refresh the directory entries before every cutscene load.
 	ms_pCutsceneDir->numEntries = 0;
 	ms_pCutsceneDir->ReadDirFile("ANIM\\CUTS.DIR");
 
 	CStreaming::RemoveUnusedModelsInLoadedList();
 	CGame::DrasticTidyUpMemory(true);
 
-	ms_cutsceneAssociations.DestroyAssociations();
-	if (ms_animLoaded)
-		CAnimManager::RemoveLastAnimFile();
-	ms_animLoaded = false;
 	strcpy(ms_cutsceneName, szCutsceneName);
 #if GX_CONSOLE
 	if (IsIntroCutsceneName(ms_cutsceneName)) {
-		CGame::playingIntro = true;
-	#ifdef WII
-		WiiNotifyIntroCutsceneStarted();
-	#endif
 		rw::gx::pushCriticalUiUploadContext(ms_cutsceneName);
 		rw::gx::texPoolSetSoftBudget(GxIntroCutsceneTexBudget());
 		GxEnforceCutsceneTexBudget("intro-cutscene-preload");
@@ -354,17 +331,6 @@ CCutsceneMgr::LoadCutsceneData(const char *szCutsceneName)
 	pPlayerPed->m_fCurrentStamina = pPlayerPed->m_fMaxStamina;
 	CPad::GetPad(0)->SetDisablePlayerControls(PLAYERCONTROL_CUTSCENE);
 	CWorld::Players[CWorld::PlayerInFocus].MakePlayerSafe(true);
-
-#ifdef WII
-	printf("[CUT-WII] data_loaded name=%s anim=%d cam=%d loaded=%d processing=%d running=%d intro=%d\n",
-		ms_cutsceneName,
-		ms_animLoaded ? 1 : 0,
-		bCamLoaded ? 1 : 0,
-		ms_loaded ? 1 : 0,
-		ms_cutsceneProcessing ? 1 : 0,
-		ms_running ? 1 : 0,
-		CGame::playingIntro ? 1 : 0);
-#endif
 	CTimer::Resume();
 }
 
@@ -372,14 +338,6 @@ void
 CCutsceneMgr::FinishCutscene()
 {
 	ms_wasCutsceneSkipped = true;
-#ifdef WII
-	printf("[CUT-WII] finish_cutscene name=%s camLoaded=%d timer=%.3f status=%u running=%d\n",
-		ms_cutsceneName,
-		bCamLoaded ? 1 : 0,
-		ms_cutsceneTimer,
-		ms_cutsceneLoadStatus,
-		ms_running ? 1 : 0);
-#endif
 	if (bCamLoaded) {
 		CCutsceneMgr::ms_cutsceneTimer = TheCamera.GetCutSceneFinishTime() * 0.001f;
 		TheCamera.FinishCutscene();
@@ -392,16 +350,6 @@ CCutsceneMgr::FinishCutscene()
 void
 CCutsceneMgr::SetupCutsceneToStart(void)
 {
-	((void)0);
-
-#ifdef WII
-	printf("[CUT-WII] setup_to_start name=%s camLoaded=%d objs=%d status=%u running=%d\n",
-		ms_cutsceneName,
-		bCamLoaded ? 1 : 0,
-		ms_numCutsceneObjs,
-		ms_cutsceneLoadStatus,
-		ms_running ? 1 : 0);
-#endif
 	if (bCamLoaded) {
 		TheCamera.SetCamCutSceneOffSet(ms_cutsceneOffset);
 		TheCamera.TakeControlWithSpline(JUMP_CUT);
@@ -411,92 +359,61 @@ CCutsceneMgr::SetupCutsceneToStart(void)
 	ms_cutsceneOffset.z++;
 
 	for (int i = ms_numCutsceneObjs - 1; i >= 0; i--) {
-		CCutsceneObject *obj = ms_pCutsceneObjects[i];
-		if (obj == nil || obj->m_rwObject == nil || RwObjectGetType(obj->m_rwObject) != rpCLUMP) {
-			printf("[CUTSCENE] skipping invalid object at start idx=%d obj=%p rw=%p\n",
-			       i, obj, obj ? obj->m_rwObject : nil);
-			continue;
-		}
-		if (CAnimBlendAssociation *pAnimBlendAssoc = RpAnimBlendClumpGetFirstAssociation((RpClump*)obj->m_rwObject)) {
+		assert(RwObjectGetType(ms_pCutsceneObjects[i]->m_rwObject) == rpCLUMP);
+		if (CAnimBlendAssociation *pAnimBlendAssoc = RpAnimBlendClumpGetFirstAssociation((RpClump*)ms_pCutsceneObjects[i]->m_rwObject)) {
 			assert(pAnimBlendAssoc->hierarchy->sequences[0].HasTranslation());
-			if (obj->m_pAttachTo != nil) {
+			if (ms_pCutsceneObjects[i]->m_pAttachTo != nil) {
 				pAnimBlendAssoc->flags &= (~ASSOC_HAS_TRANSLATION);
 			} else {
 				if (pAnimBlendAssoc->hierarchy->IsCompressed()){
 					KeyFrameTransCompressed *keyFrames = ((KeyFrameTransCompressed*)pAnimBlendAssoc->hierarchy->sequences[0].GetKeyFrameCompressed(0));
 					CVector trans;
 					keyFrames->GetTranslation(&trans);
-					obj->SetPosition(ms_cutsceneOffset + trans);
+					ms_pCutsceneObjects[i]->SetPosition(ms_cutsceneOffset + trans);
 				}else{
 					KeyFrameTrans *keyFrames = ((KeyFrameTrans*)pAnimBlendAssoc->hierarchy->sequences[0].GetKeyFrame(0));
-					obj->SetPosition(ms_cutsceneOffset + keyFrames->translation);
+					ms_pCutsceneObjects[i]->SetPosition(ms_cutsceneOffset + keyFrames->translation);
 				}
 			}
 			pAnimBlendAssoc->SetRun();
 		} else {
-			obj->SetPosition(ms_cutsceneOffset);
+			ms_pCutsceneObjects[i]->SetPosition(ms_cutsceneOffset);
 		}
-		CWorld::Add(obj);
-		obj->UpdateRpHAnim();
+		CWorld::Add(ms_pCutsceneObjects[i]);
+		if (RwObjectGetType(ms_pCutsceneObjects[i]->m_rwObject) == rpCLUMP)
+			ms_pCutsceneObjects[i]->UpdateRpHAnim();
 	}
 
 	CTimer::Update();
 	CTimer::Update();
 	ms_running = true;
 	ms_cutsceneTimer = 0.0f;
-	((void)0);
 }
 
 void
 CCutsceneMgr::SetCutsceneAnim(const char *animName, CObject *pObject)
 {
 	CAnimBlendAssociation *pNewAnim;
-	CAnimBlendAssociation *pTemplateAnim;
 	CAnimBlendClumpData *pAnimBlendClumpData;
 
-	if (animName == nil || animName[0] == '\0') {
-		printf("[CUTSCENE] SetCutsceneAnim skipped empty name obj=%p\n", pObject);
-		return;
-	}
-	if (pObject == nil || pObject->m_rwObject == nil || RwObjectGetType(pObject->m_rwObject) != rpCLUMP) {
-		printf("[CUTSCENE] SetCutsceneAnim skipped invalid object anim=%s obj=%p rw=%p\n",
-		       animName, pObject, pObject ? pObject->m_rwObject : nil);
-		return;
-	}
+	assert(RwObjectGetType(pObject->m_rwObject) == rpCLUMP);
 	debug("Give cutscene anim %s\n", animName);
 
 	RpAnimBlendClumpRemoveAllAssociations((RpClump*)pObject->m_rwObject);
 
-	pTemplateAnim = ms_cutsceneAssociations.GetAnimation(animName);
-	if (pTemplateAnim == nil || pTemplateAnim->nodes == nil || pTemplateAnim->hierarchy == nil) {
+	pNewAnim = ms_cutsceneAssociations.GetAnimation(animName);
+	if (!pNewAnim) {
 		debug("\n\nHaven't I told you I can't find the fucking animation %s\n\n\n", animName);
-		printf("[CUTSCENE] missing cutscene animation %s for obj=%p group=%p\n",
-		       animName, pObject, &ms_cutsceneAssociations);
 		return;
 	}
 
-	if (pTemplateAnim->hierarchy->IsCompressed())
-		pTemplateAnim->hierarchy->keepCompressed = true;
+	if (pNewAnim->hierarchy->IsCompressed())
+		pNewAnim->hierarchy->keepCompressed = true;
 
 	CStreaming::ImGonnaUseStreamingMemory();
 	pNewAnim = ms_cutsceneAssociations.CopyAnimation(animName);
 	CStreaming::IHaveUsedStreamingMemory();
-	if (pNewAnim == nil || pNewAnim->nodes == nil || pNewAnim->hierarchy == nil) {
-		printf("[CUTSCENE] CopyAnimation failed for %s obj=%p anim=%p nodes=%p hier=%p\n",
-		       animName, pObject, pNewAnim, pNewAnim ? pNewAnim->nodes : nil,
-		       pNewAnim ? pNewAnim->hierarchy : nil);
-		if (pNewAnim)
-			delete pNewAnim;
-		return;
-	}
-
 	pAnimBlendClumpData = *RPANIMBLENDCLUMPDATA(pObject->m_rwObject);
-	if (pAnimBlendClumpData == nil || pAnimBlendClumpData->frames == nil || pAnimBlendClumpData->numFrames <= 0) {
-		printf("[CUTSCENE] missing clump anim data for %s obj=%p rw=%p data=%p\n",
-		       animName, pObject, pObject->m_rwObject, pAnimBlendClumpData);
-		delete pNewAnim;
-		return;
-	}
 	pNewAnim->SetCurrentTime(0.0f);
 	pNewAnim->flags |= ASSOC_HAS_TRANSLATION;
 	pNewAnim->flags &= ~ASSOC_RUNNING;
@@ -509,13 +426,7 @@ CCutsceneMgr::SetCutsceneAnim(const char *animName, CObject *pObject)
 void
 CCutsceneMgr::SetCutsceneAnimToLoop(const char* animName)
 {
-	CAnimBlendAssociation *assoc = ms_cutsceneAssociations.GetAnimation(animName);
-	if (assoc == nil || assoc->nodes == nil || assoc->hierarchy == nil) {
-		printf("[CUTSCENE] SetCutsceneAnimToLoop skipped missing animation %s\n",
-		       animName ? animName : "<null>");
-		return;
-	}
-	assoc->flags |= ASSOC_REPEAT;
+	ms_cutsceneAssociations.GetAnimation(animName)->flags |= ASSOC_REPEAT;
 }
 
 CCutsceneHead *
@@ -526,8 +437,6 @@ CCutsceneMgr::AddCutsceneHead(CObject *pObject, int modelId)
 
 void UpdateCutsceneObjectBoundingBox(RpClump* clump, int modelId)
 {
-	if (clump == nil)
-		return;
 	if (modelId >= MI_CUTOBJ01 && modelId <= MI_CUTOBJ05) {
 		CColModel* pColModel = &CTempColModels::ms_colModelCutObj[modelId - MI_CUTOBJ01];
 		float radius = 0.0f;
@@ -551,17 +460,11 @@ CCutsceneMgr::CreateCutsceneObject(int modelId)
 		pModelInfo = CModelInfo::GetModelInfo(modelId);
 		pColModel = &CTempColModels::ms_colModelCutObj[modelId - MI_CUTOBJ01];
 		pModelInfo->SetColModel(pColModel);
-		if (pModelInfo->GetRwObject() && RwObjectGetType(pModelInfo->GetRwObject()) == rpCLUMP)
-			UpdateCutsceneObjectBoundingBox((RpClump*)pModelInfo->GetRwObject(), modelId);
+		UpdateCutsceneObjectBoundingBox((RpClump*)pModelInfo->GetRwObject(), modelId);
 	} else if (modelId >= MI_SPECIAL01 && modelId <= MI_SPECIAL21) {
 		pModelInfo = CModelInfo::GetModelInfo(modelId);
 		if (pModelInfo->GetColModel() == &CTempColModels::ms_colModelPed1) {
 			CColModel *colModel = new CColModel();
-			if (colModel == nil) {
-				printf("[CUTSCENE] col model alloc failed for special model %d\n", modelId);
-				CStreaming::IHaveUsedStreamingMemory();
-				return nil;
-			}
 			colModel->boundingSphere.radius = 2.0f;
 			colModel->boundingSphere.center = CVector(0.0f, 0.0f, 0.0f);
 			pModelInfo->SetColModel(colModel, true);
@@ -574,18 +477,7 @@ CCutsceneMgr::CreateCutsceneObject(int modelId)
 	}
 
 	pCutsceneObject = new CCutsceneObject();
-	if (pCutsceneObject == nil) {
-		printf("[CUTSCENE] CreateCutsceneObject alloc failed for model %d\n", modelId);
-		CStreaming::IHaveUsedStreamingMemory();
-		return nil;
-	}
 	pCutsceneObject->SetModelIndex(modelId);
-	if (pCutsceneObject->m_rwObject == nil) {
-		printf("[CUTSCENE] CreateCutsceneObject rw init failed for model %d\n", modelId);
-		delete pCutsceneObject;
-		CStreaming::IHaveUsedStreamingMemory();
-		return nil;
-	}
 	if (ms_useCutsceneShadows)
 		pCutsceneObject->CreateShadow();
 	ms_pCutsceneObjects[ms_numCutsceneObjs++] = pCutsceneObject;
@@ -597,18 +489,8 @@ void
 CCutsceneMgr::DeleteCutsceneData(void)
 {
 	if (!ms_loaded) return;
-	const bool hadCamLoaded = bCamLoaded;
 	char deletedCutsceneName[CUTSCENENAMESIZE];
 	strcpy(deletedCutsceneName, ms_cutsceneName);
-#ifdef WII
-	printf("[CUT-WII] delete_cutscene name=%s loaded=%d processing=%d running=%d status=%u objs=%d\n",
-		ms_cutsceneName,
-		ms_loaded ? 1 : 0,
-		ms_cutsceneProcessing ? 1 : 0,
-		ms_running ? 1 : 0,
-		ms_cutsceneLoadStatus,
-		ms_numCutsceneObjs);
-#endif
 	CTimer::Suspend();
 #if GX_CONSOLE
 	const bool wasIntroCutscene = IsIntroCutsceneName(ms_cutsceneName);
@@ -619,11 +501,9 @@ CCutsceneMgr::DeleteCutsceneData(void)
 	ms_useCutsceneShadows = true;
 
 	for (--ms_numCutsceneObjs; ms_numCutsceneObjs >= 0; ms_numCutsceneObjs--) {
-		if (ms_pCutsceneObjects[ms_numCutsceneObjs]) {
-			CWorld::Remove(ms_pCutsceneObjects[ms_numCutsceneObjs]);
-			ms_pCutsceneObjects[ms_numCutsceneObjs]->DeleteRwObject();
-			delete ms_pCutsceneObjects[ms_numCutsceneObjs];
-		}
+		CWorld::Remove(ms_pCutsceneObjects[ms_numCutsceneObjs]);
+		ms_pCutsceneObjects[ms_numCutsceneObjs]->DeleteRwObject();
+		delete ms_pCutsceneObjects[ms_numCutsceneObjs];
 		ms_pCutsceneObjects[ms_numCutsceneObjs] = nil;
 	}
 	ms_numCutsceneObjs = 0;
@@ -637,8 +517,6 @@ CCutsceneMgr::DeleteCutsceneData(void)
 		}
 	}
 
-	ms_cutsceneAssociations.DestroyAssociations();
-
 	if (ms_animLoaded)
 		CAnimManager::RemoveLastAnimFile();
 
@@ -650,13 +528,9 @@ CCutsceneMgr::DeleteCutsceneData(void)
 		TheCamera.RestoreWithJumpCut();
 		TheCamera.SetWideScreenOff();
 		TheCamera.DeleteCutSceneCamDataMemory();
-		bCamLoaded = false;
 	}
 	ms_running = false;
 	ms_loaded = false;
-	ms_cutsceneLoadStatus = 0;
-	ms_cutsceneTimer = 0.0f;
-	ms_cutsceneName[0] = '\0';
 
 	FindPlayerPed()->bIsVisible = true;
 	CPad::GetPad(0)->SetEnablePlayerControls(PLAYERCONTROL_CUTSCENE);
@@ -669,7 +543,6 @@ CCutsceneMgr::DeleteCutsceneData(void)
 #if GX_CONSOLE
 	if (wasIntroCutscene) {
 		rw::gx::popCriticalUiUploadContext(deletedCutsceneName);
-		CGame::playingIntro = false;
 		// Keep intro cleanup on the conservative budget path so later
 		// cutscene/gameplay rwMalloc calls are not starved by texture growth.
 		rw::gx::texPoolSetSoftBudget(GxCutsceneLoadTexBudget());
@@ -684,7 +557,7 @@ CCutsceneMgr::DeleteCutsceneData(void)
 	CStreaming::ms_disableStreaming = false;
 	CWorld::bProcessCutsceneOnly = false;
 
-	if(hadCamLoaded)
+	if(bCamLoaded)
 		CGame::DrasticTidyUpMemory(TheCamera.GetScreenFadeStatus() == FADE_2);
 	
 	CPad::GetPad(0)->Clear(false);
@@ -724,28 +597,6 @@ CCutsceneMgr::Update(void)
 		CUTSCENE_LOADING_3,
 		CUTSCENE_LOADING_4
 	};
-
-#ifdef WII
-	static uint32 s_lastLoggedLoadStatus = 0xFFFFFFFFu;
-	static bool s_lastLoggedRunning = false;
-	static bool s_lastLoggedProcessing = false;
-	if (s_lastLoggedLoadStatus != ms_cutsceneLoadStatus ||
-	    s_lastLoggedRunning != ms_running ||
-	    s_lastLoggedProcessing != ms_cutsceneProcessing) {
-		printf("[CUT-WII] update_state name=%s status=%u running=%d processing=%d loaded=%d camLoaded=%d timer=%.3f\n",
-			ms_cutsceneName,
-			ms_cutsceneLoadStatus,
-			ms_running ? 1 : 0,
-			ms_cutsceneProcessing ? 1 : 0,
-			ms_loaded ? 1 : 0,
-			bCamLoaded ? 1 : 0,
-			ms_cutsceneTimer);
-		s_lastLoggedLoadStatus = ms_cutsceneLoadStatus;
-		s_lastLoggedRunning = ms_running;
-		s_lastLoggedProcessing = ms_cutsceneProcessing;
-	}
-#endif
-
 	switch (ms_cutsceneLoadStatus) {
 	case CUTSCENE_LOADING_AUDIO:
 		SetupCutsceneToStart();
@@ -769,15 +620,12 @@ CCutsceneMgr::Update(void)
 	ms_cutsceneTimer += CTimer::GetTimeStepNonClippedInSeconds();
 
 	for (int i = 0; i < ms_numCutsceneObjs; i++) {
-		CCutsceneObject *obj = ms_pCutsceneObjects[i];
-		if (obj == nil || obj->m_rwObject == nil || RwObjectGetType(obj->m_rwObject) != rpCLUMP)
-			continue;
-		int modelId = obj->GetModelIndex();
+		int modelId = ms_pCutsceneObjects[i]->GetModelIndex();
 		if (modelId >= MI_CUTOBJ01 && modelId <= MI_CUTOBJ05)
-			UpdateCutsceneObjectBoundingBox(obj->GetClump(), modelId);
+			UpdateCutsceneObjectBoundingBox(ms_pCutsceneObjects[i]->GetClump(), modelId);
 
-		if (obj->m_pAttachTo != nil && modelId >= MI_SPECIAL01 && modelId <= MI_SPECIAL21)
-			UpdateCutsceneObjectBoundingBox(obj->GetClump(), modelId);
+		if (ms_pCutsceneObjects[i]->m_pAttachTo != nil && modelId >= MI_SPECIAL01 && modelId <= MI_SPECIAL21)
+			UpdateCutsceneObjectBoundingBox(ms_pCutsceneObjects[i]->GetClump(), modelId);
 	}
 
 	if (bCamLoaded)
@@ -810,11 +658,6 @@ CCutsceneMgr::LoadAnimationUncompressed(char const* name)
 void
 CCutsceneMgr::AttachObjectToParent(CObject *pObject, CEntity *pAttachTo)
 {
-	if (pObject == nil || pAttachTo == nil || pAttachTo->m_rwObject == nil || RwObjectGetType(pAttachTo->m_rwObject) != rpCLUMP) {
-		if (pObject)
-			((CCutsceneObject*)pObject)->m_pAttachTo = nil;
-		return;
-	}
 	((CCutsceneObject*)pObject)->m_pAttachmentObject = nil;
 	((CCutsceneObject*)pObject)->m_pAttachTo = RpClumpGetFrame(pAttachTo->GetClump());
 
@@ -824,54 +667,26 @@ CCutsceneMgr::AttachObjectToParent(CObject *pObject, CEntity *pAttachTo)
 void
 CCutsceneMgr::AttachObjectToFrame(CObject *pObject, CEntity *pAttachTo, const char *frame)
 {
-	if (pObject == nil || pAttachTo == nil || pAttachTo->m_rwObject == nil || RwObjectGetType(pAttachTo->m_rwObject) != rpCLUMP) {
-		if (pObject)
-			((CCutsceneObject*)pObject)->m_pAttachTo = nil;
-		return;
-	}
 	const char *objectName = CModelInfo::GetModelInfo(pObject->GetModelIndex())->GetModelName();
 	const char *parentName = CModelInfo::GetModelInfo(pAttachTo->GetModelIndex())->GetModelName();
 	AnimBlendFrameData *frameData;
 
-	((void)0);
-
 	((CCutsceneObject*)pObject)->m_pAttachmentObject = nil;
 	frameData = RpAnimBlendClumpFindFrame(pAttachTo->GetClump(), frame);
-	if (frameData == nil || frameData->frame == nil) {
-		((void)0);
-		((CCutsceneObject*)pObject)->m_pAttachTo = nil;
-		return;
-	}
-
 	((CCutsceneObject*)pObject)->m_pAttachTo = frameData->frame;
 	debug("Attach %s to component %s of %s\n", objectName, frame, parentName);
 	if (RwObjectGetType(pObject->m_rwObject) == rpCLUMP) {
 		RpClump *clump = (RpClump*)pObject->m_rwObject;
-		((void)0);
 		if (IsClumpSkinned(clump))
 			RpAtomicGetBoundingSphere(GetFirstAtomic(clump))->radius *= 1.1f;
 	}
-	((void)0);
 }
 
 void
 CCutsceneMgr::AttachObjectToBone(CObject *pObject, CObject *pAttachTo, int bone)
 {
-	if (pObject == nil || pAttachTo == nil || pAttachTo->m_rwObject == nil || RwObjectGetType(pAttachTo->m_rwObject) != rpCLUMP) {
-		if (pObject)
-			((CCutsceneObject*)pObject)->m_pAttachTo = nil;
-		return;
-	}
 	RpHAnimHierarchy *hanim = GetAnimHierarchyFromSkinClump(pAttachTo->GetClump());
-	if (hanim == nil) {
-		((CCutsceneObject*)pObject)->m_pAttachTo = nil;
-		return;
-	}
 	RwInt32 id = RpHAnimIDGetIndex(hanim, bone);
-	if (id < 0) {
-		((CCutsceneObject*)pObject)->m_pAttachTo = nil;
-		return;
-	}
 	RwMatrix *matrixArray = RpHAnimHierarchyGetMatrixArray(hanim);
 	((CCutsceneObject*)pObject)->m_pAttachmentObject = pAttachTo;
 	((CCutsceneObject*)pObject)->m_pAttachTo = &matrixArray[id];

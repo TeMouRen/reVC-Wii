@@ -109,63 +109,6 @@ void gxMemGetPoolStats(uint32 *capacityBytes, uint32 *usedBytes,
 GlobalScene Scene;
 #ifdef WII
 int8 gLoadingScreenMode = LOADING_SCREEN_PS2;
-
-// The script splash is also the fade target for the intro sequence.  Keep
-// its name separate from the TXD slot so synchronous Wii loading screens
-// cannot silently replace it between LOAD_SPLASH_SCREEN and DoFade.
-static char gCurrentSplashName[32];
-static bool gIntroSplashPendingCutscene;
-
-static char
-SplashLowerAscii(char c)
-{
-	return c >= 'A' && c <= 'Z' ? (char)(c - 'A' + 'a') : c;
-}
-
-static bool
-SplashNameStartsWith(const char *name, const char *prefix)
-{
-	if(name == nil || prefix == nil)
-		return false;
-	while(*prefix){
-		if(*name == '\0' || SplashLowerAscii(*name) != SplashLowerAscii(*prefix))
-			return false;
-		name++;
-		prefix++;
-	}
-	return true;
-}
-
-static bool
-CurrentSplashIsIntroSequence(void)
-{
-	return SplashNameStartsWith(gCurrentSplashName, "intro");
-}
-
-static bool
-WiiShouldPreserveScriptSplash(void)
-{
-	return CurrentSplashIsIntroSequence() &&
-		(gIntroSplashPendingCutscene ||
-		 CGame::playingIntro ||
-		 CCutsceneMgr::IsRunning() ||
-		 CCutsceneMgr::IsCutsceneProcessing() ||
-		 CCutsceneMgr::ms_cutsceneLoadStatus != 0);
-}
-
-static bool
-ShouldProtectActiveIntroSplash(const char *name)
-{
-	return name != nil && WiiShouldPreserveScriptSplash() &&
-		(SplashNameStartsWith(name, "loadsc") ||
-		 SplashNameStartsWith(name, "splash"));
-}
-
-void
-WiiNotifyIntroCutsceneStarted(void)
-{
-	gIntroSplashPendingCutscene = false;
-}
 #endif
 #ifdef WII
 struct WiiFrameDiagnostics {
@@ -602,14 +545,6 @@ DoFade(void)
 	}
 #endif
 
-#ifdef WII
-	// A script-driven intro splash owns the fade target for the cutscene
-	// handoff. Do not let the generic post-load black hold overwrite the
-	// (2,2,2) splash target before the next frame can render it.
-	if(StillToFadeOut && WiiShouldPreserveScriptSplash())
-		StillToFadeOut = false;
-#endif
-
 #ifdef PS2_MENU
 	if(TheMemoryCard.StillToFadeOut){
 		if(CTimer::GetTimeInMilliseconds() - TheMemoryCard.TimeStartedCountingForFade > TheMemoryCard.TimeToStayFadedBeforeFadeOut){
@@ -641,10 +576,7 @@ DoFade(void)
 		if(FrontEndMenuManager.m_bMenuActive)
 			brightness = 256;
 
-		bool useSplashFade = TheCamera.m_FadeTargetIsSplashScreen &&
-			splash != nil && splash->m_pTexture != nil;
-
-		if(useSplashFade)
+		if(TheCamera.m_FadeTargetIsSplashScreen)
 			fadeValue = 0;
 
 		float fade = fadeValue + 256 - brightness;
@@ -665,33 +597,7 @@ DoFade(void)
 
 		TheCamera.GetScreenRect(rect);
 		CSprite2d::DrawRect(rect, fadeColor);
-	#ifdef WII
-		if(CurrentSplashIsIntroSequence()){
-			static int s_lastLoggedFade = -1;
-			static int s_logBudget = 64;
-			int probeFade = (int)CDraw::FadeValue;
-			if(s_logBudget > 0 &&
-			   (s_lastLoggedFade < 0 || probeFade == 0 || probeFade == 255 ||
-			    Abs(probeFade - s_lastLoggedFade) >= 32)){
-				printf("[INTRO-PROBE] DoFade name='%s' value=%d drawFade=%d target=%d useSplash=%d splash=%p tex=%p hold=%d pending=%d playing=%d cutscene=%d\n",
-					gCurrentSplashName,
-					(int)CDraw::FadeValue,
-					fadeValue,
-					TheCamera.m_FadeTargetIsSplashScreen ? 1 : 0,
-					useSplashFade ? 1 : 0,
-					(void*)splash,
-					(void*)(splash != nil ? splash->m_pTexture : nil),
-					StillToFadeOut ? 1 : 0,
-					gIntroSplashPendingCutscene ? 1 : 0,
-					CGame::playingIntro ? 1 : 0,
-					CCutsceneMgr::IsRunning() ? 1 : 0);
-				s_lastLoggedFade = probeFade;
-				s_logBudget--;
-			}
-		}
-	#endif
-
-		if(CDraw::FadeValue != 0 && useSplashFade){
+		if(CDraw::FadeValue != 0 && TheCamera.m_FadeTargetIsSplashScreen){
 			RwRenderStateSet(rwRENDERSTATETEXTUREFILTER, (void*)rwFILTERLINEAR);
 			fadeColor.r = 255;
 			fadeColor.g = 255;
@@ -994,32 +900,12 @@ LoadSplash(const char *name)
 
 	if(name == nil)
 		return &splash;
-#ifdef WII
-	if(ShouldProtectActiveIntroSplash(name))
-		return &splash;
-#endif
 	if(splashTxdId == -1)
 		splashTxdId = CTxdStore::AddTxdSlot("splash");
 
 	txd = CTxdStore::GetSlot(splashTxdId)->texDict;
 	if(txd)
 		tex = RwTexDictionaryFindNamedTexture(txd, name);
-
-#ifdef WII
-	if(tex != nil &&
-	   (splash.m_pTexture == nil || !SplashNameStartsWith(gCurrentSplashName, name) ||
-	    !SplashNameStartsWith(name, gCurrentSplashName))){
-		CTxdStore::PushCurrentTxd();
-		CTxdStore::SetCurrentTxd(splashTxdId);
-		splash.SetTexture(name);
-		CTxdStore::PopCurrentTxd();
-	}
-	if(tex != nil && splash.m_pTexture != nil){
-		strncpy(gCurrentSplashName, name, sizeof(gCurrentSplashName) - 1);
-		gCurrentSplashName[sizeof(gCurrentSplashName) - 1] = '\0';
-		return &splash;
-	}
-#endif
 
 	if(tex == nil){
 		CFileMgr::SetDir("TXD\\");
@@ -1030,9 +916,6 @@ LoadSplash(const char *name)
 #endif
 			splash.Delete();
 		}
-	#ifdef WII
-		gCurrentSplashName[0] = '\0';
-	#endif
 		if(txd)
 			CTxdStore::RemoveTxd(splashTxdId);
 #ifdef RW_GX
@@ -1046,13 +929,6 @@ LoadSplash(const char *name)
 			CTxdStore::SetCurrentTxd(splashTxdId);
 			splash.SetTexture(name);
 			CTxdStore::PopCurrentTxd();
-		#ifdef WII
-			if(splash.m_pTexture != nil){
-				strncpy(gCurrentSplashName, name, sizeof(gCurrentSplashName) - 1);
-				gCurrentSplashName[sizeof(gCurrentSplashName) - 1] = '\0';
-				gIntroSplashPendingCutscene = SplashNameStartsWith(name, "intro");
-			}
-		#endif
 		}
 #ifdef RW_GX
 		rw::gx::popCriticalUiUploadContext(name);
@@ -1070,10 +946,6 @@ DestroySplashScreen(void)
 	if(splashTxdId != -1)
 		CTxdStore::RemoveTxdSlot(splashTxdId);
 	splashTxdId = -1;
-#ifdef WII
-	gCurrentSplashName[0] = '\0';
-	gIntroSplashPendingCutscene = false;
-#endif
 }
 
 Const char*

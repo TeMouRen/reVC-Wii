@@ -158,15 +158,6 @@ int8 CRunningScript::ProcessCommands1000To1099(int32 command)
 	{
 		CollectParameters(&m_nIp, 1);
 		CPlayerInfo* pPlayerInfo = &CWorld::Players[ScriptParams[0]];
-#ifdef WII
-		printf("[CUT-WII] make_player_safe_for_cutscene ip=%u player=%d status=%u loaded=%d running=%d name=%s\n",
-			m_nIp,
-			ScriptParams[0],
-			CCutsceneMgr::ms_cutsceneLoadStatus,
-			CCutsceneMgr::HasLoaded() ? 1 : 0,
-			CCutsceneMgr::IsRunning() ? 1 : 0,
-			CCutsceneMgr::GetCutsceneName());
-#endif
 		CPad::GetPad(ScriptParams[0])->SetDisablePlayerControls(PLAYERCONTROL_CUTSCENE);
 		pPlayerInfo->MakePlayerSafe(true);
 		CCutsceneMgr::StartCutsceneProcessing();
@@ -956,21 +947,6 @@ int8 CRunningScript::ProcessCommands1100To1199(int32 command)
 			tmp[i] = tolower((unsigned char)tmp[i]);
 		m_nIp += KEY_LENGTH_IN_SCRIPT;
 		LoadSplash(tmp);
-#ifdef WII
-		CSprite2d *loadedSplash = LoadSplash(nil);
-		printf("[INTRO-PROBE] script LOAD_SPLASH name='%s' before-arm fade=%.1f value=%d target=%d texture=%p\n",
-			tmp,
-			TheCamera.m_fFLOATingFade,
-			(int)CDraw::FadeValue,
-			TheCamera.m_FadeTargetIsSplashScreen ? 1 : 0,
-			(void*)(loadedSplash != nil ? loadedSplash->m_pTexture : nil));
-		printf("[INTRO-PROBE] script LOAD_SPLASH name='%s' after-arm fade=%.1f value=%d target=%d fading=%d\n",
-			tmp,
-			TheCamera.m_fFLOATingFade,
-			(int)CDraw::FadeValue,
-			TheCamera.m_FadeTargetIsSplashScreen ? 1 : 0,
-			TheCamera.m_bFading ? 1 : 0);
-#endif
 		return 0;
 	}
 	/*

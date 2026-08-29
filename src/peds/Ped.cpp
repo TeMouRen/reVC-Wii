@@ -1,7 +1,6 @@
 #include "common.h"
 
 #include "main.h"
-#include "CutsceneMgr.h"
 #include "Pools.h"
 #include "Particle.h"
 #include "RpAnimBlend.h"
@@ -11,7 +10,6 @@
 #include "Fire.h"
 #include "DMAudio.h"
 #include "General.h"
-#include "ModelIndices.h"
 #include "VisibilityPlugins.h"
 #include "HandlingMgr.h"
 #include "Replay.h"
@@ -47,231 +45,6 @@ CPed *gapTempPedList[50];
 uint16 gnNumTempPedList;
 
 static CColPoint aTempPedColPts[MAX_COLLISION_POINTS];
-
-#if REAL_GAMECUBE
-static bool
-GcPedIsLikelyIntroKen(CPed *ped)
-{
-	return ped &&
-		ped->CharCreatedBy == MISSION_CHAR &&
-		ped->GetModelIndex() == 118;
-}
-
-static bool
-GcIsScriptedIntroAdmiralVehicle(CVehicle *veh)
-{
-	return veh != nil &&
-		veh->GetModelIndex() == MI_ADMIRAL &&
-		veh->VehicleCreatedBy == MISSION_VEHICLE;
-}
-
-static bool
-GcPedIsIntroExitFocus(CPed *ped)
-{
-	if (ped == nil)
-		return false;
-	if (GcPedIsLikelyIntroKen(ped))
-		return true;
-	return ped->IsPlayer() && CCutsceneMgr::ms_cutsceneLoadStatus != 0;
-}
-
-static bool
-GcPedProcDiagActive(CPed *ped)
-{
-	if (ped == nil)
-		return false;
-	if (ped->GetModelIndex() == MI_PLAYER)
-		return CCutsceneMgr::ms_cutsceneLoadStatus != 0;
-	if (GcPedIsLikelyIntroKen(ped)) {
-		return ped->m_objective == OBJECTIVE_GOTO_AREA_ON_FOOT ||
-			ped->m_objective == OBJECTIVE_RUN_TO_AREA ||
-			ped->m_objective == OBJECTIVE_WAIT_ON_FOOT ||
-			ped->m_nPedState == PED_SEEK_POS ||
-			ped->m_nPedState == PED_FOLLOW_PATH;
-	}
-	return false;
-}
-
-static bool
-GcPedFiniteFloat(float f)
-{
-	return isfinite(f) != 0;
-}
-
-static bool
-GcPedFiniteVec(const CVector &v)
-{
-	return GcPedFiniteFloat(v.x) && GcPedFiniteFloat(v.y) && GcPedFiniteFloat(v.z);
-}
-
-static void
-GcPedRecoverPlayerIfNeeded(CPed *ped, const char *stage)
-{
-	static bool s_haveLastValidPlayerPos = false;
-	static CVector s_lastValidPlayerPos;
-
-	if(ped == nil || !ped->IsPlayer())
-		return;
-
-	bool posOk = GcPedFiniteVec(ped->GetPosition());
-	bool moveOk = GcPedFiniteVec(ped->m_vecMoveSpeed);
-	bool turnOk = GcPedFiniteVec(ped->m_vecTurnSpeed);
-	if(posOk && moveOk && turnOk){
-		s_lastValidPlayerPos = ped->GetPosition();
-		s_haveLastValidPlayerPos = true;
-		return;
-	}
-
-	printf("[PED-NAN] stage=%s ped=%p cut=%s status=%u running=%d pos=(%f,%f,%f) move=(%f,%f,%f) turn=(%f,%f,%f) inVeh=%d veh=%p safe=%d\n",
-	       stage, (void*)ped, CCutsceneMgr::GetCutsceneName(), CCutsceneMgr::ms_cutsceneLoadStatus,
-	       CCutsceneMgr::IsRunning(),
-	       ped->GetPosition().x, ped->GetPosition().y, ped->GetPosition().z,
-	       ped->m_vecMoveSpeed.x, ped->m_vecMoveSpeed.y, ped->m_vecMoveSpeed.z,
-	       ped->m_vecTurnSpeed.x, ped->m_vecTurnSpeed.y, ped->m_vecTurnSpeed.z,
-	       ped->bInVehicle, (void*)ped->m_pMyVehicle, ped->bIsInSafePosition);
-
-	if(s_haveLastValidPlayerPos && !posOk){
-		ped->SetPosition(s_lastValidPlayerPos);
-		printf("[PED-NAN] restored player pos -> (%f,%f,%f)\n",
-		       s_lastValidPlayerPos.x, s_lastValidPlayerPos.y, s_lastValidPlayerPos.z);
-	}
-
-	if(!moveOk)
-		ped->m_vecMoveSpeed = CVector(0.0f, 0.0f, 0.0f);
-	if(!turnOk)
-		ped->m_vecTurnSpeed = CVector(0.0f, 0.0f, 0.0f);
-}
-
-static void
-GcPedProcStage(CPed *ped, const char *stage)
-{
-	GcPedRecoverPlayerIfNeeded(ped, stage);
-	if(!GcPedProcDiagActive(ped))
-		return;
-	/* [OLD-PED-PROC] High-frequency per-ped cutscene trace from movement /
-	 * collision bring-up. Disabled to keep the texture/material log usable.
-	const CVector &pos = ped->GetPosition();
-	printf("[PED-PROC] %s ped=%p cut=%s status=%u frame=%u entStatus=%u pedState=%d obj=%d wait=%d move=%d storedMove=%d stand=%d air=%d water=%d inVeh=%d veh=%p surf=%p dmgEnt=%p dmg=%.3f coll=%u safe=%d nodeSeek=%d path=%d/%d nextPath=%p pos=%.2f,%.2f,%.2f vel=%.4f,%.4f,%.4f seek=%.2f,%.2f,%.2f target=%.2f,%.2f,%.2f action=%.2f,%.2f timer=%u rot=%.4f->%.4f rate=%.4f step=%.4f anim=%.4f,%.4f moved=%.4f,%.4f\n",
-	       stage, (void*)ped, CCutsceneMgr::GetCutsceneName(), CCutsceneMgr::ms_cutsceneLoadStatus,
-	       CTimer::GetFrameCounter(), ped->GetStatus(), ped->m_nPedState, ped->m_objective,
-	       ped->m_nWaitState, ped->m_nMoveState, ped->m_nStoredMoveState, ped->bIsStanding,
-	       ped->bIsInTheAir, ped->bIsInWater, ped->bInVehicle, (void*)ped->m_pMyVehicle,
-	       (void*)ped->m_pCurrentPhysSurface, (void*)ped->m_pDamageEntity, ped->m_fDamageImpulse,
-	       ped->m_nCollisionRecords, ped->bIsInSafePosition, ped->bUsePedNodeSeek,
-	       ped->m_nCurPathNodeId, ped->m_nNumPathNodes, (void*)ped->m_pNextPathNode, pos.x, pos.y, pos.z,
-	       ped->m_vecMoveSpeed.x, ped->m_vecMoveSpeed.y, ped->m_vecMoveSpeed.z,
-	       ped->m_vecSeekPos.x, ped->m_vecSeekPos.y, ped->m_vecSeekPos.z,
-	       ped->m_nextRoutePointPos.x, ped->m_nextRoutePointPos.y, ped->m_nextRoutePointPos.z,
-	       ped->m_actionX, ped->m_actionY, ped->m_nPedStateTimer,
-	       ped->m_fRotationCur, ped->m_fRotationDest,
-	       ped->m_headingRate, CTimer::GetTimeStep(),
-	       ped->m_vecAnimMoveDelta.x, ped->m_vecAnimMoveDelta.y,
-	       ped->m_moved.x, ped->m_moved.y); */
-}
-
-static void
-GcLogPedWalkAroundDecision(CPed *ped, CEntity *obj, const char *reason, const CVector &actionPos,
-	float oldRotDest, float dirToSet, float angleToFaceObjCenter, float timerMs)
-{
-	if(!GcPedProcDiagActive(ped))
-		return;
-	printf("[PED-WALKAROUND] reason=%s ped=%p frame=%u obj=%p objModel=%d walkType=%d move=%d seek=%.2f,%.2f target=%.2f,%.2f action=%.2f,%.2f rot=%.4f->%.4f faceObj=%.4f dir=%.4f timer=%.2f pos=%.2f,%.2f,%.2f\n",
-	       reason, (void*)ped, CTimer::GetFrameCounter(), (void*)obj,
-	       obj ? obj->GetModelIndex() : -1, ped->m_walkAroundType, ped->m_nMoveState,
-	       ped->m_vecSeekPos.x, ped->m_vecSeekPos.y,
-	       ped->m_nextRoutePointPos.x, ped->m_nextRoutePointPos.y,
-	       actionPos.x, actionPos.y,
-	       oldRotDest, ped->m_fRotationDest,
-	       angleToFaceObjCenter, dirToSet, timerMs,
-	       ped->GetPosition().x, ped->GetPosition().y, ped->GetPosition().z);
-}
-
-static void
-GcTraceKenHeadingRate(CPed *ped, const char *stage)
-{
-	if (!GcPedIsLikelyIntroKen(ped))
-		return;
-	if (strcmp(stage, "setout-before-restore-rate") != 0 &&
-	    strcmp(stage, "setout-after-restore-rate") != 0 &&
-	    strcmp(stage, "restore-heading-before") != 0 &&
-	    strcmp(stage, "restore-heading-after") != 0 &&
-	    strcmp(stage, "set-seek-pos") != 0)
-		return;
-	if (strcmp(stage, "set-seek-pos") == 0 &&
-	    ped->m_objective == OBJECTIVE_GOTO_AREA_ON_FOOT &&
-	    ped->m_nMoveState == PEDMOVE_RUN)
-		return;
-
-	float statRate = ped->m_pedStats ? ped->m_pedStats->m_headingChangeRate : -9999.0f;
-	int statType = ped->m_pedStats ? (int)ped->m_pedStats->m_type : -1;
-	printf("[PED-HDG] stage=%s frame=%u ped=%p state=%d lastState=%d obj=%d prevObj=%d wait=%d move=%d storedMove=%d rate=%.4f statRate=%.4f statType=%d stats=%p rot=%.4f->%.4f seek=(%.2f,%.2f,%.2f) target=(%.2f,%.2f,%.2f) pos=(%.2f,%.2f,%.2f) inVeh=%d veh=%p\n",
-	       stage,
-	       CTimer::GetFrameCounter(),
-	       (void*)ped,
-	       ped->m_nPedState,
-	       ped->m_nLastPedState,
-	       ped->m_objective,
-	       ped->m_prevObjective,
-	       ped->m_nWaitState,
-	       ped->m_nMoveState,
-	       ped->m_nStoredMoveState,
-	       ped->m_headingRate,
-	       statRate,
-	       statType,
-	       (void*)ped->m_pedStats,
-	       ped->m_fRotationCur,
-	       ped->m_fRotationDest,
-	       ped->m_vecSeekPos.x, ped->m_vecSeekPos.y, ped->m_vecSeekPos.z,
-	       ped->m_nextRoutePointPos.x, ped->m_nextRoutePointPos.y, ped->m_nextRoutePointPos.z,
-	       ped->GetPosition().x, ped->GetPosition().y, ped->GetPosition().z,
-	       ped->bInVehicle ? 1 : 0,
-	       (void*)ped->m_pMyVehicle);
-}
-
-static void
-GcTraceIntroSeatCaller(CPed *ped, const char *stage, CVehicle *veh)
-{
-	if (ped == nil)
-		return;
-	if (!GcIsScriptedIntroAdmiralVehicle(veh) &&
-	    !GcPedIsIntroExitFocus(ped) &&
-	    !GcPedIsLikelyIntroKen(ped))
-		return;
-
-	const CVector &pedPos = ped->GetPosition();
-	CVector vehPos(0.0f, 0.0f, 0.0f);
-	if (veh)
-		vehPos = veh->GetPosition();
-
-	printf("[PED-SEATCALL] stage=%s frame=%u ped=%p player=%d model=%d state=%d obj=%d prevObj=%d inVeh=%d remove=%d veh=%p drv=%p p0=%p p1=%p p2=%p cut=%s status=%u running=%d pedPos=(%f,%f,%f) vehPos=(%f,%f,%f)\n",
-	       stage,
-	       CTimer::GetFrameCounter(),
-	       (void*)ped,
-	       ped->IsPlayer() ? 1 : 0,
-	       ped->GetModelIndex(),
-	       ped->m_nPedState,
-	       ped->m_objective,
-	       ped->m_prevObjective,
-	       ped->bInVehicle ? 1 : 0,
-	       ped->bRemoveFromWorld ? 1 : 0,
-	       (void*)veh,
-	       veh ? (void*)veh->pDriver : nil,
-	       veh ? (void*)veh->pPassengers[0] : nil,
-	       veh ? (void*)veh->pPassengers[1] : nil,
-	       veh ? (void*)veh->pPassengers[2] : nil,
-	       CCutsceneMgr::GetCutsceneName(),
-	       CCutsceneMgr::ms_cutsceneLoadStatus,
-	       CCutsceneMgr::IsRunning(),
-	       pedPos.x, pedPos.y, pedPos.z,
-	       vehPos.x, vehPos.y, vehPos.z);
-}
-#else
-#define GcPedRecoverPlayerIfNeeded(ped, stage) ((void)0)
-#define GcPedProcStage(ped, stage) ((void)0)
-#define GcLogPedWalkAroundDecision(ped, obj, reason, actionPos, oldRotDest, dirToSet, angleToFaceObjCenter, timerMs) ((void)0)
-#define GcTraceKenHeadingRate(ped, stage) ((void)0)
-#define GcTraceIntroSeatCaller(ped, stage, veh) ((void)0)
-#endif
 
 uint16 CPed::nThreatReactionRangeMultiplier = 1;
 uint16 CPed::nEnterCarRangeMultiplier = 1;
@@ -611,7 +384,6 @@ CPed::~CPed(void)
 			m_pMyVehicle->pDriver = nil;
 		else {
 			// FIX: Passenger counter now being decreased after removing ourself from vehicle.
-			GcTraceIntroSeatCaller(this, "dtor-remove-passenger", m_pMyVehicle);
 			m_pMyVehicle->RemovePassenger(this);
 		}
 		if (m_nPedState == PED_EXIT_CAR || m_nPedState == PED_DRAG_FROM_CAR)
@@ -672,41 +444,11 @@ void
 CPed::SetModelIndex(uint32 mi)
 {
 	CEntity::SetModelIndex(mi);
-	if(m_rwObject == nil || RwObjectGetType(m_rwObject) != rpCLUMP){
-		printf("[PED-INIT] SetModelIndex aborted: no clump for model %u\n",
-		       (unsigned)mi);
-		return;
-	}
 	RpAnimBlendClumpInit(GetClump());
 	RpAnimBlendClumpFillFrameArray(GetClump(), m_pFrames);
 	CPedModelInfo *modelInfo = (CPedModelInfo *)CModelInfo::GetModelInfo(GetModelIndex());
-#if REAL_GAMECUBE
-	if (mi == MI_SPECIAL10 || (CharCreatedBy == MISSION_CHAR && mi == 118)) {
-		printf("[PEDSTAT-BORN] stage=set-model-before ped=%p model=%d createdBy=%d modelInfo=%p pedType=%d pedStatType=%d statsArray=%p\n",
-		       (void*)this,
-		       (int)mi,
-		       (int)CharCreatedBy,
-		       (void*)modelInfo,
-		       modelInfo ? (int)modelInfo->m_pedType : -1,
-		       modelInfo ? (int)modelInfo->m_pedStatType : -1,
-		       modelInfo && modelInfo->m_pedStatType >= 0 && modelInfo->m_pedStatType < NUM_PEDSTATS
-		       	? (void*)CPedStats::ms_apPedStats[modelInfo->m_pedStatType]
-		       	: (void*)0);
-	}
-#endif
 	SetPedStats(modelInfo->m_pedStatType);
 	m_headingRate = m_pedStats->m_headingChangeRate;
-#if REAL_GAMECUBE
-	if (mi == MI_SPECIAL10 || (CharCreatedBy == MISSION_CHAR && mi == 118)) {
-		printf("[PEDSTAT-BORN] stage=set-model-after ped=%p model=%d stats=%p statType=%d headingRate=%.4f animGroup=%d\n",
-		       (void*)this,
-		       (int)mi,
-		       (void*)m_pedStats,
-		       m_pedStats ? (int)m_pedStats->m_type : -1,
-		       m_headingRate,
-		       modelInfo ? (int)modelInfo->m_animGroup : -1);
-	}
-#endif
 	m_animGroup = (AssocGroupId) modelInfo->m_animGroup;
 	CAnimManager::AddAnimation(GetClump(), m_animGroup, ANIM_STD_IDLE);
 
@@ -732,26 +474,7 @@ CPed::SetModelIndex(uint32 mi)
 void
 CPed::SetPedStats(ePedStats pedStat)
 {
-	if (pedStat < 0 || pedStat >= NUM_PEDSTATS) {
-#if REAL_GAMECUBE
-		printf("[PEDSTAT] invalid pedStat=%d for model=%d, falling back to STD_MISSION\n",
-			(int)pedStat, (int)GetModelIndex());
-#endif
-		pedStat = PEDSTAT_STD_MISSION;
-	}
 	m_pedStats = CPedStats::ms_apPedStats[pedStat];
-#if REAL_GAMECUBE
-	if (GetModelIndex() == MI_SPECIAL10 || (CharCreatedBy == MISSION_CHAR && GetModelIndex() == 118) || m_pedStats == nil) {
-		printf("[PEDSTAT-BORN] stage=set-pedstats ped=%p model=%d createdBy=%d req=%d out=%p outType=%d outRate=%.4f\n",
-		       (void*)this,
-		       (int)GetModelIndex(),
-		       (int)CharCreatedBy,
-		       (int)pedStat,
-		       (void*)m_pedStats,
-		       m_pedStats ? (int)m_pedStats->m_type : -1,
-		       m_pedStats ? m_pedStats->m_headingChangeRate : -9999.0f);
-	}
-#endif
 }
 
 void
@@ -1069,7 +792,6 @@ CPed::SetStoredState(void)
 void
 CPed::RestorePreviousState(void)
 {
-	GcTraceKenHeadingRate(this, "restore-prev-before");
 	if (!CanSetPedState() || m_nPedState == PED_FALL)
 		return;
 
@@ -1115,7 +837,6 @@ CPed::RestorePreviousState(void)
 		}
 		m_nLastPedState = PED_NONE;
 	}
-	GcTraceKenHeadingRate(this, "restore-prev-after");
 }
 
 uint32
@@ -2027,12 +1748,9 @@ CPed::ProcessControl(void)
 	CColPoint foundCol;
 	CEntity *foundEnt = nil;
 
-	GcPedRecoverPlayerIfNeeded(this, "process-begin");
-	GcPedProcStage(this, "begin");
 	if (CTimer::GetFrameCounter() + m_randomSeed % 32 == 0)
 		PruneReferences();
 
-	GcPedProcStage(this, "before-alpha");
 	int alpha = CVisibilityPlugins::GetClumpAlpha(GetClump());
 	if (!bFadeOut) {
 		if (alpha < 255) {
@@ -2049,19 +1767,13 @@ CPed::ProcessControl(void)
 	CVisibilityPlugins::SetClumpAlpha(GetClump(), alpha);
 	bIsShooting = false;
 	bDonePositionOutOfCollision = false;
-	GcPedProcStage(this, "before-build-lists");
 	BuildPedLists();
-	GcPedProcStage(this, "after-build-lists");
 	bIsInWater = false;
 	bIsDrowning = false;
-	GcPedProcStage(this, "before-buoyancy");
 	ProcessBuoyancy();
-	GcPedProcStage(this, "after-buoyancy");
 
 	if (m_nPedState != PED_ARRESTED) {
-		GcPedProcStage(this, "not-arrested");
 		if (m_nPedState == PED_DEAD) {
-			GcPedProcStage(this, "dead-begin");
 			DeadPedMakesTyresBloody();
 			if (CGame::nastyGame && !bIsInWater) {
 				uint32 remainingBloodyFpTime = CTimer::GetTimeInMilliseconds() - m_bloodyFootprintCountOrDeathTime;
@@ -2125,11 +1837,8 @@ CPed::ProcessControl(void)
 			if (bIsInWater) {
 				bIsStanding = false;
 				bWasStanding = false;
-				GcPedProcStage(this, "dead-before-physical");
 				CPhysical::ProcessControl();
-				GcPedProcStage(this, "dead-after-physical");
 			}
-			GcPedProcStage(this, "dead-return");
 			return;
 		}
 
@@ -2138,13 +1847,11 @@ CPed::ProcessControl(void)
 			if (!CWorld::bForceProcessControl) {
 				if (m_pCurrentPhysSurface && m_pCurrentPhysSurface->bIsInSafePosition) {
 					bWasPostponed = true;
-					GcPedProcStage(this, "postponed-return");
 					return;
 				}
 			}
 		}
 
-		GcPedProcStage(this, "before-ai-precheck");
 		if (!IsPedInControl() || m_nWaitState != WAITSTATE_FALSE || 0.01f * CTimer::GetTimeStep() <= m_fDistanceTravelled
 			|| (m_nStoredMoveState != PEDMOVE_WALK && m_nStoredMoveState != PEDMOVE_RUN && m_nStoredMoveState != PEDMOVE_SPRINT))
 			m_panicCounter = 0;
@@ -2160,7 +1867,6 @@ CPed::ProcessControl(void)
 		bCollidedWithMyVehicle = false;
 
 		CEntity *collidingEnt = m_pDamageEntity;
-		GcPedProcStage(this, "before-damage-collision");
 		if (!bUsesCollision || ((!collidingEnt || m_fDamageImpulse <= 0.0f) && (!IsPlayer() || !bIsStuck)) || m_nPedState == PED_DIE) {	
 			bHitSomethingLastFrame = false;
 			if (m_nPedStateTimer <= 500 && bIsInTheAir) {
@@ -2803,11 +2509,9 @@ CPed::ProcessControl(void)
 			}
 		}
 
-		GcPedProcStage(this, "after-damage-collision");
 		if (bIsDucking)
 			Duck();
 
-		GcPedProcStage(this, "before-duck-wander");
 		if (bStartWanderPathOnFoot) {
 			if (IsPedInControl()) {
 				ClearAll();
@@ -2832,11 +2536,8 @@ CPed::ProcessControl(void)
 			|| bIsInTheAir
 			|| m_pCurrentPhysSurface) {
 
-			GcPedProcStage(this, "before-physical-control");
 			CPhysical::ProcessControl();
-			GcPedProcStage(this, "after-physical-control");
 		} else {
-			GcPedProcStage(this, "clear-physical-state");
 			bHasContacted = false;
 			bIsInSafePosition = false;
 			bWasPostponed = false;
@@ -2850,20 +2551,14 @@ CPed::ProcessControl(void)
 			m_vecMoveFriction = CVector(0.0f, 0.0f, 0.0f);
 		}
 
-		GcPedProcStage(this, "before-post-physical");
 		if (m_nPedState != PED_DIE || bIsPedDieAnimPlaying) {
-			GcPedProcStage(this, "post-physical-begin");
 			RequestDelayedWeapon();
-			GcPedProcStage(this, "after-request-weapon");
 			PlayFootSteps();
-			GcPedProcStage(this, "after-footsteps");
 			if (m_nPedState != PED_DEAD) {
 				CalculateNewVelocity();
 				CalculateNewOrientation();
 			}
-			GcPedProcStage(this, "after-new-velocity");
 			UpdatePosition();
-			GcPedProcStage(this, "after-update-position");
 			if (IsPedInControl() && !bIsStanding && !m_pDamageEntity) {
 				if (m_attachedTo) {
 					bIsInTheAir = false;
@@ -2875,14 +2570,10 @@ CPed::ProcessControl(void)
 			if (bHeadStuckInCollision) {
 				CVector posToCheck = GetPosition();
 				posToCheck.z += 0.9f;
-				GcPedProcStage(this, "before-head-stuck-test");
 				if (!CWorld::TestSphereAgainstWorld(posToCheck, 0.2f, this, true, true, false, true, false, false))
 					bHeadStuckInCollision = false;
-				GcPedProcStage(this, "after-head-stuck-test");
 			}
-			GcPedProcStage(this, "before-objective");
 			ProcessObjective();
-			GcPedProcStage(this, "after-objective");
 			if (!bIsAimingGun) {
 				if (bIsRestoringGun)
 					RestoreGunPosition();
@@ -2909,7 +2600,6 @@ CPed::ProcessControl(void)
 
 			if (m_nWaitState != WAITSTATE_FALSE)
 				Wait();
-			GcPedProcStage(this, "after-wait");
 
 #ifdef CANCELLABLE_CAR_ENTER
 			static bool cancelJack = false;
@@ -2953,7 +2643,6 @@ CPed::ProcessControl(void)
 			}
 #endif
 
-			GcPedProcStage(this, "before-state-switch");
 			switch (m_nPedState) {
 				case PED_IDLE:
 					Idle();
@@ -2993,10 +2682,6 @@ CPed::ProcessControl(void)
 
 					ms_vec2DFleePosition = m_fleeFrom->GetPosition();
 					Flee();
-					break;
-				case PED_SEEK_POS:
-				case PED_SEEK_ENTITY:
-					Seek();
 					break;
 				case PED_FOLLOW_PATH:
 					FollowPath();
@@ -3079,7 +2764,6 @@ CPed::ProcessControl(void)
 					if (!m_pMyVehicle) {
 						bInVehicle = false;
 						FlagToDestroyWhenNextProcessed();
-						GcPedProcStage(this, "driving-no-vehicle-return");
 						return;
 					}
 
@@ -3119,10 +2803,8 @@ CPed::ProcessControl(void)
 
 					if (m_pMyVehicle->pDriver == this) {
 						DriveVehicle();
-						if (!m_pMyVehicle) {
-							GcPedProcStage(this, "drive-vehicle-return");
+						if (!m_pMyVehicle)
 							return;
-						}
 					} else {
 						LookForSexyPeds();
 						LookForSexyCars();
@@ -3154,9 +2836,7 @@ CPed::ProcessControl(void)
 				default:
 					break;
 			}
-			GcPedProcStage(this, "after-state-switch");
 			SetMoveAnim();
-			GcPedProcStage(this, "after-set-move-anim");
 			if (bPedIsBleeding || m_bleedCounter != 0) {
 				if (CGame::nastyGame) {
 					if (m_bleedCounter != 0)
@@ -3180,7 +2860,6 @@ CPed::ProcessControl(void)
 				}
 			}
 			ServiceTalking();
-			GcPedProcStage(this, "after-service-talking");
 			if (bInVehicle && !m_pMyVehicle)
 				bInVehicle = false;
 
@@ -3202,19 +2881,14 @@ CPed::ProcessControl(void)
 			}
 
 		} else {
-			GcPedProcStage(this, "die-no-anim-branch");
 			if (bIsStanding && (!m_pCurrentPhysSurface || IsPlayer())
 				|| bIsInWater || !bUsesCollision) {
 				SetDead();
 			}
 			m_pCurrentPhysSurface = nil;
 		}
-		GcPedProcStage(this, "end-not-arrested");
-	} else {
-		GcPedProcStage(this, "arrested-service-talking");
+	} else
 		ServiceTalking();
-	}
-	GcPedProcStage(this, "end");
 }
 
 int32
@@ -4189,10 +3863,7 @@ CPed::SetDirectionToWalkAroundObject(CEntity *obj)
 
 	if (dist > distLimitForTimer)
 		dist = distLimitForTimer;
-	float timerMs = 280.0f * dist * checkIntervalInTime;
-	m_nPedStateTimer = CTimer::GetTimeInMilliseconds() + timerMs;
-	GcLogPedWalkAroundDecision(this, obj, "set-around-object", localPosToHead + GetPosition(),
-		oldRotDest, dirToSet, angleToFaceObjCenter, timerMs);
+	m_nPedStateTimer = CTimer::GetTimeInMilliseconds() + 280.0f * dist * checkIntervalInTime;
 }
 
 bool
@@ -4330,36 +4001,13 @@ CPed::PedSetOutCarCB(CAnimBlendAssociation *animAssoc, void *arg)
 	}
 
 	ped->bInVehicle = false;
-	// Exit animation callbacks can leave turn speed at zero; restore normal
-	// on-foot heading control once the ped is fully out of the vehicle.
-	GcTraceKenHeadingRate(ped, "setout-before-restore-rate");
-	ped->RestoreHeadingRate();
-	GcTraceKenHeadingRate(ped, "setout-after-restore-rate");
 	if (veh && (veh->IsCar() || veh->IsBike())) {
 		CWorld::pIgnoreEntity = veh;
-		bool exitNeedsReposition =
-			CWorld::TestSphereAgainstWorld(ped->GetPosition() - CVector(0.f, 0.f, 0.2f),
+		if (CWorld::TestSphereAgainstWorld(ped->GetPosition() - CVector(0.f, 0.f, 0.2f),
 				0.4f, veh, true, true, false, false, false, false)
 			|| CWorld::TestSphereAgainstWorld(ped->GetPosition() + CVector(0.f, 0.f, 0.2f),
 				0.4f, veh, true, true, false, false, false, false)
-			|| !CWorld::GetIsLineOfSightClear(veh->GetPosition(), ped->GetPosition(), true, false, false, true, false, false, false);
-#if REAL_GAMECUBE
-		if (veh->GetModelIndex() == MI_ADMIRAL && veh->VehicleCreatedBy == MISSION_VEHICLE) {
-			const CVector &pedPos = ped->GetPosition();
-			const CVector &vehPos = veh->GetPosition();
-			CVector delta = pedPos - vehPos;
-			printf("[PED-EXIT] stage=setout-check frame=%u ped=%p veh=%p door=%u reposition=%d pedPos=(%f,%f,%f) vehPos=(%f,%f,%f) rel=(%f,%f)\n",
-				CTimer::GetFrameCounter(),
-				ped, veh,
-				(uint32)ped->m_vehDoor,
-				exitNeedsReposition ? 1 : 0,
-				pedPos.x, pedPos.y, pedPos.z,
-				vehPos.x, vehPos.y, vehPos.z,
-				DotProduct(delta, veh->GetForward()),
-				DotProduct(delta, veh->GetRight()));
-		}
-#endif
-		if (exitNeedsReposition) {
+			|| !CWorld::GetIsLineOfSightClear(veh->GetPosition(), ped->GetPosition(), true, false, false, true, false, false, false)) {
 			CWorld::pIgnoreEntity = nil;
 			ped->PositionPedOutOfCollision();
 		}
@@ -4465,7 +4113,6 @@ CPed::PedSetOutCarCB(CAnimBlendAssociation *animAssoc, void *arg)
 				}
 			}
 		} else {
-			GcTraceIntroSeatCaller(ped, "setout-remove-passenger", veh);
 			veh->RemovePassenger(ped);
 		}
 
@@ -4559,7 +4206,6 @@ CPed::PedSetDraggedOutCarCB(CAnimBlendAssociation *dragAssoc, void *arg)
 			if (ped->m_nPedType == PEDTYPE_COP && vehicle->IsLawEnforcementVehicle())
 				vehicle->ChangeLawEnforcerState(false);
 		} else {
-			GcTraceIntroSeatCaller(ped, "dragout-remove-passenger", vehicle);
 			vehicle->RemovePassenger(ped);
 		}
 	}
@@ -5921,7 +5567,6 @@ CPed::SetSeek(CVector pos, float distanceToCountDone)
 	SetPedState(PED_SEEK_POS);
 	m_distanceToCountSeekDone = distanceToCountDone;
 	m_vecSeekPos = pos;
-	GcTraceKenHeadingRate(this, "set-seek-pos");
 }
 void
 CPed::SetSeek(CEntity *seeking, float distanceToCountDone)
@@ -8418,7 +8063,6 @@ PlayRandomAnimationsFromAnimBlock(CPed* ped, AssocGroupId animGroup, uint32 firs
 void
 CPed::ClearWaitState(void)
 {
-	GcTraceKenHeadingRate(this, "clear-wait-before");
 	CAnimBlendAssociation *assoc;
 	switch (m_nWaitState) {
 		case WAITSTATE_PLAYANIM_CHAT:
@@ -8517,13 +8161,11 @@ CPed::ClearWaitState(void)
 			break;
 	}
 	m_nWaitState = WAITSTATE_FALSE;
-	GcTraceKenHeadingRate(this, "clear-wait-after");
 }
 
 void
 CPed::SetWaitState(eWaitState state, void *time)
 {
-	GcTraceKenHeadingRate(this, "set-wait-enter");
 	AnimationId waitAnim = ANIM_STD_NUM;
 	CAnimBlendAssociation *animAssoc;
 
@@ -8735,17 +8377,14 @@ CPed::SetWaitState(eWaitState state, void *time)
 		default:
 			ClearWaitState();
 			RestoreHeadingRate();
-			GcTraceKenHeadingRate(this, "set-wait-default-restore");
 			return;
 	}
 	m_nWaitState = state;
-	GcTraceKenHeadingRate(this, "set-wait-exit");
 }
 
 void
 CPed::Wait(void)
 {
-	GcTraceKenHeadingRate(this, "wait-enter");
 	AnimationId mustHaveAnim = ANIM_STD_NUM;
 	CAnimBlendAssociation *animAssoc;
 	CPed *pedWeLook;
@@ -8753,7 +8392,6 @@ CPed::Wait(void)
 	if (DyingOrDead()) {
 		ClearWaitState();
 		RestoreHeadingRate();
-		GcTraceKenHeadingRate(this, "wait-dead-restore");
 		return;
 	}
 
@@ -9185,7 +8823,6 @@ CPed::Wait(void)
 
 	if(!m_nWaitState)
 		RestoreHeadingRate();
-	GcTraceKenHeadingRate(this, "wait-exit");
 }
 
 void
@@ -9212,18 +8849,14 @@ CPed::FinishedWaitCB(CAnimBlendAssociation *animAssoc, void *arg)
 	CPed *ped = (CPed*)arg;
 
 	ped->m_nWaitTimer = 0;
-	GcTraceKenHeadingRate(ped, "finished-wait-before-restore");
 	ped->RestoreHeadingRate();
-	GcTraceKenHeadingRate(ped, "finished-wait-after-restore");
 	ped->Wait();
 }
 
 void
 CPed::RestoreHeadingRate(void)
 {
-	GcTraceKenHeadingRate(this, "restore-heading-before");
 	m_headingRate = m_pedStats->m_headingChangeRate;
-	GcTraceKenHeadingRate(this, "restore-heading-after");
 }
 
 void
@@ -9243,7 +8876,6 @@ CPed::FlagToDestroyWhenNextProcessed(void)
 		if (IsPlayer() && m_pMyVehicle->GetStatus() != STATUS_WRECKED)
 			m_pMyVehicle->SetStatus(STATUS_ABANDONED);
 	}else{
-		GcTraceIntroSeatCaller(this, "flag-destroy-remove-passenger", m_pMyVehicle);
 		m_pMyVehicle->RemovePassenger(this);
 	}
 	bInVehicle = false;
@@ -9737,41 +9369,11 @@ CPed::WarpPedIntoCar(CVehicle *car)
 		if (car->IsBike() && !car->pPassengers[0]) {
 			car->pPassengers[0] = this;
 			car->pPassengers[0]->RegisterReference((CEntity**) &car->pPassengers[0]);
-#if REAL_GAMECUBE
-			if (car->GetModelIndex() == MI_ADMIRAL && car->VehicleCreatedBy == MISSION_VEHICLE) {
-				printf("[PED-SEAT] stage=warp-passenger-bike frame=%u veh=%p ped=%p player=%d seat=%d req=%d inVeh=%d pedState=%d obj=%d vehStatus=%u\n",
-					CTimer::GetFrameCounter(),
-					car,
-					this,
-					IsPlayer() ? 1 : 0,
-					0,
-					0,
-					bInVehicle ? 1 : 0,
-					m_nPedState,
-					m_objective,
-					car->GetStatus());
-			}
-#endif
 		}
 		for (int i = 0; i < 4; i++) {
 			if (!car->pPassengers[i]) {
 				car->pPassengers[i] = this;
 				car->pPassengers[i]->RegisterReference((CEntity **) &car->pPassengers[i]);
-#if REAL_GAMECUBE
-				if (car->GetModelIndex() == MI_ADMIRAL && car->VehicleCreatedBy == MISSION_VEHICLE) {
-					printf("[PED-SEAT] stage=warp-passenger-slot frame=%u veh=%p ped=%p player=%d seat=%d req=%d inVeh=%d pedState=%d obj=%d vehStatus=%u\n",
-						CTimer::GetFrameCounter(),
-						car,
-						this,
-						IsPlayer() ? 1 : 0,
-						i,
-						i,
-						bInVehicle ? 1 : 0,
-						m_nPedState,
-						m_objective,
-						car->GetStatus());
-				}
-#endif
 				break;
 			}
 		}

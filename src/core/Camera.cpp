@@ -69,7 +69,7 @@ enum
 // NB: removed explicit TheCamera from all functions
 
 CCamera TheCamera;
-#if defined(PC_PLAYER_CONTROLS) && !REAL_GAMECUBE
+#ifdef PC_PLAYER_CONTROLS
 bool CCamera::m_bUseMouse3rdPerson = true;
 #else
 bool CCamera::m_bUseMouse3rdPerson = false;
@@ -1019,8 +1019,6 @@ CCamera::CamControl(void)
 			// Check 1st person mode
 			if((m_bLookingAtPlayer || m_bEnable1rstPersonCamCntrlsScript) && pTargetEntity->IsPed() &&
 			   (!m_WideScreenOn || m_bEnable1rstPersonCamCntrlsScript) && !Cams[0].Using3rdPersonMouseCam()
-			   && (m_bEnable1rstPersonCamCntrlsScript ||
-			       (!CPad::GetPad(0)->GetTarget() && PlayerWeaponMode.Mode == CCam::MODE_NONE))
 #ifdef FREE_CAM
 			   && (!CCamera::bFreeCam || m_bEnable1rstPersonCamCntrlsScript)
 #endif
@@ -3789,22 +3787,6 @@ CCamera::ProcessFade(void)
 			}
 		}
 		CDraw::FadeValue = m_fFLOATingFade;
-	#ifdef WII
-		if(m_FadeTargetIsSplashScreen){
-			static int s_lastLoggedFade = -1;
-			static int s_logBudget = 96;
-			int fade = (int)m_fFLOATingFade;
-			if(s_logBudget > 0 &&
-			   (s_lastLoggedFade < 0 || fade == 0 || fade == 255 ||
-			    Abs(fade - s_lastLoggedFade) >= 32)){
-				printf("[INTRO-PROBE] camera ProcessFade value=%d raw=%.1f dir=%d target=%d\n",
-					fade, m_fFLOATingFade, m_iFadingDirection,
-					m_FadeTargetIsSplashScreen ? 1 : 0);
-				s_lastLoggedFade = fade;
-				s_logBudget--;
-			}
-		}
-	#endif
 	}
 }
 
@@ -3849,11 +3831,6 @@ CCamera::Fade(float timeout, int16 direction)
 		m_fTimeToFadeMusic = timeout;
 		m_uiFadeTimeStartedMusic = CTimer::GetTimeInMilliseconds();
 	}
-#ifdef WII
-	if(m_FadeTargetIsSplashScreen)
-		printf("[INTRO-PROBE] camera Fade timeout=%.3f dir=%d start=%.1f target=1\n",
-			timeout, direction, m_fFLOATingFade);
-#endif
 }
 
 void
@@ -3863,14 +3840,6 @@ CCamera::SetFadeColour(uint8 r, uint8 g, uint8 b)
 	CDraw::FadeRed = r;
 	CDraw::FadeGreen = g;
 	CDraw::FadeBlue = b;
-#ifdef WII
-	if(m_FadeTargetIsSplashScreen || (r == 0 && g == 0 && b == 0))
-		printf("[INTRO-PROBE] camera SetFadeColour rgb=(%d,%d,%d) target=%d fade=%.1f value=%d\n",
-			r, g, b,
-			m_FadeTargetIsSplashScreen ? 1 : 0,
-			m_fFLOATingFade,
-			(int)CDraw::FadeValue);
-#endif
 }
 
 bool

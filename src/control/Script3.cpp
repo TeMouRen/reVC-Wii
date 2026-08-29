@@ -740,13 +740,6 @@ int8 CRunningScript::ProcessCommands500To599(int32 command)
 		strncpy(name, (char*)&CTheScripts::ScriptSpace[m_nIp], KEY_LENGTH_IN_SCRIPT);
 		for (int i = 0; i < KEY_LENGTH_IN_SCRIPT; i++)
 			name[i] = tolower(name[i]);
-#if defined(WII) && WII_SPECIAL_STREAM_DIAGNOSTICS
-		printf("[SPEC-WII] load_special script=%.8s id=%d name=%.8s ip=%u\n",
-			m_abScriptName,
-			ScriptParams[0],
-			name,
-			m_nIp + KEY_LENGTH_IN_SCRIPT);
-#endif
 		int32 flags = STREAMFLAGS_DEPENDENCY | STREAMFLAGS_SCRIPTOWNED;
 #ifdef WII
 		if(m_bIsMissionScript)
@@ -2050,9 +2043,6 @@ int8 CRunningScript::ProcessCommands700To799(int32 command)
 		char name[KEY_LENGTH_IN_SCRIPT];
 		strncpy(name, (const char*)&CTheScripts::ScriptSpace[m_nIp], KEY_LENGTH_IN_SCRIPT);
 		m_nIp += KEY_LENGTH_IN_SCRIPT;
-#if REAL_GAMECUBE || defined(WII)
-		printf("[CUT-WII] load_cutscene name=%.8s ip=%u\n", name, m_nIp);
-#endif
 		CCutsceneMgr::LoadCutsceneData(name);
 		return 0;
 	}
@@ -2071,24 +2061,12 @@ int8 CRunningScript::ProcessCommands700To799(int32 command)
 		CObject* pObject = CPools::GetObjectPool()->GetAt(ScriptParams[0]);
 		strncpy(name, (const char*)&CTheScripts::ScriptSpace[m_nIp], KEY_LENGTH_IN_SCRIPT);
 		m_nIp += KEY_LENGTH_IN_SCRIPT;
-#if REAL_GAMECUBE
-		printf("[SCR-CUT] set_anim objSlot=%d obj=%p anim=%.8s ip=%u\n",
-			ScriptParams[0], pObject, name, m_nIp);
-#endif
 		if(pObject == nil)
 			return 0;
 		CCutsceneMgr::SetCutsceneAnim(name, pObject);
 		return 0;
 	}
 	case COMMAND_START_CUTSCENE:
-#if REAL_GAMECUBE || defined(WII)
-		printf("[CUT-WII] start_cutscene ip=%u status=%u loaded=%d running=%d name=%s\n",
-			m_nIp,
-			CCutsceneMgr::ms_cutsceneLoadStatus,
-			CCutsceneMgr::HasLoaded() ? 1 : 0,
-			CCutsceneMgr::IsRunning() ? 1 : 0,
-			CCutsceneMgr::GetCutsceneName());
-#endif
 		CCutsceneMgr::ms_cutsceneLoadStatus = 1;
 		return 0;
 	case COMMAND_GET_CUTSCENE_TIME:
@@ -2099,14 +2077,6 @@ int8 CRunningScript::ProcessCommands700To799(int32 command)
 		UpdateCompareFlag(CCutsceneMgr::HasCutsceneFinished());
 		return 0;
 	case COMMAND_CLEAR_CUTSCENE:
-#ifdef WII
-		printf("[CUT-WII] clear_cutscene ip=%u status=%u loaded=%d running=%d name=%s\n",
-			m_nIp,
-			CCutsceneMgr::ms_cutsceneLoadStatus,
-			CCutsceneMgr::HasLoaded() ? 1 : 0,
-			CCutsceneMgr::IsRunning() ? 1 : 0,
-			CCutsceneMgr::GetCutsceneName());
-#endif
 		CCutsceneMgr::DeleteCutsceneData();
 		return 0;
 	case COMMAND_RESTORE_CAMERA_JUMPCUT:

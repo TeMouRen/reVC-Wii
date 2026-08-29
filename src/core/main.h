@@ -55,7 +55,6 @@ enum eLoadingScreenMode
 };
 
 extern int8 gLoadingScreenMode;
-void WiiNotifyIntroCutsceneStarted(void);
 #endif
 Const char *GetLevelSplashScreen(int level);
 Const char *GetRandomSplashScreen(void);
