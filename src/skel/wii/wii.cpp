@@ -870,6 +870,11 @@ int main(int argc, char *argv[]) {
 
     SYS_Report("[reVC-WII] Engine Ready. Entering Game Loop...\n");
 
+    // Match the upstream GS_INIT_ONCE boundary: present LOADSC0 before the
+    // one-time game/frontend initialization starts.  On Wii this work is
+    // slow enough that the previously cleared XFB would otherwise remain
+    // visible as a black wait.
+    LoadingScreen(nil, nil, "loadsc0");
     SYS_Report("[reVC-WII] Running InitialiseOnceAfterRW before frontend loop...\n");
     if (!CGame::InitialiseOnceAfterRW()) {
         SYS_Report("[reVC-WII] FATAL: InitialiseOnceAfterRW failed.\n");
