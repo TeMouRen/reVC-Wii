@@ -75,29 +75,40 @@ RwRaster *gpWaterWakeRaster;
 bool _bSeaLife;
 float _fWaterZOffset = WATER_Z_OFFSET;
 
-#if defined(WII)
-// Wii path: lift the effective water level enough to be visually testable and
-// keep render/query behavior in sync.
-static const float kWiiWaterLevelLift = 6.0f;
-
-static inline float
-PlatformWaterLevel(float rawZ)
+#ifdef RW_BIG_ENDIAN
+static inline uint32
+WaterByteSwap32(uint32 value)
 {
-	return rawZ + kWiiWaterLevelLift;
+	return ((value & 0x000000FFU) << 24) |
+		((value & 0x0000FF00U) << 8) |
+		((value & 0x00FF0000U) >> 8) |
+		((value & 0xFF000000U) >> 24);
 }
-#else
-static inline float
-PlatformWaterLevel(float rawZ)
-{
-	return rawZ;
-}
-#endif
 
-#if GX_CONSOLE
-static bool
-GxWaterFinite(float f)
+static inline void
+WaterByteSwapFloat(float *value)
 {
-	return f == f && f > -3.4e38f && f < 3.4e38f;
+	uint8 *bytes = (uint8 *)value;
+	uint8 tmp = bytes[0];
+	bytes[0] = bytes[3];
+	bytes[3] = tmp;
+	tmp = bytes[1];
+	bytes[1] = bytes[2];
+	bytes[2] = tmp;
+}
+
+static void
+WaterByteSwapData(void)
+{
+	for (uint32 i = 0; i < ARRAY_SIZE(CWaterLevel::ms_aWaterZs); i++)
+		WaterByteSwapFloat(&CWaterLevel::ms_aWaterZs[i]);
+
+	for (uint32 i = 0; i < ARRAY_SIZE(CWaterLevel::ms_aWaterRects); i++) {
+		WaterByteSwapFloat(&CWaterLevel::ms_aWaterRects[i].left);
+		WaterByteSwapFloat(&CWaterLevel::ms_aWaterRects[i].right);
+		WaterByteSwapFloat(&CWaterLevel::ms_aWaterRects[i].top);
+		WaterByteSwapFloat(&CWaterLevel::ms_aWaterRects[i].bottom);
+	}
 }
 #endif
 
@@ -163,6 +174,19 @@ CWaterLevel::Initialise(Const char *pWaterDat)
 		CFileMgr::Read(hFile, (char *)aWaterBlockList, sizeof(aWaterBlockList));
 		CFileMgr::Read(hFile, (char *)aWaterFineBlockList, sizeof(aWaterFineBlockList));
 		CFileMgr::CloseFile(hFile);
+
+#ifdef RW_BIG_ENDIAN
+		// WATERPRO.DAT is generated in little-endian PC format.  Detect that
+		// representation from the bounded level count and convert the scalar
+		// fields after reading, leaving the resource file unchanged.
+		uint32 rawCount = (uint32)ms_nNoOfWaterLevels;
+		uint32 swappedCount = WaterByteSwap32(rawCount);
+		if (rawCount > ARRAY_SIZE(ms_aWaterZs) &&
+			swappedCount <= ARRAY_SIZE(ms_aWaterZs)) {
+			ms_nNoOfWaterLevels = (int32)swappedCount;
+			WaterByteSwapData();
+		}
+#endif
 	}
 #ifndef MASTER
 	else
@@ -585,7 +609,7 @@ CWaterLevel::WaterLevelAccordingToRectangles(float fX, float fY, float *pfOutLev
 		if (fX >= ms_aWaterRects[i].left && fX <= ms_aWaterRects[i].right
 			&& fY >= ms_aWaterRects[i].top && fY <= ms_aWaterRects[i].bottom)
 		{
-			if (pfOutLevel) *pfOutLevel = PlatformWaterLevel(ms_aWaterZs[i]);
+			if (pfOutLevel) *pfOutLevel = ms_aWaterZs[i];
 
 			return true;
 		}
@@ -733,10 +757,6 @@ CWaterLevel::RemoveIsolatedWater()
 bool
 CWaterLevel::GetWaterLevel(float fX, float fY, float fZ, float *pfOutLevel, bool bDontCheckZ)
 {
-#if GX_CONSOLE
-	if(!GxWaterFinite(fX) || !GxWaterFinite(fY) || !GxWaterFinite(fZ))
-		return false;
-#endif
 	int32 x = WATER_TO_SMALL_SECTOR_X(fX + WATER_X_OFFSET);
 	int32 y = WATER_TO_SMALL_SECTOR_Y(fY);
 		
@@ -751,7 +771,7 @@ CWaterLevel::GetWaterLevel(float fX, float fY, float fZ, float *pfOutLevel, bool
 		return false;
 
 	ASSERT( pfOutLevel != nil );
-	*pfOutLevel = PlatformWaterLevel(ms_aWaterZs[nBlock]);
+	*pfOutLevel = ms_aWaterZs[nBlock];
 
 	float fAngle = (CTimer::GetTimeInMilliseconds() & 4095) * (TWOPI / 4096.0f);
 	
@@ -779,10 +799,6 @@ CWaterLevel::GetWaterLevel(float fX, float fY, float fZ, float *pfOutLevel, bool
 bool
 CWaterLevel::GetWaterLevelNoWaves(float fX, float fY, float fZ, float *pfOutLevel)
 {
-#if GX_CONSOLE
-	if(!GxWaterFinite(fX) || !GxWaterFinite(fY) || !GxWaterFinite(fZ))
-		return false;
-#endif
 	int32 x = WATER_TO_SMALL_SECTOR_X(fX + WATER_X_OFFSET);
 	int32 y = WATER_TO_SMALL_SECTOR_Y(fY);
 		
@@ -797,7 +813,7 @@ CWaterLevel::GetWaterLevelNoWaves(float fX, float fY, float fZ, float *pfOutLeve
 		return false;
 	
 	ASSERT( pfOutLevel != nil );
-	*pfOutLevel = PlatformWaterLevel(ms_aWaterZs[nBlock]);
+	*pfOutLevel = ms_aWaterZs[nBlock];
 
 	return true;
 }
@@ -1058,16 +1074,16 @@ CWaterLevel::RenderWater()
 						float fZ;
 
 						if ( aWaterBlockList[2*x+0][2*y+0] >= 0 )
-							fZ = PlatformWaterLevel(ms_aWaterZs[ aWaterBlockList[2*x+0][2*y+0] ]);
+							fZ = ms_aWaterZs[ aWaterBlockList[2*x+0][2*y+0] ];
 
 						if ( aWaterBlockList[2*x+1][2*y+0] >= 0 )
-							fZ = PlatformWaterLevel(ms_aWaterZs[ aWaterBlockList[2*x+1][2*y+0] ]);
+							fZ = ms_aWaterZs[ aWaterBlockList[2*x+1][2*y+0] ];
 
 						if ( aWaterBlockList[2*x+0][2*y+1] >= 0 )
-							fZ = PlatformWaterLevel(ms_aWaterZs[ aWaterBlockList[2*x+0][2*y+1] ]);
+							fZ = ms_aWaterZs[ aWaterBlockList[2*x+0][2*y+1] ];
 
 						if ( aWaterBlockList[2*x+1][2*y+1] >= 0 )
-							fZ = PlatformWaterLevel(ms_aWaterZs[ aWaterBlockList[2*x+1][2*y+1] ]);
+							fZ = ms_aWaterZs[ aWaterBlockList[2*x+1][2*y+1] ];
 						
 						if ( fHugeSectorDistToCamSqr >= SQR(500.0f) )
 						{
@@ -1376,7 +1392,7 @@ CWaterLevel::RenderTransparentWater(void)
 														CVector2D vecSmallSectorCentre(fSmallX + SMALL_SECTOR_SIZE/2, fSmallY + SMALL_SECTOR_SIZE/2);
 														
 														float fSmallSectorDistToCamSqr = (camPos - vecSmallSectorCentre).MagnitudeSqr();
-														fZ = PlatformWaterLevel(ms_aWaterZs[ aWaterFineBlockList[2*x2+0][2*y2+0] ]);
+														fZ = ms_aWaterZs[ aWaterFineBlockList[2*x2+0][2*y2+0] ];
 														
 														if ( fSmallSectorDistToCamSqr < fWavySectorMaxRenderDistSqr )
 															RenderOneWavySector(fSmallX, fSmallY, fZ, colorTrans);
@@ -1393,7 +1409,7 @@ CWaterLevel::RenderTransparentWater(void)
 														CVector2D vecSmallSectorCentre(fSmallX + SMALL_SECTOR_SIZE/2, fSmallY + SMALL_SECTOR_SIZE/2);
 														
 														float fSmallSectorDistToCamSqr = (camPos - vecSmallSectorCentre).MagnitudeSqr();
-														fZ = PlatformWaterLevel(ms_aWaterZs[ aWaterFineBlockList[2*x2+1][2*y2+0] ]);
+														fZ = ms_aWaterZs[ aWaterFineBlockList[2*x2+1][2*y2+0] ];
 														
 														if ( fSmallSectorDistToCamSqr < fWavySectorMaxRenderDistSqr )
 															RenderOneWavySector(fSmallX, fSmallY, fZ, colorTrans);
@@ -1410,7 +1426,7 @@ CWaterLevel::RenderTransparentWater(void)
 														CVector2D vecSmallSectorCentre(fSmallX + SMALL_SECTOR_SIZE/2,fSmallY + SMALL_SECTOR_SIZE/2);
 														
 														float fSmallSectorDistToCamSqr = (camPos - vecSmallSectorCentre).MagnitudeSqr();
-														fZ = PlatformWaterLevel(ms_aWaterZs[ aWaterFineBlockList[2*x2+0][2*y2+1] ]);
+														fZ = ms_aWaterZs[ aWaterFineBlockList[2*x2+0][2*y2+1] ];
 														
 														if ( fSmallSectorDistToCamSqr < fWavySectorMaxRenderDistSqr )
 															RenderOneWavySector(fSmallX, fSmallY, fZ, colorTrans);
@@ -1427,7 +1443,7 @@ CWaterLevel::RenderTransparentWater(void)
 														CVector2D vecSmallSectorCentre(fSmallX + SMALL_SECTOR_SIZE/2, fSmallY + SMALL_SECTOR_SIZE/2);
 														
 														float fSmallSectorDistToCamSqr = (camPos - vecSmallSectorCentre).MagnitudeSqr();
-														fZ = PlatformWaterLevel(ms_aWaterZs[ aWaterFineBlockList[2*x2+1][2*y2+1] ]);
+														fZ = ms_aWaterZs[ aWaterFineBlockList[2*x2+1][2*y2+1] ];
 														
 														if ( fSmallSectorDistToCamSqr < fWavySectorMaxRenderDistSqr )
 															RenderOneWavySector(fSmallX, fSmallY, fZ, colorTrans);
@@ -1439,7 +1455,7 @@ CWaterLevel::RenderTransparentWater(void)
 												{
 													float fZ;
                                                 
-													fZ = PlatformWaterLevel(ms_aWaterZs[ aWaterBlockList[x2][y2] ]);
+													fZ = ms_aWaterZs[ aWaterBlockList[x2][y2] ];
                                                 
 													RenderOneFlatLargeWaterPoly(fLargeX, fLargeY, fZ, color);
 												}
@@ -1508,7 +1524,7 @@ CWaterLevel::RenderTransparentWater(void)
 			{
 				float fMaskX = Floor(fCamX / 2.0f) * 2.0f;
 				float fMaskY = Floor(fCamY / 2.0f) * 2.0f;
-				float fWaterZ = PlatformWaterLevel(CWaterLevel::ms_aWaterZs[nBlock]);
+				float fWaterZ = CWaterLevel::ms_aWaterZs[nBlock];
 				float fSectorX = WATER_FROM_SMALL_SECTOR_X(BlockX) - WATER_X_OFFSET;
 				float fSectorY = WATER_FROM_SMALL_SECTOR_Y(BlockY);
 
@@ -2217,13 +2233,12 @@ CWaterLevel::PreCalcWaterGeometry(void)
 		float fSectorX = WATER_FROM_SMALL_SECTOR_X(BlockX) - WATER_X_OFFSET;
 		float fSectorY = WATER_FROM_SMALL_SECTOR_Y(BlockY);
 		
-		float waterZ = PlatformWaterLevel(ms_aWaterZs[nBlock]);
-		if ( PreCalcWavyMask( fMaskX, fMaskY, waterZ,
+		if ( PreCalcWavyMask( fMaskX, fMaskY, ms_aWaterZs[nBlock],
 				fSectorX, fSectorY, fCamX, fCamY, CamFwdDir.x, CamFwdDir.y, color ) )
         {
 			PreCalculatedMaskPosn.x = fMaskX;
 			PreCalculatedMaskPosn.y = fMaskY;
-			PreCalculatedMaskPosn.z = waterZ + 0.05f;
+			PreCalculatedMaskPosn.z = ms_aWaterZs[nBlock] + 0.05f;
 			
 			MaskCalculatedThisFrame = true;
 		}

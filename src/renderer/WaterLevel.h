@@ -3,11 +3,7 @@
 
 #define WATER_X_OFFSET (400.0f)
 
-#ifdef WII
-#define WATER_Z_OFFSET (0.0f)
-#else
 #define WATER_Z_OFFSET (0.5f)
-#endif
 
 #define NO_WATER -128
 
