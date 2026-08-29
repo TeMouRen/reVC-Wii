@@ -60,7 +60,6 @@ void WiiNotifyIntroCutsceneStarted(void);
 Const char *GetLevelSplashScreen(int level);
 Const char *GetRandomSplashScreen(void);
 #ifdef WII
-void WiiRunGameLifecycle(void);
 bool WiiPrepareIslandTransitionSplash(int level);
 void WiiBeginIslandTransitionSplash(int level);
 void WiiEndIslandTransitionSplash(void);

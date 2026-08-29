@@ -37,6 +37,7 @@
 #include "MemoryMgr.h"     // GC: CMemoryHeap custom allocator
 #include "HandlingMgr.h"
 #include "Streaming.h"
+#include "GenericGameStorage.h"
 #include "Vehicle.h"
 #include "CutsceneMgr.h"
 #include "wii_save.h"
@@ -127,8 +128,8 @@ WiiWaitForVideoSyncAndMeasure(bool frontendLoop)
     }
 }
 
-// The shared lifecycle in core/main.cpp owns the state machine.  These small
-// callbacks are the only frame-boundary work that belongs to the Wii port.
+// The Wii platform owns the outer lifecycle and frame boundary.  Core frame
+// work remains behind RsEventHandler so it follows the shared platform API.
 extern "C" bool
 WiiBeginSharedFrame(bool frontendLoop)
 {
@@ -166,6 +167,100 @@ extern "C" void
 WiiRestoreSharedAudioAfterLoad(void)
 {
     WiiRestoreAudioFadeAfterLoad();
+}
+
+static void
+WiiRunGameLifecycle(void)
+{
+    while (!RsGlobal.quit && !WiiIsExitRequested()) {
+        switch (gGameState) {
+        case GS_INIT_FRONTEND:
+            // Match the upstream GS_INIT_FRONTEND boundary: show LOADSC0,
+            // then let the shared frontend state machine start on its next
+            // frame.
+            LoadingScreen(nil, nil, "loadsc0");
+            FrontEndMenuManager.m_bGameNotLoaded = true;
+            FrontEndMenuManager.RequestFrontEndStartUp();
+            WiiResetSharedFrameTiming();
+            gGameState = GS_FRONTEND;
+            break;
+
+        case GS_FRONTEND:
+            if (!WiiBeginSharedFrame(true))
+                return;
+            RsEventHandler(rsFRONTENDIDLE, nil);
+            if (RsGlobal.quit || WiiIsExitRequested())
+                return;
+            if (!FrontEndMenuManager.m_bMenuActive ||
+                FrontEndMenuManager.m_bWantToLoad ||
+                FrontEndMenuManager.m_bWantToRestart)
+                gGameState = GS_INIT_PLAYING_GAME;
+            break;
+
+        case GS_INIT_PLAYING_GAME:
+        {
+            const bool wantsInitialLoad = FrontEndMenuManager.m_bWantToLoad;
+
+            // The Wii port keeps its existing direct Initialise path so the
+            // selected loading-screen mode is handled by the shared loader.
+            CGame::Initialise("DATA\\GTA_VC.DAT");
+
+            if (wantsInitialLoad) {
+                CPad::ResetCheats();
+                CPad::StopPadsShaking();
+                DMAudio.ChangeMusicMode(MUSICMODE_DISABLE);
+                CGame::ShutDownForRestart();
+                CTimer::Stop();
+                CGame::InitialiseWhenRestarting();
+                FrontEndMenuManager.m_bWantToRestart = false;
+            }
+
+            WiiRestoreSharedAudioAfterLoad();
+            DMAudio.ChangeMusicMode(MUSICMODE_GAME);
+            FrontEndMenuManager.m_bGameNotLoaded = false;
+            FrontEndMenuManager.m_bWantToRestart = false;
+            WiiPrepareSharedGameplay();
+            WiiResetSharedFrameTiming();
+            gGameState = GS_PLAYING_GAME;
+            break;
+        }
+
+        case GS_PLAYING_GAME:
+            if (!WiiBeginSharedFrame(false))
+                return;
+            RsEventHandler(rsIDLE, (void *)TRUE);
+            if (RsGlobal.quit || WiiIsExitRequested())
+                return;
+
+            if (FrontEndMenuManager.m_bWantToRestart ||
+                b_FoundRecentSavedGameWantToLoad) {
+                CPad::ResetCheats();
+                CPad::StopPadsShaking();
+                DMAudio.ChangeMusicMode(MUSICMODE_DISABLE);
+                CGame::ShutDownForRestart();
+                CTimer::Stop();
+
+                if (b_FoundRecentSavedGameWantToLoad) {
+                    FrontEndMenuManager.m_bWantToRestart = true;
+                    FrontEndMenuManager.m_bWantToLoad = true;
+                }
+
+                CGame::InitialiseWhenRestarting();
+                WiiRestoreSharedAudioAfterLoad();
+                DMAudio.ChangeMusicMode(MUSICMODE_GAME);
+                FrontEndMenuManager.m_bWantToRestart = false;
+                WiiPrepareSharedGameplay();
+                WiiResetSharedFrameTiming();
+            }
+            break;
+
+        default:
+            // The platform enters here after the one-time RW bootstrap.
+            // Start at the same state as the upstream frontend path.
+            gGameState = GS_INIT_FRONTEND;
+            break;
+        }
+    }
 }
 
 static const char*
@@ -874,6 +969,7 @@ int main(int argc, char *argv[]) {
     // one-time game/frontend initialization starts.  On Wii this work is
     // slow enough that the previously cleared XFB would otherwise remain
     // visible as a black wait.
+    gGameState = GS_INIT_ONCE;
     LoadingScreen(nil, nil, "loadsc0");
     SYS_Report("[reVC-WII] Running InitialiseOnceAfterRW before frontend loop...\n");
     if (!CGame::InitialiseOnceAfterRW()) {
@@ -881,11 +977,14 @@ int main(int argc, char *argv[]) {
         while (true) { VIDEO_WaitVSync(); }
     }
     // Keep settings loading in the platform bootstrap.  Frontend startup and
-    // gameplay transitions are owned by the shared lifecycle in main.cpp.
+    // gameplay transitions are owned by this Wii platform lifecycle.
     FrontEndMenuManager.LoadSettings();
     WiiApplyFrontendAudioSettings();
 
-    // Shared FrontendIdle/Idle lifecycle is implemented in core/main.cpp.
+    gGameState = GS_INIT_FRONTEND;
+
+    // Shared FrontendIdle/Idle work is dispatched through AppEventHandler;
+    // the outer state machine itself belongs to this platform skeleton.
     SYS_Report("[reVC-WII] Entering shared frontend/game lifecycle...\n");
     WiiRunGameLifecycle();
     SYS_Report("[reVC-WII] Shared lifecycle exited.\n");
