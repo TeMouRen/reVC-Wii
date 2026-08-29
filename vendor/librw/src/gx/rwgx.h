@@ -154,12 +154,13 @@ void *destroyNativeData(void *object, int, int);  // geometry buffer cleanup
 // MatFX owns effect-specific GX state. The default object pipe owns the base
 // material pass and calls these only for the MatFX pipeline.
 bool gxMatFXEnvReady(Material *mat, bool hasNormals);
-bool gxMatFXSetupEnv(Material *mat, bool baseTextured, bool vertexAlpha);
+bool gxMatFXSetupEnv(Material *mat, bool baseTextured, bool vertexAlpha,
+                     const Mtx modelView);
 bool gxMatFXEnvUsesAlpha(Material *mat);
 bool gxMatFXEnvOnlyDebugActive(void);
 void gxMatFXRecordEnvUVStats(Material *mat, Geometry *geo,
                              const uint16_t *meshIdx, uint32_t numIdx,
-                             const Mtx normalMtx,
+                             const Mtx modelView,
                              uint32_t meshIndex, uint32_t passIndex);
 
 // ── Device lifecycle ────────────────────────────────────────

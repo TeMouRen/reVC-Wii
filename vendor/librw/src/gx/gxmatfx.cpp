@@ -262,9 +262,36 @@ buildEnvTexMatrix(const MatFX::Env *env, Mtx envMtx)
     return true;
 }
 
+static bool
+buildEnvNormalMatrix(const Mtx modelView, Mtx normalMtx)
+{
+    Mtx invModelView;
+    if(!guMtxInverse(modelView, invModelView)){
+        memcpy(normalMtx, modelView, sizeof(Mtx));
+        normalMtx[0][3] = 0.0f;
+        normalMtx[1][3] = 0.0f;
+        normalMtx[2][3] = 0.0f;
+        return false;
+    }
+
+    normalMtx[0][0] = invModelView[0][0];
+    normalMtx[0][1] = invModelView[1][0];
+    normalMtx[0][2] = invModelView[2][0];
+    normalMtx[1][0] = invModelView[0][1];
+    normalMtx[1][1] = invModelView[1][1];
+    normalMtx[1][2] = invModelView[2][1];
+    normalMtx[2][0] = invModelView[0][2];
+    normalMtx[2][1] = invModelView[1][2];
+    normalMtx[2][2] = invModelView[2][2];
+    normalMtx[0][3] = 0.0f;
+    normalMtx[1][3] = 0.0f;
+    normalMtx[2][3] = 0.0f;
+    return true;
+}
+
 void
 gxMatFXRecordEnvUVStats(Material *mat, Geometry *geo, const uint16_t *meshIdx,
-                        uint32_t numIdx, const Mtx normalMtx,
+                        uint32_t numIdx, const Mtx modelView,
                         uint32_t meshIndex, uint32_t passIndex)
 {
     if(!gxMatFXEnvOnlyDebugActive() || mat == nil || geo == nil || meshIdx == nil || numIdx == 0)
@@ -277,8 +304,10 @@ gxMatFXRecordEnvUVStats(Material *mat, Geometry *geo, const uint16_t *meshIdx,
         return;
 
     Mtx envMtx;
+    Mtx normalMtx;
     if(!buildEnvTexMatrix(env, envMtx))
         return;
+    buildEnvNormalMatrix(modelView, normalMtx);
 
     if(!s_envUvStats.active || s_envUvStats.meshIndex != meshIndex ||
        s_envUvStats.passIndex != passIndex){
@@ -418,54 +447,24 @@ colorByte(float value)
 }
 
 static void
-loadEnvTexMatrix(const MatFX::Env *env)
+loadEnvTexMatrix(const MatFX::Env *env, const Mtx modelView)
 {
-    Mtx mapMtx;
+    Mtx envMtx;
+    Mtx normalMtx;
     bool trace = matFxTraceMatrixOnce(env);
 
-    guMtxIdentity(mapMtx);
-    mapMtx[0][0] = MatFX::envMapFlipU ? -0.5f : 0.5f;
-    mapMtx[0][3] = 0.5f;
-    mapMtx[1][1] = -0.5f;
-    mapMtx[1][3] = 0.5f;
+    bool normalExact = buildEnvNormalMatrix(modelView, normalMtx);
+    GX_LoadTexMtxImm(normalMtx, GX_TEXMTX0, GX_MTX3x4);
 
-    if(env->frame == nil){
-        // A nil frame means the camera frame in the reference backends.
-        // GX_NRM is already in that frame, so only apply the reflection map.
-        GX_LoadTexMtxImm(mapMtx, GX_TEXMTX0, GX_MTX3x4);
-        if(trace)
-            matFxTraceMatrix("camera-normal", env, mapMtx);
+    if(!buildEnvTexMatrix(env, envMtx))
         return;
+    GX_LoadTexMtxImm(envMtx, GX_DTTMTX0, GX_MTX3x4);
+
+    if(trace){
+        matFxTraceMatrix(normalExact ? "env-normal-inv-transpose" :
+                         "env-normal-fallback", env, normalMtx);
+        matFxTraceMatrix("env-post", env, envMtx);
     }
-
-    Mtx frameMtx;
-    Mtx invFrame;
-    Mtx invView;
-    Mtx normalMtx;
-    Mtx envMtx;
-    rwMatToGxMtx(frameMtx, env->frame->getLTM());
-    if(!guMtxInverse(frameMtx, invFrame)){
-        // GX already receives normals in view space. A singular effect
-        // frame falls back to the plain normal-to-UV map.
-        GX_LoadTexMtxImm(mapMtx, GX_TEXMTX0, GX_MTX3x4);
-        if(trace)
-            matFxTraceMatrix("singular-frame-fallback", env, mapMtx);
-        return;
-    }
-
-    if(!guMtxInverse(gxInvCamLTM, invView))
-        guMtxIdentity(invView);
-
-    // Normals are vectors, not positions. Match the reference backends by
-    // discarding the frame translation before projection.
-    invFrame[0][3] = 0.0f;
-    invFrame[1][3] = 0.0f;
-    invFrame[2][3] = 0.0f;
-    guMtxConcat(invFrame, invView, normalMtx);
-    guMtxConcat(mapMtx, normalMtx, envMtx);
-    GX_LoadTexMtxImm(envMtx, GX_TEXMTX0, GX_MTX3x4);
-    if(trace)
-        matFxTraceMatrix("frame-normal", env, envMtx);
 }
 
 static GXColor
@@ -504,7 +503,8 @@ setEnvTextureStage(uint8 stage)
 }
 
 bool
-gxMatFXSetupEnv(Material *mat, bool baseTextured, bool vertexAlpha)
+gxMatFXSetupEnv(Material *mat, bool baseTextured, bool vertexAlpha,
+                const Mtx modelView)
 {
     const MatFX::Env *env = getEnvMap(mat);
     if(env == nil || env->tex == nil)
@@ -528,10 +528,10 @@ gxMatFXSetupEnv(Material *mat, bool baseTextured, bool vertexAlpha)
         GX_SetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4,
                           GX_TG_POS, GX_IDENTITY);
     }
-    loadEnvTexMatrix(env);
+    loadEnvTexMatrix(env, modelView);
     GX_SetTexCoordGen2(GX_TEXCOORD1, GX_TG_MTX3x4,
                        GX_TG_NRM, GX_TEXMTX0,
-                       GX_FALSE, GX_DTTIDENTITY);
+                       GX_TRUE, GX_DTTMTX0);
 
     // The effect is drawn after the base material. Keep this pass deliberately
     // small: env texture * K0, with blending/depth policy owned by gxpipe.

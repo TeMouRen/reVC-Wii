@@ -1704,7 +1704,7 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
         // debug mode, skip the base draw and isolate just this pass.
         if(matFXEnvReady &&
            gxMatFXSetupEnv(md->material, matFXBaseTextured,
-                           effectiveVertexAlpha)) {
+                           effectiveVertexAlpha, modelView)) {
             if(envOnlyDiag){
                 gxMatFXRecordEnvUVStats(md->material, geo, meshIdx, numIdx,
                                         modelView, m, 0);
