@@ -228,7 +228,8 @@ buildEnvTexMatrix(const MatFX::Env *env, Mtx envMtx)
 {
     Mtx mapMtx;
     guMtxIdentity(mapMtx);
-    mapMtx[0][0] = MatFX::envMapFlipU ? -0.5f : 0.5f;
+    // Match the D3D path: flip U only for framed env maps.
+    mapMtx[0][0] = (env != nil && env->frame != nil && MatFX::envMapFlipU) ? -0.5f : 0.5f;
     mapMtx[0][3] = 0.5f;
     mapMtx[1][1] = -0.5f;
     mapMtx[1][3] = 0.5f;
