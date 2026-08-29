@@ -131,6 +131,27 @@ const char *filterNames[] = { "FEM_NON", "FEM_SIM", "FEM_NRM", "FEM_MOB" };
 const char *off_on[] = { "FEM_OFF", "FEM_ON" };
 #ifdef WII
 const char *vehiclePipelineNames[] = { "FED_MFX", "FED_NEO" };
+
+static wchar LoadingScreenModePc[] = { 'P', 'C', '\0' };
+static wchar LoadingScreenModePs2[] = { 'P', 'S', '2', '\0' };
+
+static wchar *
+LoadingScreenModeDraw(bool *disabled, bool userHovering)
+{
+	(void)disabled;
+	(void)userHovering;
+	return gLoadingScreenMode == LOADING_SCREEN_PC ? LoadingScreenModePc : LoadingScreenModePs2;
+}
+
+static void
+LoadingScreenModeButtonPress(int8 action)
+{
+	if (action != FEOPTION_ACTION_LEFT && action != FEOPTION_ACTION_RIGHT && action != FEOPTION_ACTION_SELECT)
+		return;
+
+	gLoadingScreenMode = gLoadingScreenMode == LOADING_SCREEN_PC ? LOADING_SCREEN_PS2 : LOADING_SCREEN_PC;
+	FrontEndMenuManager.SaveSettings();
+}
 #endif
 
 void RestoreDefGraphics(int8 action) {
@@ -200,6 +221,9 @@ void RestoreDefDisplay(int8 action) {
 		FrontEndMenuManager.m_PrefsShowLegends = true;
 		FrontEndMenuManager.m_PrefsRadarMode = 0;
 		FrontEndMenuManager.m_PrefsShowHud = true;
+#ifdef WII
+		gLoadingScreenMode = LOADING_SCREEN_PS2;
+#endif
 		FrontEndMenuManager.SaveSettings();
 	#endif
 }
@@ -525,6 +549,9 @@ CMenuScreenCustom aScreens[] = {
 		MENUACTION_LEGENDS,		"MAP_LEG", { nil, SAVESLOT_NONE, MENUPAGE_DISPLAY_SETTINGS }, 0, 0, MENUALIGN_LEFT,
 		MENUACTION_RADARMODE,	"FED_RDR", { nil, SAVESLOT_NONE, MENUPAGE_DISPLAY_SETTINGS }, 0, 0, MENUALIGN_LEFT,
 		MENUACTION_HUD,			"FED_HUD", { nil, SAVESLOT_NONE, MENUPAGE_DISPLAY_SETTINGS }, 0, 0, MENUALIGN_LEFT,
+#ifdef WII
+		MENUACTION_CFO_DYNAMIC,	"FED_LDS", { new CCFODynamic(&gLoadingScreenMode, "Display", "LoadingScreen", LoadingScreenModeDraw, LoadingScreenModeButtonPress) }, 0, 0, MENUALIGN_LEFT,
+#endif
 #ifndef WII
 		MENUACTION_SUBTITLES,	"FED_SUB", { nil, SAVESLOT_NONE, MENUPAGE_DISPLAY_SETTINGS }, 0, 0, MENUALIGN_LEFT,
 #endif

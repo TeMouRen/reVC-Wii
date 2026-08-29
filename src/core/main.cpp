@@ -113,6 +113,8 @@ void gxMemGetPoolStats(uint32 *capacityBytes, uint32 *usedBytes,
 
 GlobalScene Scene;
 #ifdef WII
+int8 gLoadingScreenMode = LOADING_SCREEN_PS2;
+
 // The script splash is also the fade target for the intro sequence.  Keep
 // its name separate from the TXD slot so synchronous Wii loading screens
 // cannot silently replace it between LOAD_SPLASH_SCREEN and DoFade.
@@ -1133,6 +1135,14 @@ LoadingScreen(const char *str1, const char *str2, const char *splashscreen)
 
 #ifndef RANDOMSPLASH
 	splashscreen = "LOADSC0";
+#endif
+#ifdef WII
+	// PS2 mode keeps the random loadsc1..12 selection.  PC mode is the
+	// compatibility path that always uses the single LOADSC0 texture, while
+	// leaving level-specific splash1..3 screens untouched.
+	if (gLoadingScreenMode == LOADING_SCREEN_PC && splashscreen &&
+		(!strncmp(splashscreen, "loadsc", 6) || !strncmp(splashscreen, "LOADSC", 6)))
+		splashscreen = "loadsc0";
 #endif
 
 	splash = LoadSplash(splashscreen);

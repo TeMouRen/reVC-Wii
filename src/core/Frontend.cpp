@@ -126,6 +126,23 @@ bool CMenuManager::m_PrefsCutsceneBorders = true;
 bool holdingScrollBar; // *(bool*)0x7039B9; // not original name
 
 CMenuManager FrontEndMenuManager;
+#ifdef WII
+static wchar LoadingScreenMenuLabelEnglish[] = { 'L', 'o', 'a', 'd', 'i', 'n', 'g', ' ', 'S', 'c', 'r', 'e', 'e', 'n', '\0' };
+#ifdef CHINESE_FONT
+static wchar LoadingScreenMenuLabelChinese[] = { 0x52A0, 0x8F7D, 0x753B, 0x9762, '\0' };
+#endif
+
+static wchar *
+GetLoadingScreenMenuLabel(void)
+{
+#ifdef CHINESE_FONT
+	if (FrontEndMenuManager.m_PrefsLanguage == CMenuManager::LANGUAGE_CHINESE)
+		return LoadingScreenMenuLabelChinese;
+#endif
+	return LoadingScreenMenuLabelEnglish;
+}
+#endif
+
 #ifdef CHINESE_FONT
 uint8 gChineseLanguageVariant = CHINESE_VARIANT_WM;
 static const float kChineseVariantMenuGap = 30.0f;
@@ -270,6 +287,10 @@ GetMenuEntryDisplayText(int32 action, const char *entryName)
 {
 	if (action == MENUACTION_LANG_CHI)
 		return GetChineseLanguageMenuLabel();
+#ifdef WII
+	if (entryName && strcmp(entryName, "FED_LDS") == 0)
+		return GetLoadingScreenMenuLabel();
+#endif
 
 	return TheText.Get(entryName);
 }
@@ -278,6 +299,10 @@ static wchar *
 GetMenuEntryDisplayText(int32 action, const char *entryName)
 {
 	(void)action;
+#ifdef WII
+	if (entryName && strcmp(entryName, "FED_LDS") == 0)
+		return GetLoadingScreenMenuLabel();
+#endif
 	return TheText.Get(entryName);
 }
 #endif
