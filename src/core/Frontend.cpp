@@ -769,8 +769,19 @@ CMenuManager::SetFrontEndRenderStates(void)
 void
 CMenuManager::Initialise(void)
 {
-	DoRWStuffStartOfFrame(0, 0, 0, 0, 0, 0, 255);
-	DoRWStuffEndOfFrame();
+	// Keep the already presented LOADSC0 visible while the Wii frontend
+	// dictionaries are loaded.  The PC path completes this synchronously
+	// before the next visible frame, but the Wii upload takes long enough for
+	// its intermediate clear frames to become a black-screen wait.
+	bool preserveStartupSplash = false;
+#ifdef WII
+	preserveStartupSplash = m_bStartUpFrontEndRequested &&
+		m_bGameNotLoaded && !m_bSpritesLoaded;
+#endif
+	if (!preserveStartupSplash) {
+		DoRWStuffStartOfFrame(0, 0, 0, 0, 0, 0, 255);
+		DoRWStuffEndOfFrame();
+	}
 	m_AllowNavigation = false;
 	m_firstStartCounter = -50; // to start from black
 	m_nMenuFadeAlpha = 0;
@@ -5959,10 +5970,17 @@ CMenuManager::SwitchMenuOnAndOff()
 				&& m_nCurrScreen != MENUPAGE_SAVING_IN_PROGRESS
 #endif
 				) {
-				DoRWStuffStartOfFrame(0, 0, 0, 0, 0, 0, 255);
-				DoRWStuffEndOfFrame();
-				DoRWStuffStartOfFrame(0, 0, 0, 0, 0, 0, 255);
-				DoRWStuffEndOfFrame();
+				bool preserveStartupSplash = false;
+#ifdef WII
+				preserveStartupSplash = m_bStartUpFrontEndRequested &&
+					m_bGameNotLoaded && !m_bSpritesLoaded;
+#endif
+				if (!preserveStartupSplash) {
+					DoRWStuffStartOfFrame(0, 0, 0, 0, 0, 0, 255);
+					DoRWStuffEndOfFrame();
+					DoRWStuffStartOfFrame(0, 0, 0, 0, 0, 0, 255);
+					DoRWStuffEndOfFrame();
+				}
 			}
 
 			if (m_bShutDownFrontEndRequested)
