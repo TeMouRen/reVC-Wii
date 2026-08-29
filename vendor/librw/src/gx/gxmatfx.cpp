@@ -252,8 +252,21 @@ buildEnvTexMatrix(const MatFX::Env *env, Mtx envMtx)
         return true;
     }
 
-    if(!guMtxInverse(gxInvCamLTM, invView))
+    bool haveView = guMtxInverse(gxInvCamLTM, invView);
+    if(!haveView)
         guMtxIdentity(invView);
+
+    // The D3D reference builds the framed map from the camera frame with its
+    // right axis negated. gxInvCamLTM already contains the GX handedness
+    // correction on Z, so undo that correction before applying the D3D
+    // camera-frame convention here.
+    if(haveView){
+        for(uint32 row = 0; row < 3; row++){
+            invView[row][2] = -invView[row][2];
+            invView[row][0] = -invView[row][0];
+            invView[row][3] = 0.0f;
+        }
+    }
 
     invFrame[0][3] = 0.0f;
     invFrame[1][3] = 0.0f;
