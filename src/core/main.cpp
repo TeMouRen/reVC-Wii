@@ -1087,6 +1087,10 @@ GetRandomSplashScreen(void)
 	int index;
 	static int index2 = 0;
 	static char splashName[128];
+	#ifdef WII
+	if (gLoadingScreenMode == LOADING_SCREEN_PC)
+		return "loadsc0";
+	#endif
 	static int splashIndex[12] = {
 		1, 2,
 		3, 4,
@@ -1127,6 +1131,7 @@ void
 LoadingScreen(const char *str1, const char *str2, const char *splashscreen)
 {
 	CSprite2d *splash;
+	bool usePcLoadingLayout = false;
 
 #ifdef DISABLE_LOADING_SCREEN
 	if (str1 && str2)
@@ -1134,15 +1139,16 @@ LoadingScreen(const char *str1, const char *str2, const char *splashscreen)
 #endif
 
 #ifndef RANDOMSPLASH
+	usePcLoadingLayout = true;
 	splashscreen = "LOADSC0";
 #endif
 #ifdef WII
-	// PS2 mode keeps the random loadsc1..12 selection.  PC mode is the
-	// compatibility path that always uses the single LOADSC0 texture, while
-	// leaving level-specific splash1..3 screens untouched.
-	if (gLoadingScreenMode == LOADING_SCREEN_PC && splashscreen &&
-		(!strncmp(splashscreen, "loadsc", 6) || !strncmp(splashscreen, "LOADSC", 6)))
+	// PS2 mode keeps the random loadsc1..12 selection.  PC mode uses the
+	// single LOADSC0 texture and its native full-width progress bar.
+	if (gLoadingScreenMode == LOADING_SCREEN_PC) {
+		usePcLoadingLayout = true;
 		splashscreen = "loadsc0";
+	}
 #endif
 
 	splash = LoadSplash(splashscreen);
@@ -1162,19 +1168,23 @@ LoadingScreen(const char *str1, const char *str2, const char *splashscreen)
 
 		if(str1){
 			NumberOfChunksLoaded += 1;
+			float hpos;
+			float length;
+			float top;
+			float bottom;
 
-#ifndef RANDOMSPLASH
-			float hpos = SCREEN_SCALE_X(40);
-			float length = SCREEN_WIDTH - SCREEN_SCALE_X(80);
-			float top = SCREEN_HEIGHT - SCREEN_SCALE_Y(14);
-			float bottom = top + SCREEN_SCALE_Y(5);
-#else
-			float hpos = SCREEN_STRETCH_X(40);
-			float length = SCREEN_STRETCH_X(440);
-			// this is rather weird
-			float top = SCREEN_STRETCH_Y(407.4f - 7.0f/3.0f);
-			float bottom = SCREEN_STRETCH_Y(407.4f + 7.0f/3.0f);
-#endif
+			if (usePcLoadingLayout) {
+				hpos = SCREEN_SCALE_X(40);
+				length = SCREEN_WIDTH - SCREEN_SCALE_X(80);
+				top = SCREEN_HEIGHT - SCREEN_SCALE_Y(14);
+				bottom = top + SCREEN_SCALE_Y(5);
+			} else {
+				hpos = SCREEN_STRETCH_X(40);
+				length = SCREEN_STRETCH_X(440);
+				// this is rather weird
+				top = SCREEN_STRETCH_Y(407.4f - 7.0f/3.0f);
+				bottom = SCREEN_STRETCH_Y(407.4f + 7.0f/3.0f);
+			}
 
 			CSprite2d::DrawRect(CRect(hpos-1.0f, top-1.0f, hpos+length+1.0f, bottom+1.0f), CRGBA(40, 53, 68, 255));
 
