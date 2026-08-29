@@ -439,9 +439,8 @@ RwBool rwNativeTextureHackRead(RwStream *stream, RwTexture **tex, RwInt32 size)
 	*tex = Texture::streamReadNative(stream);
 	#if defined(RW_GX) && defined(WII)
 	if(*tex == nil && ShouldReadExternalTxdNative()){
-		// The GX reader has consumed the STRUCT header and platform word before
-		// rejecting D3D8. Rewind to the chunk start for the legacy reader.
-		((rw::Stream*)stream)->seek(-16);
+		// Texture::streamReadNative restores the stream to the native STRUCT
+		// header before rejecting a texture from another platform.
 		*tex = d3d8::readNativeTexture((rw::Stream*)stream);
 		if(*tex != nil)
 			printf("[TXD-NATIVE] D3D8 source accepted txd=%s size=%d texture=%s\n",
