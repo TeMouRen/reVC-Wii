@@ -155,7 +155,7 @@ void *destroyNativeData(void *object, int, int);  // geometry buffer cleanup
 // material pass and calls these only for the MatFX pipeline.
 bool gxMatFXEnvReady(Material *mat, bool hasNormals);
 bool gxMatFXSetupEnv(Material *mat, bool baseTextured, bool vertexAlpha,
-                     const Mtx modelView);
+                     bool modulateMaterialColor, const Mtx modelView);
 bool gxMatFXEnvUsesAlpha(Material *mat);
 bool gxMatFXEnvOnlyDebugActive(void);
 void gxMatFXRecordEnvUVStats(Material *mat, Geometry *geo,

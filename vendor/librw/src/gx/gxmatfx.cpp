@@ -271,8 +271,11 @@ buildEnvTexMatrix(const MatFX::Env *env, Mtx envMtx)
     invFrame[0][3] = 0.0f;
     invFrame[1][3] = 0.0f;
     invFrame[2][3] = 0.0f;
-    guMtxConcat(invFrame, invView, normalMtx);
-    guMtxConcat(mapMtx, normalMtx, envMtx);
+    // RwMatrixMultiply(out, a, b) and guMtxConcat(a, b, out) both use the
+    // row-major a*b order. The D3D reference is camera-frame * inverse-env,
+    // followed by the sphere-map scale/offset matrix.
+    guMtxConcat(invView, invFrame, normalMtx);
+    guMtxConcat(normalMtx, mapMtx, envMtx);
     return true;
 }
 
@@ -439,15 +442,10 @@ bool
 gxMatFXEnvUsesAlpha(Material *mat)
 {
     const MatFX::Env *env = getEnvMap(mat);
-    if(env == nil)
-        return false;
-    if(env->fbAlpha != 0)
-        return true;
-
-    if(mat == nil || mat->texture == nil || mat->texture->raster == nil)
-        return false;
-    GxRaster *baseRaster = getNativeRaster(mat->texture);
-    return baseRaster != nil && baseRaster->hasAlpha != 0;
+    // Match the D3D MatFX pass: source-alpha blending is selected only for
+    // the explicit framebuffer-alpha material flag. A diffuse texture's
+    // alpha does not switch the environment pass away from additive blending.
+    return env != nil && env->fbAlpha != 0;
 }
 
 static uint8
@@ -482,10 +480,16 @@ loadEnvTexMatrix(const MatFX::Env *env, const Mtx modelView)
 }
 
 static GXColor
-getEnvColor(Material *mat, const MatFX::Env *env)
+getEnvColor(Material *mat, const MatFX::Env *env,
+            bool modulateMaterialColor)
 {
+    // D3D's setMaterial(flags, ...) uses white when the geometry does not
+    // request material-colour modulation. Keep the explicit envMapColor
+    // override only for the compatibility mode that disables that mapping.
+    static const RGBA white = { 255, 255, 255, 255 };
     const RGBA &color = MatFX::envMapUseMatColor ?
-                        mat->color : MatFX::envMapColor;
+                        (modulateMaterialColor ? mat->color : white) :
+                        MatFX::envMapColor;
     float coefficient = env->coefficient * clamp01(matFXEnvMapIntensity);
     GXColor result = {
         colorByte((float)color.red / 255.0f * coefficient),
@@ -518,7 +522,7 @@ setEnvTextureStage(uint8 stage)
 
 bool
 gxMatFXSetupEnv(Material *mat, bool baseTextured, bool vertexAlpha,
-                const Mtx modelView)
+                bool modulateMaterialColor, const Mtx modelView)
 {
     const MatFX::Env *env = getEnvMap(mat);
     if(env == nil || env->tex == nil)
@@ -528,7 +532,7 @@ gxMatFXSetupEnv(Material *mat, bool baseTextured, bool vertexAlpha,
     if(envRaster == nil || !envRaster->texObjValid)
         return false;
 
-    GXColor envColor = getEnvColor(mat, env);
+    GXColor envColor = getEnvColor(mat, env, modulateMaterialColor);
     GX_SetTevKColor(GX_KCOLOR0, envColor);
     gxSetTexture(env->tex->raster, 1);
 
@@ -569,26 +573,8 @@ gxMatFXSetupEnv(Material *mat, bool baseTextured, bool vertexAlpha,
                          GX_TRUE, GX_TEVPREV);
         stageCount++;
     }
-    if(gxMatFXEnvUsesAlpha(mat) && baseTextured){
-        // Match RenderWare's framebuffer-alpha mode and ordinary textured
-        // alpha by masking the effect alpha with the base texture alpha. The
-        // color result remains the environment texture.
-        GX_SetTevOrder(stageCount, GX_TEXCOORD0,
-                       GX_TEXMAP0, GX_COLORNULL);
-        GX_SetTevColorIn(stageCount,
-                         GX_CC_ZERO, GX_CC_ZERO,
-                         GX_CC_ZERO, GX_CC_CPREV);
-        GX_SetTevColorOp(stageCount,
-                         GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
-                         GX_TRUE, GX_TEVPREV);
-        GX_SetTevAlphaIn(stageCount,
-                         GX_CA_ZERO, GX_CA_TEXA,
-                         GX_CA_APREV, GX_CA_ZERO);
-        GX_SetTevAlphaOp(stageCount,
-                         GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
-                         GX_TRUE, GX_TEVPREV);
-        stageCount++;
-    }
+    // The D3D framebuffer-alpha path samples the environment texture after
+    // replacing texture unit 0; diffuse/base alpha is not part of this pass.
     if(vertexAlpha){
         GX_SetTevOrder(stageCount, GX_TEXCOORDNULL,
                        GX_TEXMAP_NULL, GX_COLOR0A0);
