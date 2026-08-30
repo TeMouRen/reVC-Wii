@@ -13,7 +13,7 @@ uint32 CTimer::m_snTimeInMillisecondsPauseMode = 1;
 uint32 CTimer::m_snTimeInMillisecondsNonClipped;
 uint32 CTimer::m_snPreviousTimeInMilliseconds;
 uint32 CTimer::m_FrameCounter;
-float CTimer::ms_fTimeScale = 1.0f;
+float CTimer::ms_fTimeScale;
 float CTimer::ms_fTimeStep;
 float CTimer::ms_fTimeStepNonClipped;
 bool  CTimer::m_UserPause;

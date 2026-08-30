@@ -53,32 +53,13 @@ CDirectory::WriteDirFile(const char *filename)
 void
 CDirectory::AddItem(const DirectoryInfo &dirinfo)
 {
-	// [GC-FIX] 如果对象本身是 NULL 或底层数组未分配，
-	// 绝对不可执行写入或扩容（GameCube 0x0 地址可读会误判数组有效）
-	if (this == nil || entries == nil) {
-		return;
-	}
-
+	assert(numEntries < maxEntries);
 #ifdef FIX_BUGS
 	// don't add if already exists
 	uint32 offset, size;
 	if(FindItem(dirinfo.name, offset, size))
 		return;
 #endif
-	// Dynamic resize when full — prevents heap corruption from writing past array bounds.
-	// Original code asserted then wrote anyway, which trashed malloc metadata on GameCube.
-	if (numEntries >= maxEntries) {
-		int32 newMax = maxEntries * 2;
-		DirectoryInfo *newEntries = new DirectoryInfo[newMax];
-		if (newEntries == nil) {
-			// Can't grow — silently drop item. Better than heap corruption.
-			return;
-		}
-		memcpy(newEntries, entries, numEntries * sizeof(DirectoryInfo));
-		delete[] entries;
-		entries = newEntries;
-		maxEntries = newMax;
-	}
 	entries[numEntries++] = dirinfo;
 }
 
