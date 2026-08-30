@@ -1289,21 +1289,43 @@ CAnimManager::LoadAnimFile(RwStream *stream, bool compress, char (*uncompressedA
 	float *fbuf = (float*)buf;
 
 	// block name
+	#if GX_CONSOLE
+	((rw::Stream*)stream)->read32(&anpk, sizeof(IfpHeader));
+	#else
 	RwStreamRead(stream, &anpk, sizeof(IfpHeader));
+	#endif
 	ROUNDSIZE(anpk.size);
+	#if GX_CONSOLE
+	((rw::Stream*)stream)->read32(&info, sizeof(IfpHeader));
+	#else
 	RwStreamRead(stream, &info, sizeof(IfpHeader));
+	#endif
 	ROUNDSIZE(info.size);
+	if(info.size < 5 || info.size > sizeof(buf)){
+		printf("Invalid IFP block info size: %u\n", info.size);
+		return;
+	}
 	RwStreamRead(stream, buf, info.size);
+	rw::memNative32(buf, sizeof(int32));
+	int numAnims = *(int32*)buf;
+	if(numAnims < 0 || numAnims > ARRAY_SIZE(ms_aAnimations) - ms_numAnimations){
+		printf("Invalid IFP animation count: %d\n", numAnims);
+		return;
+	}
 	CAnimBlock *animBlock = GetAnimationBlock(buf+4);
 	if(animBlock){
 		if(animBlock->numAnims == 0){
-			animBlock->numAnims = *(int*)buf;
+			animBlock->numAnims = numAnims;
 			animBlock->firstIndex = ms_numAnimations;
 		}
 	}else{
+		if(ms_numAnimBlocks >= ARRAY_SIZE(ms_aAnimBlocks)){
+			printf("Too many IFP animation blocks\n");
+			return;
+		}
 		animBlock = &ms_aAnimBlocks[ms_numAnimBlocks++];
 		strncpy(animBlock->name, buf+4, MAX_ANIMBLOCK_NAME);
-		animBlock->numAnims = *(int*)buf;
+		animBlock->numAnims = numAnims;
 		animBlock->firstIndex = ms_numAnimations;
 	}
 
@@ -1316,8 +1338,16 @@ CAnimManager::LoadAnimFile(RwStream *stream, bool compress, char (*uncompressedA
 		CAnimBlendHierarchy *hier = &ms_aAnimations[animIndex++];
 
 		// animation name
+		#if GX_CONSOLE
+		((rw::Stream*)stream)->read32(&name, sizeof(IfpHeader));
+		#else
 		RwStreamRead(stream, &name, sizeof(IfpHeader));
+		#endif
 		ROUNDSIZE(name.size);
+		if(name.size == 0 || name.size > sizeof(buf)){
+			printf("Invalid IFP animation name size: %u\n", name.size);
+			return;
+		}
 		RwStreamRead(stream, buf, name.size);
 		hier->SetName(buf);
 
@@ -1339,26 +1369,62 @@ CAnimManager::LoadAnimFile(RwStream *stream, bool compress, char (*uncompressedA
 		hier->keepCompressed = false;
 
 		// DG info has number of nodes/sequences
+		#if GX_CONSOLE
+		((rw::Stream*)stream)->read32((char*)&dgan, sizeof(IfpHeader));
+		#else
 		RwStreamRead(stream, (char*)&dgan, sizeof(IfpHeader));
+		#endif
 		ROUNDSIZE(dgan.size);
+		#if GX_CONSOLE
+		((rw::Stream*)stream)->read32((char*)&info, sizeof(IfpHeader));
+		#else
 		RwStreamRead(stream, (char*)&info, sizeof(IfpHeader));
+		#endif
 		ROUNDSIZE(info.size);
+		if(info.size < sizeof(int32) || info.size > sizeof(buf)){
+			printf("Invalid IFP sequence info size: %u\n", info.size);
+			return;
+		}
 		RwStreamRead(stream, buf, info.size);
-		hier->numSequences = *(int*)buf;
+		rw::memNative32(buf, sizeof(int32));
+		hier->numSequences = *(int32*)buf;
+		if(hier->numSequences < 0 || hier->numSequences > 1024){
+			printf("Invalid IFP sequence count: %d\n", hier->numSequences);
+			return;
+		}
 		hier->sequences = new CAnimBlendSequence[hier->numSequences];
 
 		CAnimBlendSequence *seq = hier->sequences;
 		for(k = 0; k < hier->numSequences; k++, seq++){
 			// Each node has a name and key frames
+			#if GX_CONSOLE
+			((rw::Stream*)stream)->read32(&cpan, sizeof(IfpHeader));
+			#else
 			RwStreamRead(stream, &cpan, sizeof(IfpHeader));
+			#endif
 			ROUNDSIZE(dgan.size);
+			#if GX_CONSOLE
+			((rw::Stream*)stream)->read32(&anim, sizeof(IfpHeader));
+			#else
 			RwStreamRead(stream, &anim, sizeof(IfpHeader));
+			#endif
 			ROUNDSIZE(anim.size);
+			if(anim.size < 32 || anim.size > sizeof(buf)){
+				printf("Invalid IFP node info size: %u\n", anim.size);
+				return;
+			}
 			RwStreamRead(stream, buf, anim.size);
-			int numFrames = *(int*)(buf+28);
+			rw::memNative32(buf+28, sizeof(int32));
+			int numFrames = *(int32*)(buf+28);
 			seq->SetName(buf);
-			if(anim.size == 44)
-				seq->SetBoneTag(*(int*)(buf+40));
+			if(anim.size == 44){
+				rw::memNative32(buf+40, sizeof(int32));
+				seq->SetBoneTag(*(int32*)(buf+40));
+			}
+			if(numFrames < 0){
+				printf("Invalid IFP key frame count: %d\n", numFrames);
+				return;
+			}
 			if(numFrames == 0)
 				continue;
 
@@ -1380,6 +1446,7 @@ CAnimManager::LoadAnimFile(RwStream *stream, bool compress, char (*uncompressedA
 			for(l = 0; l < numFrames; l++){
 				if(hasScale){
 					RwStreamRead(stream, buf, 0x2C);
+					rw::memNative32(buf, 0x2C);
 					CQuaternion rot(fbuf[0], fbuf[1], fbuf[2], fbuf[3]);
 					rot.Invert();
 					CVector trans(fbuf[4], fbuf[5], fbuf[6]);
@@ -1399,6 +1466,7 @@ CAnimManager::LoadAnimFile(RwStream *stream, bool compress, char (*uncompressedA
 					}
 				}else if(hasTranslation){
 					RwStreamRead(stream, buf, 0x20);
+					rw::memNative32(buf, 0x20);
 					CQuaternion rot(fbuf[0], fbuf[1], fbuf[2], fbuf[3]);
 					rot.Invert();
 					CVector trans(fbuf[4], fbuf[5], fbuf[6]);
@@ -1416,6 +1484,7 @@ CAnimManager::LoadAnimFile(RwStream *stream, bool compress, char (*uncompressedA
 					}
 				}else{
 					RwStreamRead(stream, buf, 0x14);
+					rw::memNative32(buf, 0x14);
 					CQuaternion rot(fbuf[0], fbuf[1], fbuf[2], fbuf[3]);
 					rot.Invert();
 
