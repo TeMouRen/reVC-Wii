@@ -16,7 +16,6 @@
 #include "EmergencyPed.h"
 #include "FileMgr.h"
 #include "Frontend.h"
-#include "Game.h"
 #include "General.h"
 #ifdef MISSION_REPLAY
 #include "GenericGameStorage.h"
@@ -50,109 +49,8 @@
 #include "Timecycle.h"
 #include "TxdStore.h"
 #include "Bike.h"
-#include "ModelIndices.h"
 #ifdef USE_ADVANCED_SCRIPT_DEBUG_OUTPUT
 #include <stdarg.h>
-#endif
-
-#if REAL_GAMECUBE
-static bool
-GcShouldPreserveMissionWakeHeading(CVehicle *car)
-{
-	return car != nil &&
-		car->GetModelIndex() == MI_ADMIRAL &&
-		car->VehicleCreatedBy == MISSION_VEHICLE;
-}
-
-static void
-GcWakeMissionCarForScriptDrive(CVehicle *car)
-{
-	if(car == nil)
-		return;
-
-	const bool wasStaticWaiting = car->bIsStaticWaitingForCollision;
-	const bool wasStatic = car->GetIsStatic();
-	const bool wasFrozen = car->bIsFrozen;
-	const float speed2dBeforeWake = car->GetMoveSpeed().Magnitude2D();
-	const bool preservePlacedHeading = GcShouldPreserveMissionWakeHeading(car);
-	const bool shouldResetDynamics =
-		car->VehicleCreatedBy == MISSION_VEHICLE &&
-		(wasStaticWaiting || wasStatic || wasFrozen || speed2dBeforeWake < 0.02f);
-
-	car->bIsStaticWaitingForCollision = false;
-	car->SetIsStatic(false);
-	car->bIsFrozen = false;
-	car->bInfiniteMass = false;
-	car->AddToMovingList();
-	car->bEngineOn = true;
-	if (shouldResetDynamics) {
-		// Scripted retargets often arrive while the vehicle is already moving.
-		// Resetting dynamics on every CAR_GOTO_COORDINATES call causes the
-		// one-frame stall and heading snap seen on the intro Admiral.
-		car->SetMoveSpeed(0.0f, 0.0f, 0.0f);
-		car->SetTurnSpeed(0.0f, 0.0f, 0.0f);
-		car->m_vecMoveFriction = CVector(0.0f, 0.0f, 0.0f);
-		car->m_vecTurnFriction = CVector(0.0f, 0.0f, 0.0f);
-		car->m_vecMoveSpeedAvg = CVector(0.0f, 0.0f, 0.0f);
-		car->m_vecTurnSpeedAvg = CVector(0.0f, 0.0f, 0.0f);
-		car->m_fSteerAngle = 0.0f;
-		car->m_fGasPedal = 0.0f;
-		car->m_fBrakePedal = 0.0f;
-		car->bIsHandbrakeOn = false;
-		if (!preservePlacedHeading) {
-			CVector2D toDest = car->AutoPilot.m_vecDestinationCoors - car->GetPosition();
-			if (toDest.MagnitudeSqr() > 0.01f)
-				car->SetHeading(toDest.Heading());
-		}
-	}
-	car->AutoPilot.m_nAntiReverseTimer = CTimer::GetTimeInMilliseconds();
-	if (CGame::playingIntro || (wasStaticWaiting && car->VehicleCreatedBy == MISSION_VEHICLE)) {
-		car->AutoPilot.m_nDrivingStyle = DRIVINGSTYLE_PLOUGH_THROUGH;
-		car->AutoPilot.m_bIgnorePathfinding = false;
-	}
-
-	if(CGame::playingIntro || wasStaticWaiting ||
-	   (car->VehicleCreatedBy == MISSION_VEHICLE && speed2dBeforeWake > 0.05f))
-		printf("[SCR-CAR] wake veh=%p model=%d intro=%d wasStatic=%d waitCol=%d reset=%d keepHeading=%d speed2d=%f status=%u mission=%u pos=(%f,%f,%f)\n",
-			(void*)car, car->GetModelIndex(), CGame::playingIntro ? 1 : 0,
-			wasStatic ? 1 : 0, wasStaticWaiting ? 1 : 0,
-			shouldResetDynamics ? 1 : 0, preservePlacedHeading ? 1 : 0, speed2dBeforeWake,
-			car->GetStatus(), (uint32)car->AutoPilot.m_nCarMission,
-			car->GetPosition().x, car->GetPosition().y, car->GetPosition().z);
-}
-
-static void
-GcTraceMissionIntroPlayerWarp(const char *stage, const CRunningScript *script, uint32 opcodeIp, CPlayerInfo *player, CVehicle *veh, const CVector *targetPos)
-{
-	if (player == nil || player->m_pPed == nil)
-		return;
-
-	CPed *ped = player->m_pPed;
-	if (veh == nil || veh->GetModelIndex() != MI_ADMIRAL || veh->VehicleCreatedBy != MISSION_VEHICLE)
-		return;
-
-	const CVector &pedPos = ped->GetPosition();
-	const CVector &vehPos = veh->GetPosition();
-	const CVector warpPos = targetPos ? *targetPos : CVector(0.0f, 0.0f, 0.0f);
-	printf("[SCR-WARP] stage=%s frame=%u script=%.8s mission=%d opIp=%u nextIp=%u ped=%p player=1 veh=%p driver=%d obj=%d prevObj=%d pedState=%d inVeh=%d vehStatus=%u pedPos=(%f,%f,%f) vehPos=(%f,%f,%f) warpPos=(%f,%f,%f)\n",
-		stage,
-		CTimer::GetFrameCounter(),
-		script ? script->m_abScriptName : "noscript",
-		script ? (script->m_bIsMissionScript ? 1 : 0) : 0,
-		opcodeIp,
-		script ? script->m_nIp : 0,
-		(void*)ped,
-		(void*)veh,
-		veh->pDriver == ped ? 1 : 0,
-		(int)ped->m_objective,
-		(int)ped->m_prevObjective,
-		(int)ped->m_nPedState,
-		ped->bInVehicle ? 1 : 0,
-		veh->GetStatus(),
-		pedPos.x, pedPos.y, pedPos.z,
-		vehPos.x, vehPos.y, vehPos.z,
-		warpPos.x, warpPos.y, warpPos.z);
-}
 #endif
 
 uint8 CTheScripts::ScriptSpace[SIZE_SCRIPT_SPACE];
@@ -190,7 +88,6 @@ CUpsideDownCarCheck CTheScripts::UpsideDownCars;
 CStuckCarCheck CTheScripts::StuckCars;
 uint16 CTheScripts::CommandsExecuted;
 uint16 CTheScripts::ScriptsUpdated;
-
 int32 ScriptParams[32];
 uint8 CTheScripts::RiotIntensity;
 uint32 CTheScripts::LastMissionPassedTime;
@@ -2514,9 +2411,6 @@ int8 CRunningScript::ProcessCommands100To199(int32 command)
 		car->bEngineOn = true;
 		car->AutoPilot.m_nCruiseSpeed = Max(1, car->AutoPilot.m_nCruiseSpeed);
 		car->AutoPilot.m_nAntiReverseTimer = CTimer::GetTimeInMilliseconds();
-#if REAL_GAMECUBE
-		GcWakeMissionCarForScriptDrive(car);
-#endif
 		return 0;
 	}
 	case COMMAND_CAR_WANDER_RANDOMLY:
@@ -2632,12 +2526,6 @@ int8 CRunningScript::ProcessCommands100To199(int32 command)
 		car->AutoPilot.m_nCarMission = (uint8)ScriptParams[1];
 		car->AutoPilot.m_nAntiReverseTimer = CTimer::GetTimeInMilliseconds();
 		car->bEngineOn = true;
-#if REAL_GAMECUBE
-		if(car->AutoPilot.m_nCarMission != MISSION_NONE &&
-		   car->AutoPilot.m_nCarMission != MISSION_WAITFORDELETION &&
-		   car->AutoPilot.m_nCarMission != MISSION_STOP_FOREVER)
-			GcWakeMissionCarForScriptDrive(car);
-#endif
 		return 0;
 	}
 	case COMMAND_IS_CAR_IN_AREA_2D:
@@ -3283,9 +3171,6 @@ int8 CRunningScript::ProcessCommands200To299(int32 command)
 		if (!pVehicle->IsBoat())
 			pVehicle->AutoPilot.m_nCarMission = MISSION_CRUISE;
 		pVehicle->bEngineOn = true;
-#if REAL_GAMECUBE
-		GcWakeMissionCarForScriptDrive(pVehicle);
-#endif
 		pPed->bUsesCollision = false;
 		pPed->AddInCarAnims(pVehicle, true);
 		pPed->m_nZoneLevel = CTheZones::GetLevelFromPosition(&pPed->GetPosition());
@@ -3298,16 +3183,11 @@ int8 CRunningScript::ProcessCommands200To299(int32 command)
 	}
 	case COMMAND_WARP_PLAYER_FROM_CAR_TO_COORD:
 	{
-		uint32 opcodeIp = m_nIp - 2;
 		CollectParameters(&m_nIp, 4);
 		CVector pos = *(CVector*)&ScriptParams[1];
 		CPlayerInfo* pPlayer = &CWorld::Players[ScriptParams[0]];
-		CVehicle *warpVeh = pPlayer->m_pPed ? pPlayer->m_pPed->m_pMyVehicle : nil;
 		if (pos.z <= MAP_Z_LOW_LIMIT)
 			pos.z = CWorld::FindGroundZForCoord(pos.x, pos.y);
-#if REAL_GAMECUBE
-		GcTraceMissionIntroPlayerWarp("warp-player-from-car-begin", this, opcodeIp, pPlayer, warpVeh, &pos);
-#endif
 		if (pPlayer->m_pPed->bInVehicle){
 			script_assert(pPlayer->m_pPed->m_pMyVehicle);
 			if (pPlayer->m_pPed->m_pMyVehicle->bIsBus)
@@ -3318,9 +3198,6 @@ int8 CRunningScript::ProcessCommands200To299(int32 command)
 				pPlayer->m_pPed->m_pMyVehicle->bEngineOn = false;
 				pPlayer->m_pPed->m_pMyVehicle->AutoPilot.m_nCruiseSpeed = 0;
 			}else{
-#if REAL_GAMECUBE
-				GcTraceMissionIntroPlayerWarp("warp-player-from-car-remove-passenger", this, opcodeIp, pPlayer, pPlayer->m_pPed->m_pMyVehicle, &pos);
-#endif
 				pPlayer->m_pPed->m_pMyVehicle->RemovePassenger(pPlayer->m_pPed);
 			}
 		}
@@ -3340,9 +3217,6 @@ int8 CRunningScript::ProcessCommands200To299(int32 command)
 		AudioManager.PlayerJustLeftCar();
 		pos.z += pPlayer->m_pPed->GetDistanceFromCentreOfMassToBaseOfModel();
 		pPlayer->m_pPed->Teleport(pos);
-#if REAL_GAMECUBE
-		GcTraceMissionIntroPlayerWarp("warp-player-from-car-after-teleport", this, opcodeIp, pPlayer, warpVeh, &pos);
-#endif
 		CTheScripts::ClearSpaceForMissionEntity(pos, pPlayer->m_pPed);
 		return 0;
 	}

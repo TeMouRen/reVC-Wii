@@ -65,6 +65,7 @@ CObjectData::Initialise(const char *filename)
 
 	CFileMgr::SetDir("");
 	CFileMgr::LoadFile(filename, work_buff, sizeof(work_buff), "r");
+
 	id = 4;
 	p = (char*)work_buff;
 	while(*p != '*'){
@@ -79,9 +80,9 @@ CObjectData::Initialise(const char *filename)
 		if(*p == '*')
 			break;
 
-		// read one line (with bounds check to prevent stack overflow)
+		// read one line
 		lp = line;
-		while(*p != '\n' && *p != '*' && (lp - line) < 499){
+		while(*p != '\n' && *p != '*'){
 			*lp++ = *p == ',' ? ' ' : *p;
 			p++;
 		}

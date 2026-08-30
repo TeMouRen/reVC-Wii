@@ -100,11 +100,6 @@ CHeli::SetModelIndex(uint32 id)
 	int i;
 
 	CVehicle::SetModelIndex(id);
-	if(m_rwObject == nil || RwObjectGetType(m_rwObject) != rpCLUMP){
-		printf("[VEH-INIT] Heli SetModelIndex aborted: no clump for model %u\n",
-		       (unsigned)id);
-		return;
-	}
 	for(i = 0; i < NUM_HELI_NODES; i++)
 		m_aHeliNodes[i] = nil;
 	CClumpModelInfo::FillFrameArray(GetClump(), m_aHeliNodes);
@@ -128,9 +123,6 @@ static int PathPoint;
 void
 CHeli::ProcessControl(void)
 {
-#if REAL_GAMECUBE
-	GcVehicleDiag(this, "heli-begin");
-#endif
 	int i;
 
 	if(gbModelViewer)
@@ -269,9 +261,6 @@ CHeli::ProcessControl(void)
 		if(GetPosition().z - 2.0f < groundZ && m_heliStatus != HELI_STATUS_SHOT_DOWN)
 			m_vecMoveSpeed.z += CTimer::GetTimeStep()*0.01f;
 		m_vecMoveSpeed.z = Clamp(m_vecMoveSpeed.z, -0.3f, 0.3f);
-#if REAL_GAMECUBE
-		GcVehicleDiag(this, "heli-after-groundz");
-#endif
 	}
 
 	float fTargetDist = vTargetDist.Magnitude();
@@ -386,9 +375,6 @@ CHeli::ProcessControl(void)
 	}
 	GetMatrix().GetPosition().x += m_vecMoveSpeed.x*CTimer::GetTimeStep();
 	GetMatrix().GetPosition().y += m_vecMoveSpeed.y*CTimer::GetTimeStep();
-#if REAL_GAMECUBE
-	GcVehicleDiag(this, "heli-after-xy");
-#endif
 
 	// Find z target
 	if(m_heliStatus == HELI_STATUS_FLY_AWAY)
@@ -410,9 +396,6 @@ CHeli::ProcessControl(void)
 	else
 		m_vecMoveSpeed.z += speedIncZ*1.5f;
 	GetMatrix().GetPosition().z += m_vecMoveSpeed.z*CTimer::GetTimeStep();
-#if REAL_GAMECUBE
-	GcVehicleDiag(this, "heli-after-z");
-#endif
 
 	// Find angular speed
 	float targetAngularSpeed;

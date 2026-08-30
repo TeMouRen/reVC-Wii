@@ -95,19 +95,6 @@ CBike::CBike(int32 id, uint8 CreatedBy)
 	pHandling = mod_HandlingManager.GetHandlingData((tVehicleType)mi->m_handlingId);
 	pBikeHandling = mod_HandlingManager.GetBikePointer((tVehicleType)mi->m_handlingId);
 	pFlyingHandling = mod_HandlingManager.GetFlyingPointer((tVehicleType)mi->m_handlingId);
-#if REAL_GAMECUBE
-	if(id == MI_FAGGIO){
-		printf("[VEH-INIT] bike ctor veh=%p model=%d name=%s handlingId=%d type=%d gears=%u maxVel=%f turnMass=%f mass=%f bikeLean=%f\n",
-		       this, id, mi ? mi->GetModelName() : "<null>",
-		       mi ? mi->m_handlingId : -1,
-		       mi ? mi->m_vehicleType : -1,
-		       pHandling ? (uint32)pHandling->Transmission.nNumberOfGears : 0,
-		       pHandling ? pHandling->Transmission.fMaxVelocity : 0.0f,
-		       pHandling ? pHandling->fTurnMass : 0.0f,
-		       pHandling ? pHandling->fMass : 0.0f,
-		       pBikeHandling ? pBikeHandling->fLeanFwdCOM : 0.0f);
-	}
-#endif
 
 	m_bike_unused1 = 20.0f;
 	m_bike_unused2 = 0;
@@ -206,11 +193,6 @@ void
 CBike::SetModelIndex(uint32 id)
 {
 	CVehicle::SetModelIndex(id);
-	if(m_rwObject == nil || RwObjectGetType(m_rwObject) != rpCLUMP){
-		printf("[VEH-INIT] Bike SetModelIndex aborted: no clump for model %u\n",
-		       (unsigned)id);
-		return;
-	}
 	SetupModelNodes();
 }
 
@@ -227,9 +209,6 @@ float fFlySpeedMult = -0.6f;
 void
 CBike::ProcessControl(void)
 {
-#if REAL_GAMECUBE
-	GcVehicleDiag(this, "bike-begin");
-#endif
 	int i;
 	float wheelRot;
 	float acceleration = 0.0f;
@@ -328,9 +307,6 @@ CBike::ProcessControl(void)
 	case STATUS_SIMPLE:
 		CCarAI::UpdateCarAI(this);
 		CPhysical::ProcessControl();
-#if REAL_GAMECUBE
-		GcVehicleDiag(this, "bike-simple-after-physical");
-#endif
 		CCarCtrl::UpdateCarOnRails(this);
 
 		m_nWheelsOnGround = 2;
@@ -609,15 +585,9 @@ CBike::ProcessControl(void)
 		}
 
 		CPhysical::ProcessControl();
-#if REAL_GAMECUBE
-		GcVehicleDiag(this, "bike-after-physical");
-#endif
 		m_fAirResistance = savedAirResistance;
 
 		ProcessBuoyancy();
-#if REAL_GAMECUBE
-		GcVehicleDiag(this, "bike-after-buoyancy");
-#endif
 
 		// Rescale spring ratios, i.e. subtract wheel radius
 		for(i = 0; i < 4; i++){
@@ -2965,8 +2935,6 @@ CBike::SetupModelNodes(void)
 	int i;
 	for(i = 0; i < BIKE_NUM_NODES; i++)
 		m_aBikeNodes[i] = nil;
-	if(m_rwObject == nil || RwObjectGetType(m_rwObject) != rpCLUMP)
-		return;
 	CClumpModelInfo::FillFrameArray(GetClump(), m_aBikeNodes);
 }
 

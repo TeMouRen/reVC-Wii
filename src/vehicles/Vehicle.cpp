@@ -12,8 +12,6 @@
 #include "CarCtrl.h"
 #include "Population.h"
 #include "ModelIndices.h"
-#include "ModelInfo.h"
-#include "VehicleModelInfo.h"
 #include "World.h"
 #include "Lights.h"
 #include "PointLights.h"
@@ -35,10 +33,6 @@
 #include "Weather.h"
 #include "Coronas.h"
 #include "SaveBuf.h"
-#if REAL_GAMECUBE
-#include "CutsceneMgr.h"
-#include "Game.h"
-#endif
 
 bool CVehicle::bWheelsOnlyCheat;
 bool CVehicle::bAllDodosCheat;
@@ -55,302 +49,6 @@ bool CVehicle::bDisableRemoteDetonation;
 bool CVehicle::bDisableRemoteDetonationOnContact;
 #ifndef MASTER
 bool CVehicle::m_bDisplayHandlingInfo;
-#endif
-
-#if REAL_GAMECUBE
-static bool
-GcVehicleFiniteFloat(float f)
-{
-	return isfinite(f) != 0;
-}
-
-static bool
-GcIsMissionIntroAdmiral(CVehicle *veh)
-{
-	return veh != nil &&
-		veh->GetModelIndex() == MI_ADMIRAL &&
-		veh->VehicleCreatedBy == MISSION_VEHICLE;
-}
-
-static int
-GcPedSeatIndex(CVehicle *veh, CPed *ped)
-{
-	if (veh == nil || ped == nil)
-		return -2;
-	if (veh->pDriver == ped)
-		return -1;
-	for (int i = 0; i < veh->m_nNumMaxPassengers; i++) {
-		if (veh->pPassengers[i] == ped)
-			return i;
-	}
-	return -2;
-}
-
-static void
-GcTraceMissionIntroSeat(CVehicle *veh, const char *stage, CPed *ped, int requestedSeat)
-{
-	if (!GcIsMissionIntroAdmiral(veh) || ped == nil)
-		return;
-
-	const CVector &vehPos = veh->GetPosition();
-	const CVector &pedPos = ped->GetPosition();
-	printf("[PED-SEAT] stage=%s frame=%u veh=%p ped=%p player=%d seat=%d req=%d inVeh=%d pedState=%d obj=%d vehStatus=%u vehPos=(%f,%f,%f) pedPos=(%f,%f,%f)\n",
-		stage,
-		CTimer::GetFrameCounter(),
-		veh,
-		ped,
-		ped->IsPlayer() ? 1 : 0,
-		GcPedSeatIndex(veh, ped),
-		requestedSeat,
-		ped->bInVehicle ? 1 : 0,
-		ped->m_nPedState,
-		ped->m_objective,
-		veh->GetStatus(),
-		vehPos.x, vehPos.y, vehPos.z,
-		pedPos.x, pedPos.y, pedPos.z);
-}
-
-static bool
-GcShouldTraceWheelForces(CVehicle *veh)
-{
-	if(veh == nil)
-		return false;
-	if(veh->GetModelIndex() != MI_ADMIRAL || veh->VehicleCreatedBy != MISSION_VEHICLE)
-		return false;
-	if(!(CCutsceneMgr::IsRunning() || CGame::playingIntro || CCutsceneMgr::ms_cutsceneLoadStatus != 0))
-		return false;
-	return (CTimer::GetFrameCounter() % 30) == 0;
-}
-
-static bool
-GcVehicleFiniteVec(const CVector &v)
-{
-	return GcVehicleFiniteFloat(v.x) && GcVehicleFiniteFloat(v.y) && GcVehicleFiniteFloat(v.z);
-}
-
-struct GcHandlingSnapshot
-{
-	bool valid;
-	tHandlingData handling;
-};
-
-static GcHandlingSnapshot gGcHandlingSnapshots[NUMHANDLINGS];
-static bool gGcHandlingSnapshotsInitialised;
-
-static bool
-GcVehicleDiagModel(int32 model)
-{
-	return model == MI_MAVERICK ||
-		model == MI_TAXI ||
-		model == MI_WASHING ||
-		model == MI_ADMIRAL ||
-		model == MI_RUMPO ||
-		model == MI_FAGGIO;
-}
-
-static bool
-GcHandlingLooksValid(const tHandlingData *handling)
-{
-	return handling != nil &&
-		GcVehicleFiniteFloat(handling->fMass) &&
-		handling->fMass > 0.0001f &&
-		GcVehicleFiniteFloat(handling->fTurnMass) &&
-		handling->fTurnMass > 0.0001f &&
-		handling->Transmission.nNumberOfGears >= 1 &&
-		GcVehicleFiniteFloat(handling->Transmission.fMaxVelocity) &&
-		handling->Transmission.fMaxVelocity > 0.0001f &&
-		GcVehicleFiniteFloat(handling->Transmission.fMaxReverseVelocity) &&
-		handling->Transmission.fMaxReverseVelocity < -0.0001f &&
-		GcVehicleFiniteFloat(handling->Transmission.fEngineAcceleration);
-}
-
-void
-GcVehicleInitHandlingSnapshots(void)
-{
-	for(int32 i = 0; i < NUMHANDLINGS; i++){
-		tHandlingData *handling = mod_HandlingManager.GetHandlingData((tVehicleType)i);
-		if(GcHandlingLooksValid(handling)){
-			gGcHandlingSnapshots[i].handling = *handling;
-			gGcHandlingSnapshots[i].valid = true;
-		}else{
-			gGcHandlingSnapshots[i].valid = false;
-		}
-	}
-	if(!gGcHandlingSnapshots[HANDLING_MOPED].valid &&
-	   gGcHandlingSnapshots[HANDLING_BIKE].valid){
-		gGcHandlingSnapshots[HANDLING_MOPED].handling = gGcHandlingSnapshots[HANDLING_BIKE].handling;
-		gGcHandlingSnapshots[HANDLING_MOPED].handling.nIdentifier = HANDLING_MOPED;
-		gGcHandlingSnapshots[HANDLING_MOPED].valid = true;
-		printf("[VEH-HANDLING-FALLBACK] dst=MOPED src=BIKE\n");
-	}else if(!gGcHandlingSnapshots[HANDLING_MOPED].valid &&
-	         gGcHandlingSnapshots[HANDLING_FREEWAY].valid){
-		gGcHandlingSnapshots[HANDLING_MOPED].handling = gGcHandlingSnapshots[HANDLING_FREEWAY].handling;
-		gGcHandlingSnapshots[HANDLING_MOPED].handling.nIdentifier = HANDLING_MOPED;
-		gGcHandlingSnapshots[HANDLING_MOPED].valid = true;
-		printf("[VEH-HANDLING-FALLBACK] dst=MOPED src=FREEWAY\n");
-	}
-	gGcHandlingSnapshotsInitialised = true;
-    printf("[GC-VEH-BUILD] wheelpos_local=1 trans_guard=1 accel_trace=1\n");
-	printf("[VEH-HANDLING-SNAPSHOT] captured handling table\n");
-	if(gGcHandlingSnapshots[HANDLING_ADMIRAL].valid){
-		tHandlingData *h = &gGcHandlingSnapshots[HANDLING_ADMIRAL].handling;
-		printf("[VEH-HANDLING-SNAPSHOT] ADMIRAL mass=%f turnMass=%f gears=%d maxVel=%f revVel=%f accel=%f\n",
-		       h->fMass, h->fTurnMass, (int)h->Transmission.nNumberOfGears,
-		       h->Transmission.fMaxVelocity, h->Transmission.fMaxReverseVelocity,
-		       h->Transmission.fEngineAcceleration);
-	}else
-		printf("[VEH-HANDLING-SNAPSHOT] ADMIRAL invalid\n");
-	if(gGcHandlingSnapshots[HANDLING_MAVERICK].valid){
-		tHandlingData *h = &gGcHandlingSnapshots[HANDLING_MAVERICK].handling;
-		printf("[VEH-HANDLING-SNAPSHOT] MAVERICK mass=%f turnMass=%f gears=%d maxVel=%f revVel=%f accel=%f\n",
-		       h->fMass, h->fTurnMass, (int)h->Transmission.nNumberOfGears,
-		       h->Transmission.fMaxVelocity, h->Transmission.fMaxReverseVelocity,
-		       h->Transmission.fEngineAcceleration);
-	}else
-		printf("[VEH-HANDLING-SNAPSHOT] MAVERICK invalid\n");
-}
-
-static tHandlingData*
-GcGetVehicleModelHandling(CVehicle *veh, int32 *outHandlingId)
-{
-	if(outHandlingId)
-		*outHandlingId = -1;
-	if(veh == nil)
-		return nil;
-
-	CVehicleModelInfo *mi = (CVehicleModelInfo*)CModelInfo::GetModelInfo(veh->GetModelIndex());
-	if(mi == nil)
-		return nil;
-	if(mi->m_handlingId < 0 || mi->m_handlingId >= NUMHANDLINGS)
-		return nil;
-	if(outHandlingId)
-		*outHandlingId = mi->m_handlingId;
-	return mod_HandlingManager.GetHandlingData((tVehicleType)mi->m_handlingId);
-}
-
-static void
-GcRebindVehicleHandling(CVehicle *veh, const char *stage)
-{
-	if(veh == nil)
-		return;
-
-	int32 modelHandlingId = -1;
-	tHandlingData *modelHandling = GcGetVehicleModelHandling(veh, &modelHandlingId);
-
-	if(!GcHandlingLooksValid(modelHandling)){
-		printf("[VEH-HANDLING-RESTORE] stage=%s veh=%p model=%d modelHandling=%d before mass=%f turnMass=%f gears=%d maxVel=%f revVel=%f snapInit=%d snapValid=%d\n",
-		       stage, (void*)veh, veh->GetModelIndex(), modelHandlingId,
-		       modelHandling ? modelHandling->fMass : 0.0f,
-		       modelHandling ? modelHandling->fTurnMass : 0.0f,
-		       modelHandling ? (int)modelHandling->Transmission.nNumberOfGears : -1,
-		       modelHandling ? modelHandling->Transmission.fMaxVelocity : 0.0f,
-		       modelHandling ? modelHandling->Transmission.fMaxReverseVelocity : 0.0f,
-		       gGcHandlingSnapshotsInitialised ? 1 : 0,
-		       modelHandlingId >= 0 && modelHandlingId < NUMHANDLINGS && gGcHandlingSnapshots[modelHandlingId].valid ? 1 : 0);
-		if(modelHandling != nil &&
-		   modelHandlingId >= 0 && modelHandlingId < NUMHANDLINGS &&
-		   gGcHandlingSnapshots[modelHandlingId].valid)
-			*modelHandling = gGcHandlingSnapshots[modelHandlingId].handling;
-		modelHandling = GcGetVehicleModelHandling(veh, &modelHandlingId);
-	}
-
-	if(!GcHandlingLooksValid(modelHandling)){
-		printf("[VEH-HANDLING-BAD] stage=%s veh=%p model=%d modelHandling=%d mass=%f turnMass=%f gears=%d maxVel=%f revVel=%f\n",
-		       stage, (void*)veh, veh->GetModelIndex(), modelHandlingId,
-		       modelHandling ? modelHandling->fMass : 0.0f,
-		       modelHandling ? modelHandling->fTurnMass : 0.0f,
-		       modelHandling ? (int)modelHandling->Transmission.nNumberOfGears : -1,
-		       modelHandling ? modelHandling->Transmission.fMaxVelocity : 0.0f,
-		       modelHandling ? modelHandling->Transmission.fMaxReverseVelocity : 0.0f);
-		return;
-	}
-
-	veh->pHandling = modelHandling;
-	veh->pFlyingHandling = mod_HandlingManager.GetFlyingPointer((uint8)modelHandlingId);
-	veh->pHandling->Transmission.InitGearRatios();
-	veh->m_fMass = veh->pHandling->fMass;
-	veh->m_fTurnMass = veh->pHandling->fTurnMass;
-	veh->m_vecCentreOfMass = veh->pHandling->CentreOfMass;
-	veh->m_fAirResistance = veh->pHandling->Dimension.x*veh->pHandling->Dimension.z/veh->m_fMass;
-	veh->m_fBuoyancy = veh->pHandling->fBuoyancy;
-
-	printf("[VEH-REBIND] stage=%s veh=%p model=%d modelHandling=%d gears=%d maxVel=%f revVel=%f mass=%f turnMass=%f\n",
-	       stage, (void*)veh, veh->GetModelIndex(), modelHandlingId,
-	       (int)veh->pHandling->Transmission.nNumberOfGears,
-	       veh->pHandling->Transmission.fMaxVelocity,
-	       veh->pHandling->Transmission.fMaxReverseVelocity,
-	       veh->m_fMass, veh->m_fTurnMass);
-}
-
-void
-GcVehicleDiag(CVehicle *veh, const char *stage)
-{
-	if(veh == nil || !GcVehicleDiagModel(veh->GetModelIndex()))
-		return;
-
-	const CVector &pos = veh->GetPosition();
-	bool posOk = GcVehicleFiniteVec(pos);
-	bool moveOk = GcVehicleFiniteVec(veh->m_vecMoveSpeed);
-	bool turnOk = GcVehicleFiniteVec(veh->m_vecTurnSpeed);
-	bool moveFrictionOk = GcVehicleFiniteVec(veh->m_vecMoveFriction);
-	bool turnFrictionOk = GcVehicleFiniteVec(veh->m_vecTurnFriction);
-	bool moveAvgOk = GcVehicleFiniteVec(veh->m_vecMoveSpeedAvg);
-	bool turnAvgOk = GcVehicleFiniteVec(veh->m_vecTurnSpeedAvg);
-	bool massOk = GcVehicleFiniteFloat(veh->m_fMass) && veh->m_fMass > 0.0001f;
-	bool turnMassOk = GcVehicleFiniteFloat(veh->m_fTurnMass) && veh->m_fTurnMass > 0.0001f;
-	bool airOk = GcVehicleFiniteFloat(veh->m_fAirResistance);
-	bool buoyancyOk = GcVehicleFiniteFloat(veh->m_fBuoyancy);
-	bool comOk = GcVehicleFiniteVec(veh->m_vecCentreOfMass);
-	bool handlingOk = veh->pHandling != nil;
-	bool transOk = GcHandlingLooksValid(veh->pHandling);
-	int32 handlingId = handlingOk ? veh->pHandling->nIdentifier : -1;
-	int32 modelHandlingId = -1;
-	tHandlingData *modelHandling = GcGetVehicleModelHandling(veh, &modelHandlingId);
-	if(!gGcHandlingSnapshotsInitialised &&
-	   GcHandlingLooksValid(modelHandling) &&
-	   modelHandlingId >= 0 && modelHandlingId < NUMHANDLINGS &&
-	   !gGcHandlingSnapshots[modelHandlingId].valid){
-		gGcHandlingSnapshots[modelHandlingId].handling = *modelHandling;
-		gGcHandlingSnapshots[modelHandlingId].valid = true;
-	}
-	if(posOk && moveOk && turnOk &&
-	   moveFrictionOk && turnFrictionOk &&
-	   moveAvgOk && turnAvgOk &&
-	   massOk && turnMassOk && airOk && buoyancyOk && comOk &&
-	   (!handlingOk || transOk))
-		return;
-
-	printf("[VEH-NAN] stage=%s veh=%p model=%d status=%u handling=%d modelHandling=%d pos=(%f,%f,%f) move=(%f,%f,%f) turn=(%f,%f,%f) "
-	       "mf=(%f,%f,%f) tf=(%f,%f,%f) mass=%f turnMass=%f air=%f buoy=%f gears=%d maxVel=%f revVel=%f "
-	       "health=%f gas=%f brake=%f steer=%f upside=%d touching=%d\n",
-	       stage, (void*)veh, veh->GetModelIndex(), veh->GetStatus(), handlingId, modelHandlingId,
-	       pos.x, pos.y, pos.z,
-	       veh->m_vecMoveSpeed.x, veh->m_vecMoveSpeed.y, veh->m_vecMoveSpeed.z,
-	       veh->m_vecTurnSpeed.x, veh->m_vecTurnSpeed.y, veh->m_vecTurnSpeed.z,
-	       veh->m_vecMoveFriction.x, veh->m_vecMoveFriction.y, veh->m_vecMoveFriction.z,
-	       veh->m_vecTurnFriction.x, veh->m_vecTurnFriction.y, veh->m_vecTurnFriction.z,
-	       veh->m_fMass, veh->m_fTurnMass, veh->m_fAirResistance, veh->m_fBuoyancy,
-	       handlingOk ? (int)veh->pHandling->Transmission.nNumberOfGears : -1,
-	       handlingOk ? veh->pHandling->Transmission.fMaxVelocity : 0.0f,
-	       handlingOk ? veh->pHandling->Transmission.fMaxReverseVelocity : 0.0f,
-	       veh->m_fHealth, veh->m_fGasPedal, veh->m_fBrakePedal, veh->m_fSteerAngle,
-	       veh->IsUpsideDown(), veh->bTouchingWater);
-
-	if(!moveOk)
-		veh->m_vecMoveSpeed = CVector(0.0f, 0.0f, 0.0f);
-	if(!turnOk)
-		veh->m_vecTurnSpeed = CVector(0.0f, 0.0f, 0.0f);
-	if(!moveFrictionOk)
-		veh->m_vecMoveFriction = CVector(0.0f, 0.0f, 0.0f);
-	if(!turnFrictionOk)
-		veh->m_vecTurnFriction = CVector(0.0f, 0.0f, 0.0f);
-	if(!moveAvgOk)
-		veh->m_vecMoveSpeedAvg = CVector(0.0f, 0.0f, 0.0f);
-	if(!turnAvgOk)
-		veh->m_vecTurnSpeedAvg = CVector(0.0f, 0.0f, 0.0f);
-	if(!transOk || !massOk || !turnMassOk || !airOk || !buoyancyOk || !comOk)
-		GcRebindVehicleHandling(veh, stage);
-}
 #endif
 
 void *CVehicle::operator new(size_t sz) throw() { return CPools::GetVehiclePool()->New();  }
@@ -1224,15 +922,6 @@ CVehicle::ProcessWheel(CVector &wheelFwd, CVector &wheelRight, CVector &wheelCon
 		float impulse = speed*m_fMass;
 		float turnImpulse = turnSpeed*GetMass(wheelContactPoint, turnDirection);
 
-#if REAL_GAMECUBE
-		if(GcShouldTraceWheelForces(this)){
-			printf("[ADMIRAL-WHEEL] frame=%u wheel=%d thrust=%f brake=%f adhesion=%f csFwd=%f csRight=%f fwdForce=%f rightForce=%f impulse=%f turnImpulse=%f wheelState=%d wheelStatus=%u wog=%d dt=%f\n",
-			       CTimer::GetFrameCounter(), (int)wheelId, thrust, brake, adhesion,
-			       contactSpeedFwd, contactSpeedRight, fwd, right,
-			       impulse, turnImpulse, (int)*wheelState, (uint32)wheelStatus,
-			       wheelsOnGround, CTimer::GetTimeStep());
-		}
-#endif
 		ApplyMoveForce(impulse * direction);
 		ApplyTurnForce(turnImpulse * turnDirection, wheelContactPoint);
 	}
@@ -1315,7 +1004,7 @@ CVehicle::ProcessBikeWheel(CVector &wheelFwd, CVector &wheelRight, CVector &whee
 #ifdef FIX_BUGS
 		// contactSpeedFwd is independent of framerate but fwd has timestep as a factor
 		// so we probably have to fix this
-		// better get rid of it here too
+		// see above
 		//fwd *= CTimer::GetTimeStepFix();
 #endif
 
@@ -2151,9 +1840,6 @@ CVehicle::SetDriver(CPed *driver)
 {
 	pDriver = driver;
 	pDriver->RegisterReference((CEntity**)&pDriver);
-#if REAL_GAMECUBE
-	GcTraceMissionIntroSeat(this, "set-driver", driver, -1);
-#endif
 
 	if(bFreebies && driver == FindPlayerPed()){
 		bFreebies = false;
@@ -2211,9 +1897,6 @@ CVehicle::AddPassenger(CPed *passenger)
 		if(pPassengers[i] == nil){
 			pPassengers[i] = passenger;
 			m_nNumPassengers++;
-#if REAL_GAMECUBE
-			GcTraceMissionIntroSeat(this, "add-passenger-auto", passenger, i);
-#endif
 			return true;
 		}
 	return false;
@@ -2236,9 +1919,6 @@ CVehicle::AddPassenger(CPed *passenger, uint8 n)
 	if(n < m_nNumMaxPassengers && pPassengers[n] == nil){
 		pPassengers[n] = passenger;
 		m_nNumPassengers++;
-#if REAL_GAMECUBE
-		GcTraceMissionIntroSeat(this, "add-passenger-slot", passenger, n);
-#endif
 		return true;
 	}
 	return false;
@@ -2247,9 +1927,6 @@ CVehicle::AddPassenger(CPed *passenger, uint8 n)
 void
 CVehicle::RemoveDriver(void)
 {
-#if REAL_GAMECUBE
-	GcTraceMissionIntroSeat(this, "remove-driver", pDriver, -1);
-#endif
 #ifdef FIX_BUGS
 	if (GetStatus() != STATUS_WRECKED)
 #endif
@@ -2276,9 +1953,6 @@ CVehicle::RemoveDriver(void)
 void
 CVehicle::RemovePassenger(CPed *p)
 {
-#if REAL_GAMECUBE
-	GcTraceMissionIntroSeat(this, "remove-passenger", p, -1);
-#endif
 	if (IsTrain()){
 		for (int i = 0; i < ARRAY_SIZE(pPassengers); i++){
 			if (pPassengers[i] == p) {

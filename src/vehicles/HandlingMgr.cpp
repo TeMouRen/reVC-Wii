@@ -141,7 +141,6 @@ cHandlingDataMgr::LoadHandlingData(void)
 	char line[201];	// weird value
 	char delim[4];	// not sure
 	char *word;
-	ssize_t loadLen;
 	int field, handlingId;
 	int keepGoing;
 	tHandlingData *handling;
@@ -150,30 +149,20 @@ cHandlingDataMgr::LoadHandlingData(void)
 	tBikeHandlingData *bikeHandling;
 
 	CFileMgr::SetDir("DATA");
-	loadLen = CFileMgr::LoadFile(HandlingFilename, work_buff, sizeof(work_buff), "r");
+	CFileMgr::LoadFile(HandlingFilename, work_buff, sizeof(work_buff), "r");
 	CFileMgr::SetDir("");
-	if(loadLen <= 0){
-#if REAL_GAMECUBE
-		printf("[HANDLING-LOAD] failed len=%d\n", (int)loadLen);
-#endif
-		return;
-	}
-#if REAL_GAMECUBE
-	printf("[HANDLING-LOAD] bytes=%d\n", (int)loadLen);
-#endif
 
 	start = (char*)work_buff;
-	end = start;
+	end = start+1;
 	handling = nil;
 	flyingHandling = nil;
 	boatHandling = nil;
 	bikeHandling = nil;
 	keepGoing = 1;
 
-	while(keepGoing && start < (char*)work_buff + loadLen){
+	while(keepGoing){
 		// find end of line
-		while(end < (char*)work_buff + loadLen && *end != '\n')
-			end++;
+		while(*end != '\n') end++;
 
 		// get line
 		int32 lineLength = end - start;
@@ -181,14 +170,10 @@ cHandlingDataMgr::LoadHandlingData(void)
 		// CRs are left untouched. we assume every line ends in one
 		lineLength--;
 #endif
-		if(lineLength > 0 && start[lineLength-1] == '\r')
-			lineLength--;
-		if(lineLength >= (int32)sizeof(line))
-			lineLength = sizeof(line) - 1;
 		strncpy(line, start, lineLength);
 		line[lineLength] = '\0';
-		start = end < (char*)work_buff + loadLen ? end+1 : end;
-		end = start;
+		start = end+1;
+		end = start+1;
 
 		// yeah, this is kinda crappy
 		if(strcmp(line, ";the end") == 0)
@@ -347,9 +332,6 @@ cHandlingDataMgr::LoadHandlingData(void)
 			}
 		}
 	}
-#if REAL_GAMECUBE
-	printf("[HANDLING-LOAD] done\n");
-#endif
 }
 
 int

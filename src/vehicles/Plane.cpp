@@ -102,11 +102,6 @@ void
 CPlane::SetModelIndex(uint32 id)
 {
 	CVehicle::SetModelIndex(id);
-	if(m_rwObject == nil || RwObjectGetType(m_rwObject) != rpCLUMP){
-		printf("[VEH-INIT] Plane SetModelIndex aborted: no clump for model %u\n",
-		       (unsigned)id);
-		return;
-	}
 #ifdef CPLANE_ROTORS
 	int i;
 	for(i = 0; i < NUM_PLANE_NODES; i++)

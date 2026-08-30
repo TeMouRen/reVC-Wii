@@ -1807,18 +1807,15 @@ CPlayerPed::ProcessControl(void)
 					if (padUsed)
 						PlayerControlSniper(padUsed);
 
-				}
-#ifndef GAMECUBE
-				else if (TheCamera.Cams[0].Using3rdPersonMouseCam()
+				} else if (TheCamera.Cams[0].Using3rdPersonMouseCam()
 #ifdef FREE_CAM
 					&& !CCamera::bFreeCam
 #endif
 					) {
 					if (padUsed)
 						PlayerControl1stPersonRunAround(padUsed);
-				}
-#endif
-				else if (m_nPedState == PED_FIGHT) {
+
+				} else if (m_nPedState == PED_FIGHT) {
 					if (padUsed)
 						PlayerControlFighter(padUsed);
 

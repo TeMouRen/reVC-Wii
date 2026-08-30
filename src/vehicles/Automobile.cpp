@@ -5,10 +5,8 @@
 #include "RwHelper.h"
 #include "Pad.h"
 #include "ModelIndices.h"
-#include "ModelInfo.h"
 #include "VisibilityPlugins.h"
 #include "DMAudio.h"
-#include "sampman.h"
 #include "Clock.h"
 #include "Timecycle.h"
 #include "ZoneCull.h"
@@ -19,7 +17,6 @@
 #include "Explosion.h"
 #include "Particle.h"
 #include "ParticleObject.h"
-#include "Game.h"
 #include "Glass.h"
 #include "Antennas.h"
 #include "Skidmarks.h"
@@ -47,7 +44,6 @@
 #include "AnimManager.h"
 #include "RpAnimBlend.h"
 #include "AnimBlendAssociation.h"
-#include "CutsceneMgr.h"
 #include "Ped.h"
 #include "PlayerPed.h"
 #include "Object.h"
@@ -57,328 +53,6 @@
 #include "SaveBuf.h"
 
 bool bAllCarCheat;
-#if REAL_GAMECUBE
-static bool gLoggedBadAutomobileGear;
-static bool gLoggedBadAutomobileState;
-static bool gLoggedBadAdmiralSuspension;
-
-static bool
-GcAutomobileFinite(float f)
-{
-	return f == f && f > -1.0e20f && f < 1.0e20f;
-}
-
-static bool
-GcAutomobileFiniteVec(const CVector &v)
-{
-	return GcAutomobileFinite(v.x) && GcAutomobileFinite(v.y) && GcAutomobileFinite(v.z);
-}
-
-static float
-GcAutomobileAbs(float f)
-{
-	return f < 0.0f ? -f : f;
-}
-
-static bool
-GcStageEquals(const char *a, const char *b)
-{
-	while (*a != '\0' && *b != '\0' && *a == *b) {
-		a++;
-		b++;
-	}
-	return *a == '\0' && *b == '\0';
-}
-
-static bool
-GcIsScriptedIntroAdmiral(CAutomobile *car)
-{
-	if(car == nil || car->GetModelIndex() != MI_ADMIRAL)
-		return false;
-	if(car->VehicleCreatedBy != MISSION_VEHICLE)
-		return false;
-	if(car->GetStatus() == STATUS_PLAYER ||
-	   car->GetStatus() == STATUS_PLAYER_REMOTE ||
-	   car->GetStatus() == STATUS_PLAYER_DISABLED ||
-	   car->GetStatus() == STATUS_WRECKED)
-		return false;
-
-	if(CCutsceneMgr::IsRunning() || CGame::playingIntro || CCutsceneMgr::ms_cutsceneLoadStatus != 0)
-		return true;
-
-	switch(car->AutoPilot.m_nCarMission){
-	case MISSION_NONE:
-	case MISSION_WAITFORDELETION:
-	case MISSION_STOP_FOREVER:
-		return false;
-	default:
-		return true;
-	}
-}
-
-static bool
-GcCutsceneVehicleActive(CAutomobile *car)
-{
-	return GcIsScriptedIntroAdmiral(car) ||
-		(car != nil &&
-		(CCutsceneMgr::IsRunning() || CGame::playingIntro) &&
-		car->GetStatus() != STATUS_PLAYER &&
-		car->GetStatus() != STATUS_PLAYER_REMOTE &&
-		car->GetStatus() != STATUS_PLAYER_DISABLED);
-}
-
-static bool
-GcShouldTracePlayerVehicle(CAutomobile *car)
-{
-	if(car == nil)
-		return false;
-	return car->GetStatus() == STATUS_PLAYER || car->GetStatus() == STATUS_PLAYER_REMOTE;
-}
-
-static bool
-GcShouldTraceVehicleControl(CAutomobile *car, int32 rawSteer, int32 rawAccel, int32 rawBrake, bool controlsDisabled)
-{
-#ifdef WII
-	return false;
-#endif
-	static CAutomobile *sLastCar;
-	static int32 sLastRawSteer;
-	static int32 sLastRawAccel;
-	static int32 sLastRawBrake;
-	static uint8 sLastGear;
-	static uint8 sLastDisabled;
-
-	if(!GcShouldTracePlayerVehicle(car))
-		return false;
-
-	bool active = rawSteer != 0 || rawAccel != 0 || rawBrake != 0 || controlsDisabled ||
-		car->bIsHandbrakeOn || car->m_fGasPedal > 0.01f || car->m_fBrakePedal > 0.01f;
-	bool changed = car != sLastCar ||
-		rawSteer != sLastRawSteer ||
-		rawAccel != sLastRawAccel ||
-		rawBrake != sLastRawBrake ||
-		car->m_nCurrentGear != sLastGear ||
-		controlsDisabled != (sLastDisabled != 0);
-	bool periodic = active ? (CTimer::GetFrameCounter() % 12) == 0 : (CTimer::GetFrameCounter() % 45) == 0;
-
-	if(!(changed || periodic))
-		return false;
-
-	sLastCar = car;
-	sLastRawSteer = rawSteer;
-	sLastRawAccel = rawAccel;
-	sLastRawBrake = rawBrake;
-	sLastGear = car->m_nCurrentGear;
-	sLastDisabled = controlsDisabled ? 1 : 0;
-	return true;
-}
-
-static bool
-GcShouldTraceVehicleDrive(CAutomobile *car, float driveAccelFinal)
-{
-#ifdef WII
-	return false;
-#endif
-	if(!GcShouldTracePlayerVehicle(car))
-		return false;
-
-	bool active = GcAutomobileAbs(driveAccelFinal) > 0.01f ||
-		car->m_fGasPedal > 0.01f ||
-		car->m_fBrakePedal > 0.01f ||
-		car->bIsHandbrakeOn;
-	return active ? (CTimer::GetFrameCounter() % 15) == 0 : (CTimer::GetFrameCounter() % 60) == 0;
-}
-
-static bool
-GcShouldTraceAdmiralPhysical(CAutomobile *car, const char *stage)
-{
-#ifdef WII
-	return false;
-#endif
-	static CAutomobile *sLastCar;
-	static uint32 sLastMission;
-	static uint32 sLastTemp;
-	static uint32 sLastCurrentRoute;
-	static uint32 sLastNextRoute;
-	static uint32 sLastCurrentPath;
-	static uint32 sLastNextPath;
-	static uint8 sLastGear;
-	static uint8 sLastDriveWheels;
-	static uint8 sLastHand;
-	static uint8 sLastCollided;
-	static uint8 sLastHitWall;
-
-	if(!GcIsScriptedIntroAdmiral(car))
-		return false;
-	if(!GcStageEquals(stage, "auto-after-steer-ai") &&
-	   !GcStageEquals(stage, "auto-after-physical"))
-		return false;
-
-	float speed2d = Sqrt(car->GetMoveSpeed().x * car->GetMoveSpeed().x +
-		car->GetMoveSpeed().y * car->GetMoveSpeed().y) * GAME_SPEED_TO_CARAI_SPEED;
-	bool stalled = car->m_fGasPedal > 0.15f && speed2d < 0.15f;
-	bool stateChanged = car != sLastCar ||
-		(uint32)car->AutoPilot.m_nCarMission != sLastMission ||
-		(uint32)car->AutoPilot.m_nTempAction != sLastTemp ||
-		(uint32)car->AutoPilot.m_nCurrentRouteNode != sLastCurrentRoute ||
-		(uint32)car->AutoPilot.m_nNextRouteNode != sLastNextRoute ||
-		(uint32)car->AutoPilot.m_nCurrentPathNodeInfo != sLastCurrentPath ||
-		(uint32)car->AutoPilot.m_nNextPathNodeInfo != sLastNextPath ||
-		car->m_nCurrentGear != sLastGear ||
-		car->m_nDriveWheelsOnGround != sLastDriveWheels ||
-		(car->bIsHandbrakeOn ? 1 : 0) != sLastHand ||
-		(car->bHasCollided ? 1 : 0) != sLastCollided ||
-		(car->bHasHitWall ? 1 : 0) != sLastHitWall;
-	bool periodic = (CTimer::GetFrameCounter() % 20) == 0;
-
-	if(!(stateChanged || stalled || car->bHasCollided || car->bHasHitWall || periodic))
-		return false;
-
-	sLastCar = car;
-	sLastMission = (uint32)car->AutoPilot.m_nCarMission;
-	sLastTemp = (uint32)car->AutoPilot.m_nTempAction;
-	sLastCurrentRoute = (uint32)car->AutoPilot.m_nCurrentRouteNode;
-	sLastNextRoute = (uint32)car->AutoPilot.m_nNextRouteNode;
-	sLastCurrentPath = (uint32)car->AutoPilot.m_nCurrentPathNodeInfo;
-	sLastNextPath = (uint32)car->AutoPilot.m_nNextPathNodeInfo;
-	sLastGear = car->m_nCurrentGear;
-	sLastDriveWheels = car->m_nDriveWheelsOnGround;
-	sLastHand = car->bIsHandbrakeOn ? 1 : 0;
-	sLastCollided = car->bHasCollided ? 1 : 0;
-	sLastHitWall = car->bHasHitWall ? 1 : 0;
-	return true;
-}
-
-static const char*
-GcVehicleTraceKind(CAutomobile *car)
-{
-	if(car == nil)
-		return "nil";
-	if(car->GetStatus() == STATUS_PLAYER || car->GetStatus() == STATUS_PLAYER_REMOTE)
-		return "player";
-	if(GcIsScriptedIntroAdmiral(car))
-		return "intro-admiral";
-	return "other";
-}
-
-static void
-GcVehicleControlTrace(CAutomobile *car, const char *stage, uint8 pad, float speedDot, int32 rawSteer,
-                      int32 rawAccel, int32 rawBrake, float accelInput, float steerInputBefore,
-                      float steerInputAfter, float fValue, bool controlsDisabled)
-{
-	if(!GcShouldTraceVehicleControl(car, rawSteer, rawAccel, rawBrake, controlsDisabled))
-		return;
-
-	const CVector &move = car->GetMoveSpeed();
-	const CVector &fwd = car->GetForward();
-	printf("[VEH-CTRL] kind=%s stage=%s frame=%u pad=%u status=%u speedDot=%f rawSteer=%d steerTarget=%f steerBefore=%f steerAfter=%f fValue=%f lock=%f steerAngle=%f rawAccel=%d rawBrake=%d accelIn=%f gas=%f brake=%f hand=%d burnout=%d disabled=%d gear=%u move=(%f,%f,%f) fwd=(%f,%f,%f)\n",
-	       GcVehicleTraceKind(car), stage, CTimer::GetFrameCounter(), (uint32)pad, car->GetStatus(),
-	       speedDot, rawSteer, -rawSteer/128.0f, steerInputBefore, steerInputAfter, fValue,
-	       car->pHandling ? car->pHandling->fSteeringLock : 0.0f, car->m_fSteerAngle,
-	       rawAccel, rawBrake, accelInput, car->m_fGasPedal, car->m_fBrakePedal,
-	       car->bIsHandbrakeOn ? 1 : 0, car->m_doingBurnout, controlsDisabled ? 1 : 0,
-	       (uint32)car->m_nCurrentGear,
-	       move.x, move.y, move.z, fwd.x, fwd.y, fwd.z);
-}
-
-static void
-GcVehicleDriveTrace(CAutomobile *car, const char *stage, float fwdSpeed, float driveAccelRaw,
-                    float driveAccelFinal, float brake, float traction,
-                    float brakeBiasFront, float brakeBiasRear,
-                    float tractionBiasFront, float tractionBiasRear, bool gripCheat)
-{
-	if(!GcShouldTraceVehicleDrive(car, driveAccelFinal))
-		return;
-
-	printf("[VEH-DRIVE] kind=%s stage=%s frame=%u status=%u gear=%u gearTime=%f fwdSpeed=%f gas=%f brakePed=%f hand=%d grip=%d accelRaw=%f accelFinal=%f brake=%f traction=%f bb=(%f,%f) tb=(%f,%f) forceMul=%f mass=%f driveType=%c wheels=%u drive=%u surf=(%u,%u,%u,%u)\n",
-	       GcVehicleTraceKind(car), stage, CTimer::GetFrameCounter(), car->GetStatus(),
-	       (uint32)car->m_nCurrentGear, car->m_fChangeGearTime, fwdSpeed,
-	       car->m_fGasPedal, car->m_fBrakePedal, car->bIsHandbrakeOn ? 1 : 0, gripCheat ? 1 : 0,
-	       driveAccelRaw, driveAccelFinal, brake, traction,
-	       brakeBiasFront, brakeBiasRear, tractionBiasFront, tractionBiasRear,
-	       car->m_fForceMultiplier, car->m_fMass,
-	       car->pHandling ? car->pHandling->Transmission.nDriveType : '?',
-	       (uint32)car->m_nWheelsOnGround, (uint32)car->m_nDriveWheelsOnGround,
-	       (uint32)car->m_aWheelColPoints[0].surfaceB, (uint32)car->m_aWheelColPoints[1].surfaceB,
-	       (uint32)car->m_aWheelColPoints[2].surfaceB, (uint32)car->m_aWheelColPoints[3].surfaceB);
-}
-
-
-static void
-GcAdmiralCutsceneTrace(CAutomobile *car, const char *stage)
-{
-	if(car == nil || car->GetModelIndex() != MI_ADMIRAL)
-		return;
-	if(!GcShouldTraceAdmiralPhysical(car, stage))
-		return;
-
-	const CVector &pos = car->GetPosition();
-	const CVector &move = car->GetMoveSpeed();
-	const CVector &turn = car->GetTurnSpeed();
-	const CVector &fwd = car->GetForward();
-	float dx = car->AutoPilot.m_vecDestinationCoors.x - pos.x;
-	float dy = car->AutoPilot.m_vecDestinationCoors.y - pos.y;
-	float dist2d = Sqrt(dx*dx + dy*dy);
-	float speed2d = Sqrt(move.x*move.x + move.y*move.y) * GAME_SPEED_TO_CARAI_SPEED;
-	float fwdSpeed = DotProduct(move, fwd) * GAME_SPEED_TO_CARAI_SPEED;
-
-	float accel = 0.0f;
-	if(car->pHandling){
-		uint8 gear = car->m_nCurrentGear;
-		float gearTime = car->m_fChangeGearTime;
-		float fwdSpeed = DotProduct(car->GetMoveSpeed(), car->GetForward());
-		accel = car->pHandling->Transmission.CalculateDriveAcceleration(
-			car->m_fGasPedal, gear, gearTime, fwdSpeed, false);
-	}
-
-	float traction = car->GetStatus() == STATUS_PHYSICS ? 0.004f * car->m_fTraction : 0.004f;
-	traction *= car->pHandling ? car->pHandling->fTractionMultiplier / 4.0f : 0.0f;
-	traction /= car->m_fForceMultiplier != 0.0f ? car->m_fForceMultiplier : 1.0f;
-	float flAdhesion = CSurfaceTable::GetAdhesiveLimit(car->m_aWheelColPoints[CARWHEEL_FRONT_LEFT]) * traction;
-	bool stalled = car->m_fGasPedal > 0.15f && speed2d < 0.15f;
-
-	printf("[ADMIRAL-PHYS] stage=%s frame=%u status=%u mission=%u temp=%u style=%u cruise=%u count=%d nodes=%d/%d/%d path=%u/%u/%u lanes=%d/%d dest=(%f,%f,%f) dist=%f pos=(%f,%f,%f) move=(%f,%f,%f) turn=(%f,%f,%f) speed2d=%f fwd2d=%f gas=%f brake=%f steer=%f hand=%d gear=%u accel=%f wheels=%u drive=%u surf=(%u,%u,%u,%u) adh0=%f collide=%d wall=%d safe=%d postponed=%d sand=%d frozen=%d stalled=%d\n",
-	       stage, CTimer::GetFrameCounter(), car->GetStatus(),
-	       (uint32)car->AutoPilot.m_nCarMission,
-	       (uint32)car->AutoPilot.m_nTempAction,
-	       (uint32)car->AutoPilot.m_nDrivingStyle,
-	       (uint32)car->AutoPilot.m_nCruiseSpeed,
-	       (int)car->AutoPilot.m_nPathFindNodesCount,
-	       car->AutoPilot.m_nPrevRouteNode,
-	       car->AutoPilot.m_nCurrentRouteNode,
-	       car->AutoPilot.m_nNextRouteNode,
-	       car->AutoPilot.m_nPreviousPathNodeInfo,
-	       car->AutoPilot.m_nCurrentPathNodeInfo,
-	       car->AutoPilot.m_nNextPathNodeInfo,
-	       (int)car->AutoPilot.m_nCurrentLane,
-	       (int)car->AutoPilot.m_nNextLane,
-	       car->AutoPilot.m_vecDestinationCoors.x,
-	       car->AutoPilot.m_vecDestinationCoors.y,
-	       car->AutoPilot.m_vecDestinationCoors.z,
-	       dist2d,
-	       pos.x, pos.y, pos.z,
-	       move.x, move.y, move.z,
-	       turn.x, turn.y, turn.z,
-	       speed2d,
-	       fwdSpeed,
-	       car->m_fGasPedal, car->m_fBrakePedal, car->m_fSteerAngle,
-	       car->bIsHandbrakeOn ? 1 : 0,
-	       (uint32)car->m_nCurrentGear,
-	       accel,
-	       (uint32)car->m_nWheelsOnGround,
-	       (uint32)car->m_nDriveWheelsOnGround,
-	       (uint32)car->m_aWheelColPoints[0].surfaceB, (uint32)car->m_aWheelColPoints[1].surfaceB,
-	       (uint32)car->m_aWheelColPoints[2].surfaceB, (uint32)car->m_aWheelColPoints[3].surfaceB,
-	       flAdhesion,
-	       car->bHasCollided ? 1 : 0,
-	       car->bHasHitWall ? 1 : 0,
-	       car->bIsInSafePosition ? 1 : 0,
-	       car->bWasPostponed ? 1 : 0,
-	       car->bStuckInSand ? 1 : 0,
-	       car->bIsFrozen ? 1 : 0,
-	       stalled ? 1 : 0);
-}
-#endif
 
 #if defined ANDROID
 int16 g_usLastProcessedModelIndexAutomobile = 0;
@@ -433,17 +107,6 @@ CAutomobile::CAutomobile(int32 id, uint8 CreatedBy)
 
 	pHandling = mod_HandlingManager.GetHandlingData((tVehicleType)mi->m_handlingId);
 	pFlyingHandling =  mod_HandlingManager.GetFlyingPointer((tVehicleType)mi->m_handlingId);
-#if REAL_GAMECUBE
-	if(id == MI_ADMIRAL){
-		printf("[VEH-INIT] auto ctor veh=%p model=%d name=%s handlingId=%d type=%d gears=%u maxVel=%f mass=%f\n",
-		       this, id, mi ? mi->GetModelName() : "<null>",
-		       mi ? mi->m_handlingId : -1,
-		       mi ? mi->m_vehicleType : -1,
-		       pHandling ? (uint32)pHandling->Transmission.nNumberOfGears : 0,
-		       pHandling ? pHandling->Transmission.fMaxVelocity : 0.0f,
-		       pHandling ? pHandling->fMass : 0.0f);
-	}
-#endif
 
 	m_auto_unused1 = 20.0f;
 	m_auto_unused2 = 0;
@@ -583,11 +246,6 @@ void
 CAutomobile::SetModelIndex(uint32 id)
 {
 	CVehicle::SetModelIndex(id);
-	if(m_rwObject == nil || RwObjectGetType(m_rwObject) != rpCLUMP){
-		printf("[VEH-INIT] Automobile SetModelIndex aborted: no clump for model %u\n",
-		       (unsigned)id);
-		return;
-	}
 	SetupModelNodes();
 }
 
@@ -605,10 +263,6 @@ CVector vecDAMAGE_ENGINE_POS_BIG(-0.5f, -0.3f, 0.0f);
 void
 CAutomobile::ProcessControl(void)
 {
-#if REAL_GAMECUBE
-	GcVehicleDiag(this, "auto-begin");
-	GcAdmiralCutsceneTrace(this, "auto-begin");
-#endif
 	int i;
 	float wheelRot;
 	CColModel *colModel;
@@ -699,9 +353,6 @@ CAutomobile::ProcessControl(void)
 
 	AutoPilot.m_bSlowedDownBecauseOfCars = false;
 	AutoPilot.m_bSlowedDownBecauseOfPeds = false;
-#if REAL_GAMECUBE
-	const bool gcCutsceneVehicle = GcCutsceneVehicleActive(this);
-#endif
 
 	// Set Center of Mass to make car more stable
 	if(strongGrip1 || bCheat3)
@@ -713,9 +364,6 @@ CAutomobile::ProcessControl(void)
 
 	// Park car
 	if(bCanPark && !bParking && VehicleCreatedBy != MISSION_VEHICLE && AutoPilot.m_nCarMission == MISSION_CRUISE &&
-#if REAL_GAMECUBE
-	   !gcCutsceneVehicle &&
-#endif
 	   ((CTimer::GetFrameCounter() + m_randomSeed)&0xF) == 0 && !IsTaxi()){
 		CVector parkPosition = GetPosition() + 3.0f*GetRight() + 10.0f*GetForward();
 		CEntity *ent = nil;
@@ -819,29 +467,7 @@ CAutomobile::ProcessControl(void)
 
 	case STATUS_SIMPLE:
 		CCarAI::UpdateCarAI(this);
-#if REAL_GAMECUBE
-		if(!gcCutsceneVehicle)
-			CPhysical::ProcessControl();
-		else{
-			bHasContacted = false;
-			bIsInSafePosition = true;
-			bWasPostponed = false;
-			bHasHitWall = false;
-			m_nCollisionRecords = 0;
-			bHasCollided = false;
-			m_nDamagePieceType = 0;
-			m_fDamageImpulse = 0.0f;
-			m_pDamageEntity = nil;
-			m_vecTurnSpeed = CVector(0.0f, 0.0f, 0.0f);
-			m_vecMoveFriction = CVector(0.0f, 0.0f, 0.0f);
-			m_vecTurnFriction = CVector(0.0f, 0.0f, 0.0f);
-		}
-#else
 		CPhysical::ProcessControl();
-#endif
-#if REAL_GAMECUBE
-		GcVehicleDiag(this, "auto-simple-after-physical");
-#endif
 		CCarCtrl::UpdateCarOnRails(this);
 
 		m_nWheelsOnGround = 4;
@@ -858,30 +484,12 @@ CAutomobile::ProcessControl(void)
 		ReduceHornCounter();
 		bVehicleColProcessed = false;
 		bAudioChangingGear = false;
-#if REAL_GAMECUBE
-		GcAdmiralCutsceneTrace(this, "auto-simple-end");
-#endif
 		// that's all we do for simple vehicles
 		return;
 
 	case STATUS_PHYSICS:
 		CCarAI::UpdateCarAI(this);
 		CCarCtrl::SteerAICarWithPhysics(this);
-#if REAL_GAMECUBE
-		if(gcCutsceneVehicle){
-			bIsBeingCarJacked = false;
-			bStuckInSand = false;
-			bIsHandbrakeOn = false;
-			bHasCollided = false;
-			bHasHitWall = false;
-			m_nDamagePieceType = 0;
-			m_fDamageImpulse = 0.0f;
-			m_pDamageEntity = nil;
-			AutoPilot.m_bSlowedDownBecauseOfCars = false;
-			AutoPilot.m_bSlowedDownBecauseOfPeds = false;
-		}
-		GcAdmiralCutsceneTrace(this, "auto-after-steer-ai");
-#endif
 		PlayHornIfNecessary();
 
 		if(bIsBeingCarJacked){
@@ -890,9 +498,6 @@ CAutomobile::ProcessControl(void)
 			bIsHandbrakeOn = true;
 		}
 
-#if REAL_GAMECUBE
-		if(!gcCutsceneVehicle)
-#endif
 		if(m_aSuspensionSpringRatio[0] < 1.0f && CSurfaceTable::GetAdhesionGroup(m_aWheelColPoints[0].surfaceB) == ADHESIVE_SAND ||
 		   m_aSuspensionSpringRatio[1] < 1.0f && CSurfaceTable::GetAdhesionGroup(m_aWheelColPoints[1].surfaceB) == ADHESIVE_SAND ||
 		   m_aSuspensionSpringRatio[2] < 1.0f && CSurfaceTable::GetAdhesionGroup(m_aWheelColPoints[2].surfaceB) == ADHESIVE_SAND ||
@@ -1128,15 +733,8 @@ CAutomobile::ProcessControl(void)
 		}
 
 		CPhysical::ProcessControl();
-#if REAL_GAMECUBE
-		GcVehicleDiag(this, "auto-after-physical");
-		GcAdmiralCutsceneTrace(this, "auto-after-physical");
-#endif
 
 		ProcessBuoyancy();
-#if REAL_GAMECUBE
-		GcVehicleDiag(this, "auto-after-buoyancy");
-#endif
 
 		// Rescale spring ratios, i.e. subtract wheel radius
 		for(i = 0; i < 4; i++){
@@ -1241,44 +839,8 @@ CAutomobile::ProcessControl(void)
 		fwdSpeed = DotProduct(m_vecMoveSpeed, GetForward());
 		if(!strongGrip1 && !CVehicle::bCheat3)
 			gripCheat = false;
-#if REAL_GAMECUBE
-		if(!GcAutomobileFiniteVec(m_vecMoveSpeed) ||
-		   !GcAutomobileFiniteVec(m_vecTurnSpeed) ||
-		   !GcAutomobileFinite(fwdSpeed) ||
-		   pHandling->Transmission.nNumberOfGears < 1 ||
-		   !GcAutomobileFinite(pHandling->Transmission.fMaxVelocity) ||
-		   pHandling->Transmission.fMaxVelocity <= 0.0f){
-			if(!gLoggedBadAutomobileState){
-				CBaseModelInfo *mi = CModelInfo::GetModelInfo(GetModelIndex());
-				const CVector &pos = GetPosition();
-				printf("[VEH-GUARD] reset automobile state: veh=%p model=%d name=%s gear=%u gears=%u pos=(%f,%f,%f) move=(%f,%f,%f) turn=(%f,%f,%f) fwd=%f maxVel=%f\n",
-				       this, GetModelIndex(), mi ? mi->GetModelName() : "<null>",
-				       (uint32)m_nCurrentGear, (uint32)pHandling->Transmission.nNumberOfGears,
-				       pos.x, pos.y, pos.z,
-				       m_vecMoveSpeed.x, m_vecMoveSpeed.y, m_vecMoveSpeed.z,
-				       m_vecTurnSpeed.x, m_vecTurnSpeed.y, m_vecTurnSpeed.z,
-				       fwdSpeed, pHandling->Transmission.fMaxVelocity);
-				gLoggedBadAutomobileState = true;
-			}
-			m_vecMoveSpeed = CVector(0.0f, 0.0f, 0.0f);
-			m_vecTurnSpeed = CVector(0.0f, 0.0f, 0.0f);
-			fwdSpeed = 0.0f;
-			m_fGasPedal = 0.0f;
-			m_fBrakePedal = Max(m_fBrakePedal, 0.2f);
-			m_nCurrentGear = 1;
-		}
-		if(m_nCurrentGear > pHandling->Transmission.nNumberOfGears && !gLoggedBadAutomobileGear){
-			CBaseModelInfo *mi = CModelInfo::GetModelInfo(GetModelIndex());
-			const CVector &pos = GetPosition();
-			printf("[VEH-GUARD] automobile bad gear: veh=%p model=%d name=%s gear=%u gears=%u pos=(%f,%f,%f) fwdSpeed=%f gas=%f status=%d\n",
-			       this, GetModelIndex(), mi ? mi->GetModelName() : "<null>",
-			       (uint32)m_nCurrentGear, (uint32)pHandling->Transmission.nNumberOfGears,
-			       pos.x, pos.y, pos.z, fwdSpeed, m_fGasPedal, GetStatus());
-			gLoggedBadAutomobileGear = true;
-		}
-#endif
-		float driveAccelRaw = pHandling->Transmission.CalculateDriveAcceleration(m_fGasPedal, m_nCurrentGear, m_fChangeGearTime, fwdSpeed, gripCheat);
-		float acceleration = driveAccelRaw / m_fForceMultiplier;
+		float acceleration = pHandling->Transmission.CalculateDriveAcceleration(m_fGasPedal, m_nCurrentGear, m_fChangeGearTime, fwdSpeed, gripCheat);
+		acceleration /= m_fForceMultiplier;
 
 		if(IsRealHeli() || IsRealPlane())
 			acceleration = 0.0f;
@@ -1358,11 +920,6 @@ CAutomobile::ProcessControl(void)
 			}
 		}
 
-#if REAL_GAMECUBE
-		GcVehicleDriveTrace(this, "pre-wheel", fwdSpeed, driveAccelRaw, acceleration, brake, traction,
-			brakeBiasFront, brakeBiasRear, tractionBiasFront, tractionBiasRear, gripCheat);
-#endif
-
 		static float fThrust;
 		static tWheelState WheelState[4];
 
@@ -1378,7 +935,7 @@ CAutomobile::ProcessControl(void)
 			CVector wheelFwd, wheelRight, tmp;
 
 			if(m_aWheelTimer[CARWHEEL_FRONT_LEFT] > 0.0f){
-				if(pHandling->Transmission.nDriveType != 'R')
+				if(mod_HandlingManager.HasFrontWheelDrive(pHandling->nIdentifier))
 					fThrust = acceleration;
 				else
 					fThrust = 0.0f;
@@ -1421,7 +978,7 @@ CAutomobile::ProcessControl(void)
 			}
 
 			if(m_aWheelTimer[CARWHEEL_FRONT_RIGHT] > 0.0f){
-				if(pHandling->Transmission.nDriveType != 'R')
+				if(mod_HandlingManager.HasFrontWheelDrive(pHandling->nIdentifier))
 					fThrust = acceleration;
 				else
 					fThrust = 0.0f;
@@ -1468,7 +1025,7 @@ CAutomobile::ProcessControl(void)
 
 		if(!IsRealHeli()){
 			if(m_aWheelTimer[CARWHEEL_FRONT_LEFT] <= 0.0f){
-				if(pHandling->Transmission.nDriveType != 'R' && acceleration != 0.0f){
+				if(mod_HandlingManager.HasFrontWheelDrive(pHandling->nIdentifier) && acceleration != 0.0f){
 					if(acceleration > 0.0f){
 						if(m_aWheelSpeed[CARWHEEL_FRONT_LEFT] < 2.0f)
 							m_aWheelSpeed[CARWHEEL_FRONT_LEFT] -= 0.2f;
@@ -1482,7 +1039,7 @@ CAutomobile::ProcessControl(void)
 				m_aWheelRotation[CARWHEEL_FRONT_LEFT] += m_aWheelSpeed[CARWHEEL_FRONT_LEFT];
 			}
 			if(m_aWheelTimer[CARWHEEL_FRONT_RIGHT] <= 0.0f){
-				if(pHandling->Transmission.nDriveType != 'R' && acceleration != 0.0f){
+				if(mod_HandlingManager.HasFrontWheelDrive(pHandling->nIdentifier) && acceleration != 0.0f){
 					if(acceleration > 0.0f){
 						if(m_aWheelSpeed[CARWHEEL_FRONT_RIGHT] < 2.0f)
 							m_aWheelSpeed[CARWHEEL_FRONT_RIGHT] -= 0.2f;
@@ -1518,7 +1075,7 @@ CAutomobile::ProcessControl(void)
 					if(m_fTireTemperature > 2.0f)
 						m_fTireTemperature = 2.0f;
 				}
-			}else if(m_doingBurnout && pHandling->Transmission.nDriveType != 'F'){
+			}else if(m_doingBurnout && mod_HandlingManager.HasRearWheelDrive(pHandling->nIdentifier)){
 				rearBrake = 0.0f;
 				rearTraction = 0.0f;
 				// BUG: missing timestep
@@ -1528,7 +1085,7 @@ CAutomobile::ProcessControl(void)
 			}
 
 			if(m_aWheelTimer[CARWHEEL_REAR_LEFT] > 0.0f){
-				if(pHandling->Transmission.nDriveType != 'F')
+				if(mod_HandlingManager.HasRearWheelDrive(pHandling->nIdentifier))
 					fThrust = acceleration;
 				else
 					fThrust = 0.0f;
@@ -1573,7 +1130,7 @@ CAutomobile::ProcessControl(void)
 #endif
 
 			if(m_aWheelTimer[CARWHEEL_REAR_RIGHT] > 0.0f){
-				if(pHandling->Transmission.nDriveType != 'F')
+				if(mod_HandlingManager.HasRearWheelDrive(pHandling->nIdentifier))
 					fThrust = acceleration;
 				else
 					fThrust = 0.0f;
@@ -1612,7 +1169,7 @@ CAutomobile::ProcessControl(void)
 			}
 		}
 
-		if(m_doingBurnout && pHandling->Transmission.nDriveType != 'F' &&
+		if(m_doingBurnout && mod_HandlingManager.HasRearWheelDrive(pHandling->nIdentifier) &&
 	           (m_aWheelState[CARWHEEL_REAR_LEFT] == WHEEL_STATE_SPINNING || m_aWheelState[CARWHEEL_REAR_RIGHT] == WHEEL_STATE_SPINNING)){
 			m_fTireTemperature += 0.001f*CTimer::GetTimeStep();
 			if(m_fTireTemperature > 3.0f)
@@ -1627,7 +1184,7 @@ CAutomobile::ProcessControl(void)
 			if(m_aWheelTimer[CARWHEEL_REAR_LEFT] <= 0.0f){
 				if(bIsHandbrakeOn)
 					m_aWheelSpeed[CARWHEEL_REAR_LEFT] = 0.0f;
-				else if(pHandling->Transmission.nDriveType != 'F' && acceleration != 0.0f){
+				else if(mod_HandlingManager.HasRearWheelDrive(pHandling->nIdentifier) && acceleration != 0.0f){
 					if(acceleration > 0.0f){
 						if(m_aWheelSpeed[CARWHEEL_REAR_LEFT] < 2.0f)
 							m_aWheelSpeed[CARWHEEL_REAR_LEFT] -= 0.2f;
@@ -1643,7 +1200,7 @@ CAutomobile::ProcessControl(void)
 			if(m_aWheelTimer[CARWHEEL_REAR_RIGHT] <= 0.0f){
 				if(bIsHandbrakeOn)
 					m_aWheelSpeed[CARWHEEL_REAR_RIGHT] = 0.0f;
-				else if(pHandling->Transmission.nDriveType != 'F' && acceleration != 0.0f){
+				else if(mod_HandlingManager.HasRearWheelDrive(pHandling->nIdentifier) && acceleration != 0.0f){
 					if(acceleration > 0.0f){
 						if(m_aWheelSpeed[CARWHEEL_REAR_RIGHT] < 2.0f)
 							m_aWheelSpeed[CARWHEEL_REAR_RIGHT] -= 0.2f;
@@ -1668,7 +1225,7 @@ CAutomobile::ProcessControl(void)
 			CVector wheelFwd, wheelRight, tmp;
 
 			if(m_aWheelTimer[CARWHEEL_FRONT_LEFT] > 0.0f){
-				if(pHandling->Transmission.nDriveType != 'R')
+				if(mod_HandlingManager.HasFrontWheelDrive(pHandling->nIdentifier))
 					fThrust = acceleration;
 				else
 					fThrust = 0.0f;
@@ -1711,7 +1268,7 @@ CAutomobile::ProcessControl(void)
 			}
 
 			if(m_aWheelTimer[CARWHEEL_FRONT_RIGHT] > 0.0f){
-				if(pHandling->Transmission.nDriveType != 'R')
+				if(mod_HandlingManager.HasFrontWheelDrive(pHandling->nIdentifier))
 					fThrust = acceleration;
 				else
 					fThrust = 0.0f;
@@ -1758,7 +1315,7 @@ CAutomobile::ProcessControl(void)
 
 		if (!IsRealHeli()) {
 			if(m_aWheelTimer[CARWHEEL_FRONT_LEFT] <= 0.0f){
-				if(pHandling->Transmission.nDriveType != 'R' && acceleration != 0.0f){
+				if(mod_HandlingManager.HasFrontWheelDrive(pHandling->nIdentifier) && acceleration != 0.0f){
 					if(acceleration > 0.0f){
 						if(m_aWheelSpeed[CARWHEEL_FRONT_LEFT] < 2.0f)
 							m_aWheelSpeed[CARWHEEL_FRONT_LEFT] -= 0.2f;
@@ -1772,7 +1329,7 @@ CAutomobile::ProcessControl(void)
 				m_aWheelRotation[CARWHEEL_FRONT_LEFT] += m_aWheelSpeed[CARWHEEL_FRONT_LEFT];
 			}
 			if(m_aWheelTimer[CARWHEEL_FRONT_RIGHT] <= 0.0f){
-				if(pHandling->Transmission.nDriveType != 'R' && acceleration != 0.0f){
+				if(mod_HandlingManager.HasFrontWheelDrive(pHandling->nIdentifier) && acceleration != 0.0f){
 					if(acceleration > 0.0f){
 						if(m_aWheelSpeed[CARWHEEL_FRONT_RIGHT] < 2.0f)
 							m_aWheelSpeed[CARWHEEL_FRONT_RIGHT] -= 0.2f;
@@ -3544,52 +3101,47 @@ static float fMouseCentreMult = 0.975f;
 void
 CAutomobile::ProcessControlInputs(uint8 pad)
 {
-	CPad *padObj = CPad::GetPad(pad);
 	float speed = DotProduct(m_vecMoveSpeed, GetForward());
-	int32 rawSteer = padObj->GetSteeringLeftRight();
-	int32 rawAccel = padObj->GetAccelerate();
-	int32 rawBrake = padObj->GetBrake();
-	float steerInputBefore = m_fSteerInput;
 
-	if(!padObj->GetExitVehicle() ||
+	if(!CPad::GetPad(pad)->GetExitVehicle() ||
 	   pDriver && pDriver->m_pVehicleAnim && (pDriver->m_pVehicleAnim->animId == ANIM_STD_ROLLOUT_LHS ||
 	                                          pDriver->m_pVehicleAnim->animId == ANIM_STD_ROLLOUT_RHS))
-		bIsHandbrakeOn = !!padObj->GetHandBrake();
+		bIsHandbrakeOn = !!CPad::GetPad(pad)->GetHandBrake();
 	else
 		bIsHandbrakeOn = true;
 
 	// Steer left/right
 #ifdef GTA_PC_CONTROLS
 	if(CCamera::m_bUseMouse3rdPerson && !CVehicle::m_bDisableMouseSteering){
-		if(padObj->GetMouseX() != 0.0f){
-			m_fSteerInput += fMouseSteerSens*padObj->GetMouseX();
+		if(CPad::GetPad(pad)->GetMouseX() != 0.0f){
+			m_fSteerInput += fMouseSteerSens*CPad::GetPad(pad)->GetMouseX();
 			nLastControlInput = 2;
 			if(Abs(m_fSteerInput) < fMouseCentreRange)
 				m_fSteerInput *= Pow(fMouseCentreMult, CTimer::GetTimeStep());
-		}else if(rawSteer || nLastControlInput != 2){
+		}else if(CPad::GetPad(pad)->GetSteeringLeftRight() || nLastControlInput != 2){
 			// mouse hasn't move, steer with pad like below
-			m_fSteerInput += (-rawSteer/128.0f - m_fSteerInput)*
+			m_fSteerInput += (-CPad::GetPad(pad)->GetSteeringLeftRight()/128.0f - m_fSteerInput)*
 				0.2f*CTimer::GetTimeStep();
 			nLastControlInput = 0;
 		}
 	}else
 #endif
 	{
-		m_fSteerInput += (-rawSteer/128.0f - m_fSteerInput)*
+		m_fSteerInput += (-CPad::GetPad(pad)->GetSteeringLeftRight()/128.0f - m_fSteerInput)*
 			0.2f*CTimer::GetTimeStep();
 		nLastControlInput = 0;
 	}
 	m_fSteerInput = Clamp(m_fSteerInput, -1.0f, 1.0f);
 
 	// Accelerate/Brake
-	float acceleration = (rawAccel - rawBrake)/255.0f;
+	float acceleration = (CPad::GetPad(pad)->GetAccelerate() - CPad::GetPad(pad)->GetBrake())/255.0f;
 	if(GetModelIndex() == MI_DODO && acceleration < 0.0f)
 		acceleration *= 0.3f;
 	if(Abs(speed) < 0.01f){
 		// standing still, go into direction we want
-		if(rawAccel > 150.0f && rawBrake > 150.0f){
-			m_fGasPedal = rawAccel/255.0f;
-			m_fBrakePedal = rawBrake/255.0f;
+		if(CPad::GetPad(pad)->GetAccelerate() > 150.0f && CPad::GetPad(pad)->GetBrake() > 150.0f){
+			m_fGasPedal = CPad::GetPad(pad)->GetAccelerate()/255.0f;
+			m_fBrakePedal = CPad::GetPad(pad)->GetBrake()/255.0f;
 			m_doingBurnout = 1;
 		}else{
 			m_fGasPedal = acceleration;
@@ -3667,13 +3219,11 @@ CAutomobile::ProcessControlInputs(uint8 pad)
 
 	// Brake if player isn't in control
 	// BUG: game always uses pad 0 here
-	bool controlsDisabled;
 #ifdef FIX_BUGS
-	controlsDisabled = padObj->ArePlayerControlsDisabled();
+	if(CPad::GetPad(pad)->ArePlayerControlsDisabled()){
 #else
-	controlsDisabled = CPad::GetPad(0)->ArePlayerControlsDisabled();
+	if(CPad::GetPad(0)->ArePlayerControlsDisabled()){
 #endif
-	if(controlsDisabled){
 		m_fBrakePedal = 1.0f;
 		bIsHandbrakeOn = true;
 		m_fGasPedal = 0.0f;
@@ -3685,26 +3235,20 @@ CAutomobile::ProcessControlInputs(uint8 pad)
 		if(speed > 0.28f)
 			m_vecMoveSpeed *= 0.28f/speed;
 	}
-
-#if REAL_GAMECUBE
-	GcVehicleControlTrace(this, "final", pad, speed, rawSteer, rawAccel, rawBrake,
-		acceleration, steerInputBefore, m_fSteerInput, fValue, controlsDisabled);
-#endif
 }
 
 void
 CAutomobile::FireTruckControl(void)
 {
-	const float cameraStep = CTimer::GetTimeStep();
 	if(this == FindPlayerVehicle()){
 		if(!CPad::GetPad(0)->GetCarGunFired())
 			return;
-#if defined(FREE_CAM) && !GX_CONSOLE
+#ifdef FREE_CAM
 		if (!CCamera::bFreeCam)
-#endif
+#endif 
 		{
-			m_fCarGunLR += CPad::GetPad(0)->GetCarGunLeftRight() * 0.00025f * cameraStep;
-			m_fCarGunUD += CPad::GetPad(0)->GetCarGunUpDown() * 0.0001f * cameraStep;
+			m_fCarGunLR += CPad::GetPad(0)->GetCarGunLeftRight() * 0.00025f * CTimer::GetTimeStep();
+			m_fCarGunUD += CPad::GetPad(0)->GetCarGunUpDown() * 0.0001f * CTimer::GetTimeStep();
 		}
 		m_fCarGunUD = Clamp(m_fCarGunUD, 0.05f, 0.3f);
 
@@ -3727,7 +3271,7 @@ CAutomobile::FireTruckControl(void)
 		float targetAngle = CGeneral::GetATanOfXY(fire->m_vecPos.x-GetPosition().x, fire->m_vecPos.y-GetPosition().y);
 		float fwdAngle = CGeneral::GetATanOfXY(GetForward().x, GetForward().y);
 		float targetCannonAngle = fwdAngle - targetAngle;
-		float angleDelta = cameraStep*0.01f;
+		float angleDelta = CTimer::GetTimeStep()*0.01f;
 		float cannonDelta = targetCannonAngle - m_fCarGunLR;
 		while(cannonDelta < PI) cannonDelta += TWOPI;
 		while(cannonDelta > PI) cannonDelta -= TWOPI;
@@ -3761,7 +3305,6 @@ void
 CAutomobile::TankControl(void)
 {
 	int i;
-	const float cameraStep = CTimer::GetTimeStep();
 
 	// These coords are 1 unit higher then they should be relative to model center
 	CVector turrentBase(0.0f, -1.394f, 2.296f);
@@ -3775,10 +3318,10 @@ CAutomobile::TankControl(void)
 
 	// Rotate turret
 	float prevAngle = m_fCarGunLR;
-#if defined(FREE_CAM) && !GX_CONSOLE
+#ifdef FREE_CAM
 	if(!CCamera::bFreeCam)
 #endif
-		m_fCarGunLR -= CPad::GetPad(0)->GetCarGunLeftRight() * 0.00015f * cameraStep;
+		m_fCarGunLR -= CPad::GetPad(0)->GetCarGunLeftRight() * 0.00015f * CTimer::GetTimeStep();
 
 	if(m_fCarGunLR < 0.0f)
 		m_fCarGunLR += TWOPI;
@@ -5536,30 +5079,6 @@ CAutomobile::SetupSuspensionLines(void)
 		m_aSuspensionLineLength[i] = colModel->lines[i].p0.z - colModel->lines[i].p1.z;
 	}
 
-#if REAL_GAMECUBE
-	if(GetModelIndex() == MI_ADMIRAL){
-		bool badSuspension = false;
-		for(i = 0; i < 4; i++){
-			if(!GcAutomobileFinite(m_aWheelPosition[i]) ||
-			   !GcAutomobileFinite(m_aSuspensionLineLength[i]) ||
-			   m_aSuspensionLineLength[i] <= 0.0f ||
-			   !GcAutomobileFinite(colModel->lines[i].p0.z) ||
-			   !GcAutomobileFinite(colModel->lines[i].p1.z))
-				badSuspension = true;
-		}
-		if(badSuspension && !gLoggedBadAdmiralSuspension){
-			printf("[ADMIRAL-SUSP] bad-susp veh=%p wheelPosZ=(%f,%f,%f,%f) lineLen=(%f,%f,%f,%f) upper=%f lower=%f wheelScale=%f\n",
-			       (void*)this,
-			       m_aWheelPosition[0], m_aWheelPosition[1], m_aWheelPosition[2], m_aWheelPosition[3],
-			       m_aSuspensionLineLength[0], m_aSuspensionLineLength[1], m_aSuspensionLineLength[2], m_aSuspensionLineLength[3],
-			       pHandling->fSuspensionUpperLimit,
-			       pHandling->fSuspensionLowerLimit,
-			       mi->m_wheelScale);
-			gLoggedBadAdmiralSuspension = true;
-		}
-	}
-#endif
-
 	// Compress spring somewhat to get normal height on road
 	m_fHeightAboveRoad = m_aSuspensionSpringLength[0]*(1.0f - 1.0f/(4.0f*pHandling->fSuspensionForceLevel))
 			- colModel->lines[0].p0.z + mi->m_wheelScale*0.5f;
@@ -6214,8 +5733,6 @@ CAutomobile::SetupModelNodes(void)
 	int i;
 	for(i = 0; i < NUM_CAR_NODES; i++)
 		m_aCarNodes[i] = nil;
-	if(m_rwObject == nil || RwObjectGetType(m_rwObject) != rpCLUMP)
-		return;
 	CClumpModelInfo::FillFrameArray(GetClump(), m_aCarNodes);
 }
 

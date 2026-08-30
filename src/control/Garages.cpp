@@ -67,42 +67,6 @@
 // Bomb stuff
 #define KGS_OF_EXPLOSIVES_IN_BOMB (10)
 
-#if REAL_GAMECUBE
-static bool
-GcGarageFinite(float f)
-{
-	return f == f && f > -1.0e20f && f < 1.0e20f;
-}
-
-static bool
-GcGarageFiniteVec(const CVector &v)
-{
-	return GcGarageFinite(v.x) && GcGarageFinite(v.y) && GcGarageFinite(v.z);
-}
-
-static bool
-GcGarageFiniteEntity(CEntity *entity)
-{
-	return entity && GcGarageFiniteVec(entity->GetPosition());
-}
-
-static void
-GcGarageGuardLog(const char *stage, CEntity *entity)
-{
-	static int logs;
-	if (logs++ >= 8)
-		return;
-
-	if (entity) {
-		const CVector &pos = entity->GetPosition();
-		printf("[GARAGE-GUARD] reject %s ent=%p model=%d pos=(%f,%f,%f)\n",
-			stage, entity, entity->GetModelIndex(), pos.x, pos.y, pos.z);
-	} else {
-		printf("[GARAGE-GUARD] reject %s null entity\n", stage);
-	}
-}
-#endif
-
 // Collect specific cars stuff
 #define REWARD_FOR_FIRST_POLICE_CAR (5000)
 #define REWARD_FOR_FIRST_BANK_VAN (5000)
@@ -1176,12 +1140,6 @@ bool CGarage::IsStaticPlayerCarEntirelyInside()
 	if (FindPlayerPed()->m_objective == OBJECTIVE_LEAVE_CAR)
 		return false;
 	CVehicle* pVehicle = FindPlayerVehicle();
-#if REAL_GAMECUBE
-	if (!GcGarageFiniteEntity(pVehicle) || !GcGarageFiniteVec(pVehicle->GetSpeed())) {
-		GcGarageGuardLog("static-player-car", pVehicle);
-		return false;
-	}
-#endif
 	if (pVehicle->GetPosition().x < m_fInfX || pVehicle->GetPosition().x > m_fSupX ||
 		pVehicle->GetPosition().y < m_fInfY || pVehicle->GetPosition().y > m_fSupY)
 		return false;
@@ -1196,10 +1154,6 @@ bool CGarage::IsStaticPlayerCarEntirelyInside()
 
 bool CGarage::IsPointInsideGarage(CVector pos)
 {
-#if REAL_GAMECUBE
-	if (!GcGarageFiniteVec(pos))
-		return false;
-#endif
 	// is it IsPointInsideGarage(pos, 0.0f)?
 	if (pos.z < m_fInfZ)
 		return false;
@@ -1221,10 +1175,6 @@ bool CGarage::IsPointInsideGarage(CVector pos)
 
 bool CGarage::IsPointInsideGarage(CVector pos, float m_fMargin)
 {
-#if REAL_GAMECUBE
-	if (!GcGarageFiniteVec(pos) || !GcGarageFinite(m_fMargin))
-		return false;
-#endif
 	if (pos.z < m_fInfZ - m_fMargin)
 		return false;
 	if (pos.z > m_fSupZ + m_fMargin)
@@ -1245,12 +1195,6 @@ bool CGarage::IsPointInsideGarage(CVector pos, float m_fMargin)
 
 bool CGarage::IsEntityEntirelyInside3D(CEntity* pEntity, float fMargin)
 {
-#if REAL_GAMECUBE
-	if (!GcGarageFiniteEntity(pEntity) || !GcGarageFinite(fMargin)) {
-		GcGarageGuardLog("entirely-inside", pEntity);
-		return false;
-	}
-#endif
 	if (pEntity->GetPosition().x < m_fInfX - fMargin || pEntity->GetPosition().x > m_fSupX + fMargin ||
 		pEntity->GetPosition().y < m_fInfY - fMargin || pEntity->GetPosition().y > m_fSupY + fMargin ||
 		pEntity->GetPosition().z < m_fInfZ - fMargin || pEntity->GetPosition().z > m_fSupZ + fMargin)
@@ -1259,12 +1203,6 @@ bool CGarage::IsEntityEntirelyInside3D(CEntity* pEntity, float fMargin)
 	for (int i = 0; i < pColModel->numSpheres; i++) {
 		CVector pos = pEntity->GetMatrix() * pColModel->spheres[i].center;
 		float radius = pColModel->spheres[i].radius;
-#if REAL_GAMECUBE
-		if (!GcGarageFiniteVec(pos) || !GcGarageFinite(radius)) {
-			GcGarageGuardLog("inside-sphere", pEntity);
-			return false;
-		}
-#endif
 		if (!IsPointInsideGarage(pos, fMargin - radius))
 			return false;
 	}
@@ -1273,12 +1211,6 @@ bool CGarage::IsEntityEntirelyInside3D(CEntity* pEntity, float fMargin)
 
 bool CGarage::IsEntityEntirelyOutside(CEntity * pEntity, float fMargin)
 {
-#if REAL_GAMECUBE
-	if (!GcGarageFiniteEntity(pEntity) || !GcGarageFinite(fMargin)) {
-		GcGarageGuardLog("entirely-outside", pEntity);
-		return true;
-	}
-#endif
 	if (pEntity->GetPosition().x > m_fInfX - fMargin && pEntity->GetPosition().x < m_fSupX + fMargin &&
 		pEntity->GetPosition().y > m_fInfY - fMargin && pEntity->GetPosition().y < m_fSupY + fMargin)
 		return false;
@@ -1286,12 +1218,6 @@ bool CGarage::IsEntityEntirelyOutside(CEntity * pEntity, float fMargin)
 	for (int i = 0; i < pColModel->numSpheres; i++) {
 		CVector pos = pEntity->GetMatrix() * pColModel->spheres[i].center;
 		float radius = pColModel->spheres[i].radius;
-#if REAL_GAMECUBE
-		if (!GcGarageFiniteVec(pos) || !GcGarageFinite(radius)) {
-			GcGarageGuardLog("outside-sphere", pEntity);
-			return true;
-		}
-#endif
 		if (IsPointInsideGarage(pos, fMargin + radius))
 			return false;
 	}
@@ -1321,19 +1247,7 @@ bool CGarage::IsPlayerOutsideGarage()
 
 bool CGarage::IsEntityTouching3D(CEntity* pEntity)
 {
-#if REAL_GAMECUBE
-	if (!GcGarageFiniteEntity(pEntity)) {
-		GcGarageGuardLog("touching", pEntity);
-		return false;
-	}
-#endif
 	float radius = pEntity->GetBoundRadius();
-#if REAL_GAMECUBE
-	if (!GcGarageFinite(radius)) {
-		GcGarageGuardLog("touching-radius", pEntity);
-		return false;
-	}
-#endif
 	if (m_fInfX - radius > pEntity->GetPosition().x || m_fSupX + radius < pEntity->GetPosition().x ||
 		m_fInfY - radius > pEntity->GetPosition().y || m_fSupY + radius < pEntity->GetPosition().y ||
 		m_fInfZ - radius > pEntity->GetPosition().z || m_fSupZ + radius < pEntity->GetPosition().z)
@@ -1342,12 +1256,6 @@ bool CGarage::IsEntityTouching3D(CEntity* pEntity)
 	for (int i = 0; i < pColModel->numSpheres; i++) {
 		CVector pos = pEntity->GetMatrix() * pColModel->spheres[i].center;
 		radius = pColModel->spheres[i].radius;
-#if REAL_GAMECUBE
-		if (!GcGarageFiniteVec(pos) || !GcGarageFinite(radius)) {
-			GcGarageGuardLog("touching-sphere", pEntity);
-			return false;
-		}
-#endif
 		if (IsPointInsideGarage(pos, radius))
 			return true;
 	}
@@ -1356,22 +1264,10 @@ bool CGarage::IsEntityTouching3D(CEntity* pEntity)
 
 bool CGarage::EntityHasASphereWayOutsideGarage(CEntity * pEntity, float fMargin)
 {
-#if REAL_GAMECUBE
-	if (!GcGarageFiniteEntity(pEntity) || !GcGarageFinite(fMargin)) {
-		GcGarageGuardLog("sphere-way-outside", pEntity);
-		return true;
-	}
-#endif
 	CColModel* pColModel = pEntity->GetColModel();
 	for (int i = 0; i < pColModel->numSpheres; i++) {
 		CVector pos = pEntity->GetMatrix() * pColModel->spheres[i].center;
 		float radius = pColModel->spheres[i].radius;
-#if REAL_GAMECUBE
-		if (!GcGarageFiniteVec(pos) || !GcGarageFinite(radius)) {
-			GcGarageGuardLog("sphere-way-outside-sphere", pEntity);
-			return true;
-		}
-#endif
 		if (!IsPointInsideGarage(pos, fMargin + radius))
 			return true;
 	}
@@ -1799,10 +1695,6 @@ void CGarage::CloseThisGarage()
 
 float CGarage::CalcDistToGarageRectangleSquared(float X, float Y)
 {
-#if REAL_GAMECUBE
-	if (!GcGarageFinite(X) || !GcGarageFinite(Y))
-		return 1.0e20f;
-#endif
 	float distX, distY;
 	if (X < m_fInfX)
 		distX = m_fInfX - X;

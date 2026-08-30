@@ -5,7 +5,6 @@
 #include "Accident.h"
 #include "AutoPilot.h"
 #include "CarCtrl.h"
-#include "CutsceneMgr.h"
 #include "General.h"
 #include "HandlingMgr.h"
 #include "ModelIndices.h"
@@ -22,61 +21,6 @@
 #include "ZoneCull.h"
 
 #define DISTANCE_TO_SWITCH_DISTANCE_GOTO 20.0f
-
-#if REAL_GAMECUBE
-static bool
-GcIsScriptedIntroAdmiral(CVehicle *pVehicle)
-{
-	if (pVehicle == nil || pVehicle->GetModelIndex() != MI_ADMIRAL)
-		return false;
-	if (pVehicle->VehicleCreatedBy != MISSION_VEHICLE)
-		return false;
-	if (pVehicle->GetStatus() == STATUS_PLAYER ||
-		pVehicle->GetStatus() == STATUS_PLAYER_REMOTE ||
-		pVehicle->GetStatus() == STATUS_PLAYER_DISABLED ||
-		pVehicle->GetStatus() == STATUS_WRECKED)
-		return false;
-
-	if (CGame::playingIntro || CCutsceneMgr::IsRunning() || CCutsceneMgr::ms_cutsceneLoadStatus != 0)
-		return true;
-
-	switch (pVehicle->AutoPilot.m_nCarMission) {
-	case MISSION_NONE:
-	case MISSION_WAITFORDELETION:
-	case MISSION_STOP_FOREVER:
-		return false;
-	default:
-		return true;
-	}
-}
-
-static bool
-GcHasScriptedIntroRoute(CVehicle *pVehicle)
-{
-	if (!GcIsScriptedIntroAdmiral(pVehicle))
-		return false;
-
-	return pVehicle->AutoPilot.m_nCurrentRouteNode != pVehicle->AutoPilot.m_nNextRouteNode;
-}
-
-static float
-GcGetScriptedIntroStraightEnterDistance(CVehicle *pVehicle)
-{
-	float switchDistance = (float)pVehicle->AutoPilot.m_nSwitchDistance;
-	if (!GcHasScriptedIntroRoute(pVehicle))
-		return switchDistance;
-
-	// The intro Admiral still has a valid road segment at this point.
-	// Switching to straight-line target mode from ~20m out causes the observed yaw cut.
-	return Min(switchDistance, 6.0f);
-}
-
-static float
-GcGetScriptedIntroStraightLeaveDistance(CVehicle *pVehicle)
-{
-	return GcGetScriptedIntroStraightEnterDistance(pVehicle) + 2.0f;
-}
-#endif
 
 float CCarAI::FindSwitchDistanceClose(CVehicle* pVehicle)
 {
@@ -228,31 +172,13 @@ void CCarAI::UpdateCarAI(CVehicle* pVehicle)
 			BackToCruisingIfNoWantedLevel(pVehicle);
 			break;
 		case MISSION_GOTOCOORDS:
-		{
-			float distance = (pVehicle->AutoPilot.m_vecDestinationCoors - pVehicle->GetPosition()).Magnitude2D();
-#if REAL_GAMECUBE
-			if (GcIsScriptedIntroAdmiral(pVehicle)) {
-				// The intro Admiral must stay on the path-follow mission all the
-				// way into the hotel entrance. Promoting it to "straight" mode here
-				// is the root cause of the double-turn / early-brake behavior.
-				break;
-			} else
-#endif
-			if (distance < FindSwitchDistanceClose(pVehicle) ||
-			    pVehicle->AutoPilot.m_bIgnorePathfinding)
+			if ((pVehicle->AutoPilot.m_vecDestinationCoors - pVehicle->GetPosition()).Magnitude2D() < FindSwitchDistanceClose(pVehicle) ||
+			  pVehicle->AutoPilot.m_bIgnorePathfinding)
 				pVehicle->AutoPilot.m_nCarMission = MISSION_GOTOCOORDS_STRAIGHT;
 			break;
-		}
 		case MISSION_GOTOCOORDS_STRAIGHT:
 		{
 			float distance = (pVehicle->AutoPilot.m_vecDestinationCoors - pVehicle->GetPosition()).Magnitude2D();
-#if REAL_GAMECUBE
-			if (GcIsScriptedIntroAdmiral(pVehicle)) {
-				pVehicle->AutoPilot.m_nTempAction = TEMPACT_NONE;
-				pVehicle->AutoPilot.m_nCarMission = MISSION_GOTOCOORDS;
-				break;
-			}
-#endif
 			if ((pVehicle->bIsAmbulanceOnDuty || pVehicle->bIsFireTruckOnDuty) && distance < 20.0f)
 				pVehicle->AutoPilot.m_nCarMission = MISSION_EMERGENCYVEHICLE_STOP;
 			if (distance < 3.0f){
@@ -308,28 +234,13 @@ void CCarAI::UpdateCarAI(CVehicle* pVehicle)
 			}
 			break;
 		case MISSION_GOTOCOORDS_ACCURATE:
-		{
-			float distance = (pVehicle->AutoPilot.m_vecDestinationCoors - pVehicle->GetPosition()).Magnitude2D();
-#if REAL_GAMECUBE
-			if (GcIsScriptedIntroAdmiral(pVehicle)) {
-				break;
-			} else
-#endif
-			if (distance < FindSwitchDistanceClose(pVehicle) ||
+			if ((pVehicle->AutoPilot.m_vecDestinationCoors - pVehicle->GetPosition()).Magnitude2D() < FindSwitchDistanceClose(pVehicle) ||
 				pVehicle->AutoPilot.m_bIgnorePathfinding)
 				pVehicle->AutoPilot.m_nCarMission = MISSION_GOTO_COORDS_STRAIGHT_ACCURATE;
 			break;
-		}
 		case MISSION_GOTO_COORDS_STRAIGHT_ACCURATE:
 		{
 			float distance = (pVehicle->AutoPilot.m_vecDestinationCoors - pVehicle->GetPosition()).Magnitude2D();
-#if REAL_GAMECUBE
-			if (GcIsScriptedIntroAdmiral(pVehicle)) {
-				pVehicle->AutoPilot.m_nTempAction = TEMPACT_NONE;
-				pVehicle->AutoPilot.m_nCarMission = MISSION_GOTOCOORDS_ACCURATE;
-				break;
-			}
-#endif
 			if (distance < 1.0f) {
 				pVehicle->AutoPilot.m_nCarMission = MISSION_NONE;
 				pVehicle->AutoPilot.m_nTempAction = TEMPACT_NONE;
@@ -479,9 +390,6 @@ void CCarAI::UpdateCarAI(CVehicle* pVehicle)
 			if (pVehicle->AutoPilot.m_nCarMission != MISSION_STOP_FOREVER &&
 				pVehicle->AutoPilot.m_nCarMission != MISSION_BLOCKPLAYER_HANDBRAKESTOP &&
 			  pVehicle->AutoPilot.m_nCruiseSpeed != 0 &&
-#if REAL_GAMECUBE
-			  !GcIsScriptedIntroAdmiral(pVehicle) &&
-#endif
 			  (pVehicle->VehicleCreatedBy != RANDOM_VEHICLE || pVehicle->AutoPilot.m_nCarMission != MISSION_CRUISE)){
 				if (pVehicle->AutoPilot.m_nDrivingStyle != DRIVINGSTYLE_STOP_FOR_CARS
 					&& pVehicle->AutoPilot.m_nDrivingStyle != DRIVINGSTYLE_STOP_FOR_CARS_IGNORE_LIGHTS ||
@@ -607,11 +515,6 @@ float CCarAI::GetCarToGoToCoors(CVehicle* pVehicle, CVector* pTarget)
 		pVehicle->AutoPilot.m_nCruiseSpeed = 20;
 		pVehicle->AutoPilot.m_nAntiReverseTimer = CTimer::GetTimeInMilliseconds();
 		pVehicle->SetStatus(STATUS_PHYSICS);
-#if REAL_GAMECUBE
-		if (GcIsScriptedIntroAdmiral(pVehicle))
-			pVehicle->AutoPilot.m_nCarMission = MISSION_GOTOCOORDS;
-		else
-#endif
 		pVehicle->AutoPilot.m_nCarMission = (CCarCtrl::JoinCarWithRoadSystemGotoCoors(pVehicle, *pTarget, false)) ?
 			MISSION_GOTOCOORDS_STRAIGHT : MISSION_GOTOCOORDS;
 	}else if (Abs(pTarget->x - pVehicle->AutoPilot.m_vecDestinationCoors.x) > 2.0f ||

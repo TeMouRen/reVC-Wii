@@ -115,11 +115,6 @@ void
 CBoat::SetModelIndex(uint32 id)
 {
 	CVehicle::SetModelIndex(id);
-	if(m_rwObject == nil || RwObjectGetType(m_rwObject) != rpCLUMP){
-		printf("[VEH-INIT] Boat SetModelIndex aborted: no clump for model %u\n",
-		       (unsigned)id);
-		return;
-	}
 	SetupModelNodes();
 }
 
@@ -132,9 +127,6 @@ CBoat::GetComponentWorldPosition(int32 component, CVector &pos)
 void
 CBoat::ProcessControl(void)
 {
-#if REAL_GAMECUBE
-	GcVehicleDiag(this, "boat-begin");
-#endif
 	bool onLand = m_fDamageImpulse > 0.0f && m_vecDamageNormal.z > 0.1f;
 
 	PruneWakeTrail();
@@ -206,9 +198,6 @@ CBoat::ProcessControl(void)
 		m_fOrientation = INVALID_ORIENTATION;
 		CCarAI::UpdateCarAI(this);
 		CPhysical::ProcessControl();
-#if REAL_GAMECUBE
-		GcVehicleDiag(this, "boat-simple-after-physical");
-#endif
 		bBoatInWater = true;
 		bPropellerInWater = true;
 		bIsInWater = true;
@@ -323,9 +312,6 @@ CBoat::ProcessControl(void)
 
 	bool bSeparateTurnForce = bHasHitWall;
 	CPhysical::ProcessControl();
-#if REAL_GAMECUBE
-	GcVehicleDiag(this, "boat-after-physical");
-#endif
 
 	CVector buoyanceImpulse(0.0f, 0.0f, 0.0f);
 	CVector buoyancePoint(0.0f, 0.0f, 0.0f);
@@ -981,10 +967,7 @@ CBoat::PreRender(void)
 #ifdef FREE_CAM
 			if(!CCamera::bFreeCam || (CCamera::bFreeCam && !CPad::IsAffectedByController))
 #endif
-			{
-				const float cameraStep = CTimer::GetTimeStep();
-				steeringUpDown += ((Abs(CPad::GetPad(0)->GetCarGunUpDown()) > 1.0f ? (-CPad::GetPad(0)->GetCarGunUpDown()/128.0f) : (-CPad::GetPad(0)->GetSteeringUpDown()/128.0f)) - steeringUpDown) * Min(1.f, cameraStep/5.f);
-			}
+			steeringUpDown += ((Abs(CPad::GetPad(0)->GetCarGunUpDown()) > 1.0f ? (-CPad::GetPad(0)->GetCarGunUpDown()/128.0f) : (-CPad::GetPad(0)->GetSteeringUpDown()/128.0f)) - steeringUpDown) * Min(1.f, CTimer::GetTimeStep()/5.f);
 #ifdef FREE_CAM
 			else
 				steeringUpDown = -CPad::GetPad(0)->GetSteeringUpDown()/128.0f;
@@ -1327,8 +1310,6 @@ CBoat::SetupModelNodes()
 	int i;
 	for(i = 0; i < ARRAY_SIZE(m_aBoatNodes); i++)
 		m_aBoatNodes[i] = nil;
-	if(m_rwObject == nil || RwObjectGetType(m_rwObject) != rpCLUMP)
-		return;
 	CClumpModelInfo::FillFrameArray(GetClump(), m_aBoatNodes);
 }
 
