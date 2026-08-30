@@ -255,7 +255,6 @@ CPathFind::Init(void)
 	m_numCarPathLinks = 0;
 	unk = 0;
 	NumTempExternalNodes = 0;
-	m_tempNodes = nil;
 
 	for(i = 0; i < NUM_PATHNODES; i++)
 		m_pathNodes[i].distance = MAX_DIST;
@@ -264,7 +263,6 @@ CPathFind::Init(void)
 void
 CPathFind::AllocatePathFindInfoMem(int16 numPathGroups)
 {
-	// AllocatePathFindInfoMem re-enabled for GC with expanded MEM1 (64MB)
 	delete[] InfoForTileCars;
 	InfoForTileCars = nil;
 	delete[] InfoForTilePeds;
@@ -289,11 +287,6 @@ CPathFind::AllocatePathFindInfoMem(int16 numPathGroups)
 	TempExternalNodes = nil;
 	TempExternalNodes = new CTempNodeExternal[NUMTEMPEXTERNALNODES];
 	memset(TempExternalNodes, 0, NUMTEMPEXTERNALNODES*sizeof(CTempNodeExternal));
-
-	// Pre-allocate tempNodes for PreparePathData before heap fragments
-	delete[] m_tempNodes;
-	m_tempNodes = new CTempNode[NUMTEMPNODES];
-
 	NumTempExternalNodes = 0;
 	NumDetachedPedNodeGroups = 0;
 	NumDetachedCarNodeGroups = 0;
@@ -450,17 +443,13 @@ CPathFind::PreparePathData(void)
 	int numExtern, numIntern;
 	CTempNode *tempNodes;
 
-	printf("[PATH] PreparePathData ENTER\n");
-	// PathFind re-enabled for GC with expanded MEM1 (64MB Dolphin override)
+	printf("PreparePathData\n");
 	if(!CPathFind::LoadPathFindData() &&	// empty
 	   InfoForTileCars && InfoForTilePeds &&
-	   DetachedInfoForTileCars && DetachedInfoForTilePeds && TempExternalNodes &&
-	   m_tempNodes){
-		tempNodes = m_tempNodes;	// pre-allocated in AllocatePathFindInfoMem
-		printf("[PATH] PPData: if-check passed, using pre-allocated tempNodes=%p\n", tempNodes);
+	   DetachedInfoForTileCars && DetachedInfoForTilePeds && TempExternalNodes){
+		tempNodes = new CTempNode[NUMTEMPNODES];
 
 		m_numConnections = 0;
-		printf("[PATH] PPData: starting validation loop 1 (PATHNODESIZE=%d)\n", PATHNODESIZE);
 
 		for(i = 0; i < PATHNODESIZE; i++){
 			numExtern = 0;
@@ -512,18 +501,14 @@ CPathFind::PreparePathData(void)
 				}
 
 		m_numPathNodes = 0;
-		printf("[PATH] PPData: calling PreparePathDataForType PATH_CAR (mapObjects=%d)\n", m_numMapObjects);
 		PreparePathDataForType(PATH_CAR, tempNodes, InfoForTileCars, 1.0f, DetachedInfoForTileCars, NumDetachedCarNodeGroups);
 		m_numCarPathNodes = m_numPathNodes;
-		printf("[PATH] PPData: CAR done, carNodes=%d, calling PATH_PED\n", m_numCarPathNodes);
 		PreparePathDataForType(PATH_PED, tempNodes, InfoForTilePeds, 1.0f, DetachedInfoForTilePeds, NumDetachedPedNodeGroups);
 		m_numPedPathNodes = m_numPathNodes - m_numCarPathNodes;
-		printf("[PATH] PPData: PED done, pedNodes=%d, totalNodes=%d\n", m_numPedPathNodes, m_numPathNodes);
 
-		// m_tempNodes kept allocated (reused per new-game)
-		printf("[PATH] PPData: CountFloodFillGroups CAR...\n");
+		delete[] tempNodes;
+
 		CountFloodFillGroups(PATH_CAR);
-		printf("[PATH] PPData: CountFloodFillGroups PED...\n");
 		CountFloodFillGroups(PATH_PED);
 
 		delete[] InfoForTileCars;
@@ -635,7 +620,6 @@ CPathFind::PreparePathDataForType(uint8 type, CTempNode *tempnodes, CPathInfoFor
 
 #define OBJECTINDEX(n) (mapObjIndices[(n)])
 	int16 *mapObjIndices = new int16[NUM_PATHNODES];
-	printf("[PATH] PPDForType type=%d: mapObjects=%d, mapObjIndices=%p\n", type, m_numMapObjects, mapObjIndices);
 	NumTempExternalNodes = 0;
 
 	// Calculate internal nodes, store them and connect them to defining object

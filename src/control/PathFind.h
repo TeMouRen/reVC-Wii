@@ -220,7 +220,6 @@ public:
 	int32 unk;
 	uint8 m_numGroups[2];
 	CPathNode m_searchNodes[512];
-	CTempNode *m_tempNodes;	// pre-allocated in AllocatePathFindInfoMem for PreparePathData
 
 	void Init(void);
 	void AllocatePathFindInfoMem(int16 numPathGroups);

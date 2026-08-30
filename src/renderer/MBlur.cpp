@@ -162,13 +162,6 @@ CMBlur::MotionBlurClose(void)
 }
 
 void
-CMBlur::ResetHistory(void)
-{
-	ms_bJustInitialised = true;
-	pBufVertCount = 0;
-}
-
-void
 CMBlur::CreateImmediateModeData(RwCamera *cam, RwRect *rect)
 {
 	float zero, xmax, ymax;
@@ -370,6 +363,7 @@ void
 CMBlur::OverlayRender(RwCamera *cam, RwRaster *raster, RwRGBA color, int32 type, int32 bluralpha)
 {
 	int r, g, b, a;
+
 	r = color.red;
 	g = color.green;
 	b = color.blue;

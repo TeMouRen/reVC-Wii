@@ -44,21 +44,10 @@ void
 CCutsceneObject::SetModelIndex(uint32 id)
 {
 	CEntity::SetModelIndex(id);
-	if(m_rwObject == nil || RwObjectGetType(m_rwObject) != rpCLUMP){
-		printf("[CUTOBJ] SetModelIndex failed for model %u rw=%p\n", id, m_rwObject);
-		m_rwObject = nil;
-		return;
-	}
+	assert(RwObjectGetType(m_rwObject) == rpCLUMP);
 	RpAnimBlendClumpInit((RpClump*)m_rwObject);
-	CAnimBlendClumpData *clumpData = *RPANIMBLENDCLUMPDATA(m_rwObject);
-	if(clumpData == nil || clumpData->frames == nil || clumpData->numFrames <= 0){
-		printf("[CUTOBJ] Anim init failed for model %u rw=%p data=%p frames=%p num=%d\n",
-		       id, m_rwObject, clumpData, clumpData ? clumpData->frames : nil, clumpData ? clumpData->numFrames : -1);
-		DeleteRwObject();
-		return;
-	}
-	clumpData->velocity3d = &m_vecMoveSpeed;
-	clumpData->frames[0].flag |= AnimBlendFrameData::VELOCITY_EXTRACTION_3D;
+	(*RPANIMBLENDCLUMPDATA(m_rwObject))->velocity3d = &m_vecMoveSpeed;
+	(*RPANIMBLENDCLUMPDATA(m_rwObject))->frames[0].flag |= AnimBlendFrameData::VELOCITY_EXTRACTION_3D;
 }
 
 void

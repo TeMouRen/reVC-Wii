@@ -32,23 +32,14 @@ CClumpModelInfo::CreateInstance(void)
 	if(m_clump == nil)
 		return nil;
 	RpClump *clone = RpClumpClone(m_clump);
-	if(clone == nil)
-		return nil;
 	if(IsClumpSkinned(clone)){
 		RpHAnimHierarchy *hier;
 		RpHAnimAnimation *anim;
 
 		hier = GetAnimHierarchyFromClump(clone);
-		if(hier == nil){
-			RpClumpDestroy(clone);
-			return nil;
-		}
+		assert(hier);
 		RpClumpForAllAtomics(clone, SetHierarchyForSkinAtomic, hier);
 		anim = HAnimAnimationCreateForHierarchy(hier);
-		if(anim == nil){
-			RpClumpDestroy(clone);
-			return nil;
-		}
 		RpHAnimHierarchySetCurrentAnim(hier, anim);
 		RpHAnimHierarchySetFlags(hier, (RpHAnimHierarchyFlag)(rpHANIMHIERARCHYUPDATEMODELLINGMATRICES|rpHANIMHIERARCHYUPDATELTMS));
 	}
@@ -60,8 +51,6 @@ CClumpModelInfo::CreateInstance(RwMatrix *m)
 {
 	if(m_clump){
 		RpClump *clump = (RpClump*)CreateInstance();
-		if(clump == nil)
-			return nil;
 		*RwFrameGetMatrix(RpClumpGetFrame(clump)) = *m;
 		return (RwObject*)clump;
 	}

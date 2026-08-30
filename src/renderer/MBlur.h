@@ -27,7 +27,6 @@ public:
 public:
 	static RwBool MotionBlurOpen(RwCamera *cam);
 	static RwBool MotionBlurClose(void);
-	static void ResetHistory(void);
 	static void CreateImmediateModeData(RwCamera *cam, RwRect *rect);
 	static void CreateImmediateModeData(RwCamera *cam, RwRect *rect, RwIm2DVertex *verts, RwRGBA color, float u1Off, float v1Off, float u2Off, float v2Off, float z, int fullTexture);
 	static void MotionBlurRender(RwCamera *cam, uint32 red, uint32 green, uint32 blue, uint32 blur, int32 type, uint32 bluralpha);
