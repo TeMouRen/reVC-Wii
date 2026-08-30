@@ -438,9 +438,14 @@ inline bool PutIntoSortedVehicleList(CVehicle *veh)
 	if(veh->IsBoat()){
 		int mode = TheCamera.Cams[TheCamera.ActiveCam].Mode;
 		if(mode == CCam::MODE_WHEELCAM ||
-		   mode == CCam::MODE_1STPERSON && TheCamera.GetLookDirection() != LOOKING_FORWARD && TheCamera.GetLookDirection() != LOOKING_BEHIND ||
-		   veh->m_rwObject == nil || RwObjectGetType(veh->m_rwObject) != rpCLUMP ||
-		   CVisibilityPlugins::GetClumpAlpha((RpClump*)veh->m_rwObject) != 255)
+		   mode == CCam::MODE_1STPERSON && TheCamera.GetLookDirection() != LOOKING_FORWARD && TheCamera.GetLookDirection() != LOOKING_BEHIND
+#ifdef WII
+		   || veh->m_rwObject == nil || RwObjectGetType(veh->m_rwObject) != rpCLUMP ||
+		   CVisibilityPlugins::GetClumpAlpha((RpClump*)veh->m_rwObject) != 255
+#else
+		   || CVisibilityPlugins::GetClumpAlpha(veh->GetClump()) != 255
+#endif
+		   )
 			return false;
 		return true;
 	}else
@@ -471,8 +476,17 @@ CRenderer::RenderEverythingBarRoads(void)
 #endif
 
 		if(e->IsVehicle() ||
-		   e->IsPed() && e->m_rwObject != nil && RwObjectGetType(e->m_rwObject) == rpCLUMP &&
-		   CVisibilityPlugins::GetClumpAlpha((RpClump*)e->m_rwObject) != 255){
+		   e->IsPed() &&
+#ifdef WII
+		   e->m_rwObject != nil && RwObjectGetType(e->m_rwObject) == rpCLUMP &&
+#endif
+		   CVisibilityPlugins::GetClumpAlpha(
+#ifdef WII
+		       (RpClump*)e->m_rwObject
+#else
+		       e->GetClump()
+#endif
+		   ) != 255){
 			if(e->IsVehicle() && PutIntoSortedVehicleList((CVehicle*)e)){
 				ei.ent = e;
 				ei.sort = (ms_vecCameraPosition - e->GetPosition()).MagnitudeSqr();
