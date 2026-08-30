@@ -9,10 +9,8 @@
 
 CAnimBlendAssociation::CAnimBlendAssociation(void)
 {
-	numNodes = 0;
 	groupId = -1;
 	nodes = nil;
-	hierarchy = nil;
 	blendAmount = 1.0f;
 	blendDelta = 0.0f;
 	currentTime = 0.0f;
@@ -21,27 +19,18 @@ CAnimBlendAssociation::CAnimBlendAssociation(void)
 	animId = -1;
 	flags = 0;
 	callbackType = CB_NONE;
-	callback = nil;
-	callbackArg = nil;
 	link.Init();
 }
 
 CAnimBlendAssociation::CAnimBlendAssociation(CAnimBlendAssociation &other)
 {
-	numNodes = 0;
-	groupId = -1;
 	nodes = nil;
-	hierarchy = nil;
 	blendAmount = 1.0f;
 	blendDelta = 0.0f;
 	currentTime = 0.0f;
 	speed = 1.0f;
 	timeStep = 0.0f;
-	animId = -1;
-	flags = 0;
 	callbackType = CB_NONE;
-	callback = nil;
-	callbackArg = nil;
 	link.Init();
 	Init(other);
 }
@@ -58,18 +47,7 @@ CAnimBlendAssociation::AllocateAnimBlendNodeArray(int n)
 {
 	int i;
 
-	nodes = nil;
-	numNodes = 0;
-	if(n <= 0)
-		return;
-
 	nodes = (CAnimBlendNode*)RwMallocAlign(n*sizeof(CAnimBlendNode), 64);
-	if(nodes == nil){
-		printf("[ANIM-ALLOC] AllocateAnimBlendNodeArray FAILED n=%d size=%u\n",
-		       n, (unsigned)(n*sizeof(CAnimBlendNode)));
-		return;
-	}
-	numNodes = n;
 	for(i = 0; i < n; i++)
 		nodes[i].Init();
 }
@@ -79,8 +57,6 @@ CAnimBlendAssociation::FreeAnimBlendNodeArray(void)
 {
 	if(nodes)
 		RwFreeAlign(nodes);
-	nodes = nil;
-	numNodes = 0;
 }
 
 void
@@ -88,27 +64,10 @@ CAnimBlendAssociation::Init(RpClump *clump, CAnimBlendHierarchy *hier)
 {
 	int i;
 	AnimBlendFrameData *frame;
-	CAnimBlendClumpData *clumpData;
 
-	FreeAnimBlendNodeArray();
-	hierarchy = nil;
-	if(clump == nil || hier == nil){
-		printf("[ANIM-ALLOC] Init(clump,hier) rejected clump=%p hier=%p\n",
-		       (void*)clump, (void*)hier);
-		return;
-	}
-	clumpData = *RPANIMBLENDCLUMPDATA(clump);
-	if(clumpData == nil || clumpData->frames == nil || clumpData->numFrames <= 0){
-		printf("[ANIM-ALLOC] Init(clump,hier) missing clump data clump=%p hier=%p data=%p\n",
-		       (void*)clump, (void*)hier, (void*)clumpData);
-		return;
-	}
-	AllocateAnimBlendNodeArray(clumpData->numFrames);
-	if(nodes == nil){
-		printf("[ANIM-ALLOC] Init(clump,hier) aborted: nodes alloc failed clump=%p hier=%p frames=%d\n",
-		       (void*)clump, (void*)hier, (int)clumpData->numFrames);
-		return;
-	}
+	CAnimBlendClumpData *clumpData = *RPANIMBLENDCLUMPDATA(clump);
+	numNodes = clumpData->numFrames;
+	AllocateAnimBlendNodeArray(numNodes);
 	for(i = 0; i < numNodes; i++)
 		nodes[i].association = this;
 	hierarchy = hier;
@@ -130,26 +89,13 @@ void
 CAnimBlendAssociation::Init(CAnimBlendAssociation &assoc)
 {
 	int i;
-	int nodeCount;
 
-	FreeAnimBlendNodeArray();
-	hierarchy = nil;
-	nodeCount = assoc.numNodes;
-	if(assoc.nodes == nil || assoc.hierarchy == nil || nodeCount <= 0){
-		printf("[ANIM-ALLOC] Init(copy) rejected assoc=%p nodes=%p hier=%p frames=%d\n",
-		       (void*)&assoc, (void*)assoc.nodes, (void*)assoc.hierarchy, nodeCount);
-		return;
-	}
-	AllocateAnimBlendNodeArray(nodeCount);
-	if(nodes == nil){
-		printf("[ANIM-ALLOC] Init(copy) aborted: nodes alloc failed assoc=%p frames=%d\n",
-		       (void*)&assoc, nodeCount);
-		return;
-	}
 	hierarchy = assoc.hierarchy;
+	numNodes = assoc.numNodes;
 	flags = assoc.flags;
 	animId = assoc.animId;
 	groupId = assoc.groupId;
+	AllocateAnimBlendNodeArray(numNodes);
 	for(i = 0; i < numNodes; i++){
 		nodes[i] = assoc.nodes[i];
 		nodes[i].association = this;

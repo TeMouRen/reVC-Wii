@@ -4,7 +4,6 @@
 #include "Particle.h"
 #include "RpAnimBlend.h"
 #include "Ped.h"
-#include "CutsceneMgr.h"
 #include "Wanted.h"
 #include "AnimBlendAssociation.h"
 #include "DMAudio.h"
@@ -42,194 +41,6 @@ CVector vecPedVespaBikeJumpRhsAnimOffset;
 CVector vecPedHarleyBikeJumpRhsAnimOffset;
 CVector vecPedDirtBikeJumpRhsAnimOffset;
 CVector vecPedBikeKickAnimOffset;
-
-#if REAL_GAMECUBE
-static bool GcPedIsIntroExitFocus(CPed *ped);
-
-static bool
-GcIsScriptedIntroAdmiralVehicle(CVehicle *veh)
-{
-	return veh != nil &&
-		veh->GetModelIndex() == MI_ADMIRAL &&
-		veh->VehicleCreatedBy == MISSION_VEHICLE;
-}
-
-static const char*
-GcPedDoorName(uint32 door)
-{
-	switch (door) {
-	case CAR_DOOR_LF: return "LF";
-	case CAR_DOOR_RF: return "RF";
-	case CAR_DOOR_LR: return "LR";
-	case CAR_DOOR_RR: return "RR";
-	case CAR_BOOT: return "BOOT";
-	case CAR_BUMP_REAR: return "BUMP";
-	case CAR_WINDSCREEN: return "WINDSCREEN";
-	default: return "NONE";
-	}
-}
-
-static int
-GcPedSeatIndexInVehicle(CPed *ped, CVehicle *veh)
-{
-	if (ped == nil || veh == nil)
-		return -2;
-	if (veh->pDriver == ped)
-		return -1;
-	for (int i = 0; i < veh->m_nNumMaxPassengers; i++) {
-		if (veh->pPassengers[i] == ped)
-			return i;
-	}
-	return -2;
-}
-
-static void
-GcTraceScriptedIntroExit(CPed *ped, const char *stage, CVehicle *veh, uint32 door,
-	bool teleportNeeded, const CVector *candidatePos = nil)
-{
-	if (ped == nil || veh == nil)
-		return;
-	if (!GcIsScriptedIntroAdmiralVehicle(veh) && !GcPedIsIntroExitFocus(ped))
-		return;
-
-	const CVector &pedPos = ped->GetPosition();
-	const CVector &vehPos = veh->GetPosition();
-	int seat = GcPedSeatIndexInVehicle(ped, veh);
-	float relFwd = 0.0f;
-	float relRight = 0.0f;
-	if (candidatePos != nil) {
-		CVector delta = *candidatePos - vehPos;
-		relFwd = DotProduct(delta, veh->GetForward());
-		relRight = DotProduct(delta, veh->GetRight());
-	}
-
-	printf("[PED-EXIT] stage=%s frame=%u ped=%p player=%d model=%d veh=%p seat=%d drv=%d p0=%d p1=%d p2=%d door=%s teleport=%d pedPos=(%f,%f,%f) vehPos=(%f,%f,%f) cand=(%f,%f,%f) rel=(%f,%f)\n",
-		stage,
-		CTimer::GetFrameCounter(),
-		ped,
-		ped->IsPlayer() ? 1 : 0,
-		ped->GetModelIndex(),
-		veh,
-		seat,
-		veh->pDriver == ped ? 1 : 0,
-		veh->pPassengers[0] == ped ? 1 : 0,
-		veh->pPassengers[1] == ped ? 1 : 0,
-		veh->pPassengers[2] == ped ? 1 : 0,
-		GcPedDoorName(door),
-		teleportNeeded ? 1 : 0,
-		pedPos.x, pedPos.y, pedPos.z,
-		vehPos.x, vehPos.y, vehPos.z,
-		candidatePos ? candidatePos->x : 0.0f,
-		candidatePos ? candidatePos->y : 0.0f,
-		candidatePos ? candidatePos->z : 0.0f,
-		relFwd, relRight);
-}
-
-static const char*
-GcObjectiveName(eObjective objective)
-{
-	switch (objective) {
-	case OBJECTIVE_NONE: return "NONE";
-	case OBJECTIVE_WAIT_ON_FOOT: return "WAIT_ON_FOOT";
-	case OBJECTIVE_WAIT_IN_CAR: return "WAIT_IN_CAR";
-	case OBJECTIVE_WAIT_IN_CAR_THEN_GET_OUT: return "WAIT_IN_CAR_THEN_GET_OUT";
-	case OBJECTIVE_LEAVE_CAR: return "LEAVE_CAR";
-	case OBJECTIVE_ENTER_CAR_AS_PASSENGER: return "ENTER_CAR_AS_PASSENGER";
-	case OBJECTIVE_ENTER_CAR_AS_DRIVER: return "ENTER_CAR_AS_DRIVER";
-	case OBJECTIVE_GOTO_AREA_ANY_MEANS: return "GOTO_AREA_ANY_MEANS";
-	case OBJECTIVE_GOTO_AREA_ON_FOOT: return "GOTO_AREA_ON_FOOT";
-	case OBJECTIVE_RUN_TO_AREA: return "RUN_TO_AREA";
-	case OBJECTIVE_SPRINT_TO_AREA: return "SPRINT_TO_AREA";
-	default: return "OTHER";
-	}
-}
-
-static bool
-GcIsLikelyScriptedIntroKen(CPed *ped)
-{
-	return ped != nil &&
-		ped->CharCreatedBy == MISSION_CHAR &&
-		ped->GetModelIndex() == 118;
-}
-
-static bool
-GcPedIsIntroExitFocus(CPed *ped)
-{
-	if (ped == nil)
-		return false;
-	if (GcIsLikelyScriptedIntroKen(ped))
-		return true;
-	return ped->IsPlayer() && CCutsceneMgr::ms_cutsceneLoadStatus != 0;
-}
-
-static void
-GcTraceScriptedIntroObjective(CPed *ped, const char *stage)
-{
-	if (ped == nil)
-		return;
-
-	CVehicle *veh = ped->m_pMyVehicle;
-	if (!GcIsScriptedIntroAdmiralVehicle(veh) && !GcIsLikelyScriptedIntroKen(ped))
-		return;
-
-	const CVector &pedPos = ped->GetPosition();
-	printf("[PED-OBJ] stage=%s frame=%u ped=%p player=%d model=%d obj=%d(%s) prev=%d(%s) state=%d move=%d inVeh=%d veh=%p seek=(%f,%f,%f) target=(%f,%f,%f) pos=(%f,%f,%f)\n",
-		stage,
-		CTimer::GetFrameCounter(),
-		ped,
-		ped->IsPlayer() ? 1 : 0,
-		ped->GetModelIndex(),
-		(int)ped->m_objective, GcObjectiveName(ped->m_objective),
-		(int)ped->m_prevObjective, GcObjectiveName(ped->m_prevObjective),
-		(int)ped->m_nPedState,
-		(int)ped->m_nMoveState,
-		ped->bInVehicle ? 1 : 0,
-		veh,
-		ped->m_vecSeekPos.x, ped->m_vecSeekPos.y, ped->m_vecSeekPos.z,
-		ped->m_nextRoutePointPos.x, ped->m_nextRoutePointPos.y, ped->m_nextRoutePointPos.z,
-		pedPos.x, pedPos.y, pedPos.z);
-}
-
-static void
-GcTraceIntroSeatCaller(CPed *ped, const char *stage, CVehicle *veh)
-{
-	if (ped == nil)
-		return;
-	if (!GcIsScriptedIntroAdmiralVehicle(veh) && !GcPedIsIntroExitFocus(ped))
-		return;
-
-	const CVector &pedPos = ped->GetPosition();
-	CVector vehPos(0.0f, 0.0f, 0.0f);
-	if (veh)
-		vehPos = veh->GetPosition();
-
-	printf("[PED-SEATCALL] stage=%s frame=%u ped=%p player=%d model=%d state=%d obj=%d prevObj=%d inVeh=%d remove=%d veh=%p drv=%p p0=%p p1=%p p2=%p cut=%s status=%u running=%d pedPos=(%f,%f,%f) vehPos=(%f,%f,%f)\n",
-		stage,
-		CTimer::GetFrameCounter(),
-		ped,
-		ped->IsPlayer() ? 1 : 0,
-		ped->GetModelIndex(),
-		(int)ped->m_nPedState,
-		(int)ped->m_objective,
-		(int)ped->m_prevObjective,
-		ped->bInVehicle ? 1 : 0,
-		ped->bRemoveFromWorld ? 1 : 0,
-		veh,
-		veh ? veh->pDriver : nil,
-		veh ? veh->pPassengers[0] : nil,
-		veh ? veh->pPassengers[1] : nil,
-		veh ? veh->pPassengers[2] : nil,
-		CCutsceneMgr::GetCutsceneName(),
-		CCutsceneMgr::ms_cutsceneLoadStatus,
-		CCutsceneMgr::IsRunning(),
-		pedPos.x, pedPos.y, pedPos.z,
-		vehPos.x, vehPos.y, vehPos.z);
-}
-#else
-#define GcTraceScriptedIntroObjective(ped, stage) ((void)0)
-#define GcTraceScriptedIntroExit(ped, stage, veh, door, teleportNeeded, candidatePos) ((void)0)
-#define GcTraceIntroSeatCaller(ped, stage, veh) ((void)0)
-#endif
 
 void
 CPed::SetObjectiveTimer(int time)
@@ -360,9 +171,6 @@ CPed::SetObjective(eObjective newObj)
 				break;
 		}
 	}
-#if REAL_GAMECUBE
-	GcTraceScriptedIntroObjective(this, "set-obj");
-#endif
 }
 
 void
@@ -552,9 +360,6 @@ CPed::SetObjective(eObjective newObj, void *entity)
 		default:
 			break;
 	}
-#if REAL_GAMECUBE
-	GcTraceScriptedIntroObjective(this, "set-obj-entity");
-#endif
 }
 
 // Only used in 01E1: SET_CHAR_OBJ_FOLLOW_ROUTE opcode
@@ -726,9 +531,6 @@ CPed::SetObjective(eObjective newObj, CVector dest)
 
 		m_objective = newObj;
 	}
-#if REAL_GAMECUBE
-	GcTraceScriptedIntroObjective(this, "set-obj-vec");
-#endif
 }
 
 void
@@ -969,9 +771,6 @@ CPed::RestorePreviousObjective(void)
 		m_prevObjective = OBJECTIVE_NONE;
 	}
 	bObjectiveCompleted = false;
-#if REAL_GAMECUBE
-	GcTraceScriptedIntroObjective(this, "restore-prev");
-#endif
 }
 
 void
@@ -3200,7 +2999,6 @@ CPed::PedShuffle(void)
 		if (!driver || driver->m_objective == OBJECTIVE_LEAVE_CAR) {
 			m_pVehicleAnim = CAnimManager::AddAnimation(GetClump(), ASSOCGRP_STD, m_pMyVehicle->bLowVehicle ? ANIM_STD_CAR_SHUFFLE_LO_RHS : ANIM_STD_CAR_SHUFFLE_RHS);
 			m_objective = OBJECTIVE_ENTER_CAR_AS_DRIVER;
-			GcTraceIntroSeatCaller(this, "ped-shuffle-remove-passenger", m_pMyVehicle);
 			m_pMyVehicle->RemovePassenger(this);
 			bInVehicle = false;
 			m_pVehicleAnim->SetFinishCallback(PedSetInCarCB, this);
@@ -4595,9 +4393,6 @@ CPed::SetExitCar(CVehicle *veh, uint32 wantedDoorNode)
 		m_pSeekTarget->RegisterReference((CEntity**) &m_pSeekTarget);
 		m_vehDoor = optedDoorNode;
 		SetPedState(PED_EXIT_CAR);
-#if REAL_GAMECUBE
-		GcTraceScriptedIntroExit(this, "set-exit", veh, m_vehDoor, teleportNeeded);
-#endif
 		if (m_pVehicleAnim && m_pVehicleAnim->flags & ASSOC_PARTIAL)
 			m_pVehicleAnim->blendDelta = -1000.0f;
 		RemoveInCarAnims();
@@ -5636,7 +5431,6 @@ CPed::PedSetOutTrainCB(CAnimBlendAssociation *animAssoc, void *arg)
 	ped->m_vecMoveSpeed = CVector(0.0f, 0.0f, 0.0f);
 	ped->SetPosition(posAfterExit);
 	ped->SetHeading(ped->m_fRotationCur);
-	GcTraceIntroSeatCaller(ped, "train-exit-remove-passenger", veh);
 	veh->RemovePassenger(ped);
 }
 #endif
@@ -6393,9 +6187,6 @@ CPed::PositionPedOutOfCollision(void)
 		// Try the normal way
 		CVector pos = GetPositionToOpenCarDoor(m_pMyVehicle, m_vehDoor);
 		newPos = pos;
-#if REAL_GAMECUBE
-		GcTraceScriptedIntroExit(this, "outcol-door-try", veh, m_vehDoor, false, &newPos);
-#endif
 		GetMatrix().SetTranslate(newPos);
 		if (!CheckCollision()) {
 			if (CWorld::GetIsLineOfSightClear(vehPos, newPos, true, false, false, true, false, false, false))
@@ -6411,9 +6202,6 @@ CPed::PositionPedOutOfCollision(void)
 		// Check sides of veh., respective to seat column-veh. center difference(why?)
 		float exitOffset = vehRelativeExitX - DotProduct(ourPos - vehPos, veh->GetRight());
 		newPos = exitOffset * veh->GetRight() + ourPos;
-#if REAL_GAMECUBE
-		GcTraceScriptedIntroExit(this, "outcol-side-try", veh, m_vehDoor, false, &newPos);
-#endif
 		GetMatrix().SetTranslate(newPos);
 		if (!CheckCollision()) {
 			if (CWorld::GetIsLineOfSightClear(vehPos, newPos, true, false, false, true, false, false, false))
@@ -6427,9 +6215,6 @@ CPed::PositionPedOutOfCollision(void)
 		for (int i = 0; i < 4; i++) {
 			float fwdMult = i * ySection + minY;
 			newPos = vehRelativeExitX * veh->GetRight() + fwdMult * veh->GetForward() + vehPos;
-#if REAL_GAMECUBE
-			GcTraceScriptedIntroExit(this, "outcol-sweep-try", veh, m_vehDoor, false, &newPos);
-#endif
 			GetMatrix().SetTranslate(newPos);
 			if (!CheckCollision()) {
 				if (CWorld::GetIsLineOfSightClear(vehPos, newPos, true, false, false, true, false, false, false)) {
@@ -6442,9 +6227,6 @@ CPed::PositionPedOutOfCollision(void)
 	if (!foundAPos) {
 		// Back of veh.
 		newPos = (vehCol->boundingBox.min.y - 0.355f) * veh->GetForward() + vehPos;
-#if REAL_GAMECUBE
-		GcTraceScriptedIntroExit(this, "outcol-back-try", veh, m_vehDoor, false, &newPos);
-#endif
 		GetMatrix().SetTranslate(newPos);
 		if (!CheckCollision()) {
 			if (CWorld::GetIsLineOfSightClear(vehPos, newPos, true, false, false, true, false, false, false))
@@ -6454,9 +6236,6 @@ CPed::PositionPedOutOfCollision(void)
 	if (!foundAPos) {
 		// Front of veh.
 		newPos = (0.355f + vehCol->boundingBox.max.y) * veh->GetForward() + vehPos;
-#if REAL_GAMECUBE
-		GcTraceScriptedIntroExit(this, "outcol-front-try", veh, m_vehDoor, false, &newPos);
-#endif
 		GetMatrix().SetTranslate(newPos);
 		if (!CheckCollision()) {
 			if (CWorld::GetIsLineOfSightClear(vehPos, newPos, true, false, false, true, false, false, false))
@@ -6466,9 +6245,6 @@ CPed::PositionPedOutOfCollision(void)
 	if (!foundAPos) {
 		// Opposite X side + back
 		newPos = vehCol->boundingBox.min.y * veh->GetForward() + vehPos - vehRelativeExitX * veh->GetRight();
-#if REAL_GAMECUBE
-		GcTraceScriptedIntroExit(this, "outcol-opposite-back-try", veh, m_vehDoor, false, &newPos);
-#endif
 		GetMatrix().SetTranslate(newPos);
 		if (!CheckCollision()) {
 			if (CWorld::GetIsLineOfSightClear(vehPos, newPos, true, false, false, true, false, false, false))
@@ -6478,9 +6254,6 @@ CPed::PositionPedOutOfCollision(void)
 	if (!foundAPos) {
 		// Opposite X side + front
 		newPos = vehCol->boundingBox.max.y * veh->GetForward() + vehPos - vehRelativeExitX * veh->GetRight();
-#if REAL_GAMECUBE
-		GcTraceScriptedIntroExit(this, "outcol-opposite-front-try", veh, m_vehDoor, false, &newPos);
-#endif
 		GetMatrix().SetTranslate(newPos);
 		if (!CheckCollision()) {
 			if (CWorld::GetIsLineOfSightClear(vehPos, newPos, true, false, false, true, false, false, false))
@@ -6502,9 +6275,6 @@ CPed::PositionPedOutOfCollision(void)
 	m_vecMoveSpeed = CVector(0.f, 0.f, 0.f);
 	m_vecTurnSpeed = CVector(0.f, 0.f, 0.f);
 	veh->m_vecMoveSpeed = CVector(0.f, 0.f, 0.f);
-#if REAL_GAMECUBE
-	GcTraceScriptedIntroExit(this, foundAPos ? "outcol-final" : "outcol-failed", veh, m_vehDoor, false, &newPos);
-#endif
 	veh->m_vecTurnSpeed = CVector(0.f, 0.f, 0.f);
 	CWorld::pIgnoreEntity = nil;
 	bUsesCollision = true;

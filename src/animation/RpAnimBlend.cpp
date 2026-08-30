@@ -153,16 +153,12 @@ RpAnimBlendClumpInitSkinned(RpClump *clump)
 
 	RpAnimBlendAllocateData(clump);
 	clumpData = *RPANIMBLENDCLUMPDATA(clump);
-	if(clumpData == nil)
-		return;
 	atomic = GetFirstAtomic(clump);
 	assert(atomic);
 	skin = RpSkinGeometryGetSkin(RpAtomicGetGeometry(atomic));
 	assert(skin);
 	numBones = RpSkinGetNumBones(skin);
 	clumpData->SetNumberOfBones(numBones);
-	if(clumpData->frames == nil || clumpData->numFrames <= 0)
-		return;
 	hier = GetAnimHierarchyFromSkinClump(clump);
 	assert(hier);
 	memset(boneTab, 0, sizeof(boneTab));
@@ -192,13 +188,9 @@ RpAnimBlendClumpInitNotSkinned(RpClump *clump)
 
 	RpAnimBlendAllocateData(clump);
 	clumpData = *RPANIMBLENDCLUMPDATA(clump);
-	if(clumpData == nil)
-		return;
 	root = RpClumpGetFrame(clump);
 	RwFrameForAllChildren(root, FrameForAllChildrenCountCallBack, &numFrames);
 	clumpData->SetNumberOfFrames(numFrames);
-	if(clumpData->frames == nil || clumpData->numFrames <= 0)
-		return;
 	frames = clumpData->frames;
 	RwFrameForAllChildren(root, FrameForAllChildrenFillFrameArrayCallBack, &frames);
 	clumpData->ForAllFrames(FrameInitCBnonskin, nil);

@@ -1200,8 +1200,7 @@ CRenderer::SetupEntityVisibility(CEntity *ent)
 		mi->m_isDamaged = false;
 		if(ent->m_rwObject == nil)
 			ent->CreateRwObject();
-		if(ent->m_rwObject == nil)
-			return VIS_INVISIBLE;
+		assert(ent->m_rwObject);
 		RpAtomic *rwobj = (RpAtomic*)ent->m_rwObject;
 		// Make sure our atomic uses the right geometry and not
 		// that of an atomic for another draw distance.
@@ -1254,8 +1253,7 @@ CRenderer::SetupEntityVisibility(CEntity *ent)
 
 	if(ent->m_rwObject == nil)
 		ent->CreateRwObject();
-	if(ent->m_rwObject == nil)
-		return VIS_INVISIBLE;
+	assert(ent->m_rwObject);
 	RpAtomic *rwobj = (RpAtomic*)ent->m_rwObject;
 	if(RpAtomicGetGeometry(a) != RpAtomicGetGeometry(rwobj))
 		RpAtomicSetGeometry(rwobj, RpAtomicGetGeometry(a), rpATOMICSAMEBOUNDINGSPHERE); // originally 5 (mistake?)
@@ -1340,8 +1338,7 @@ CRenderer::SetupBigBuildingVisibility(CEntity *ent)
 	if(a){
 		if(ent->m_rwObject == nil)
 			ent->CreateRwObject();
-		if(ent->m_rwObject == nil)
-			return VIS_INVISIBLE;
+		assert(ent->m_rwObject);
 		RpAtomic *rwobj = (RpAtomic*)ent->m_rwObject;
 
 		// Make sure our atomic uses the right geometry and not
@@ -1399,8 +1396,7 @@ CRenderer::SetupBigBuildingVisibility(CEntity *ent)
 	// Fade...
 	if(ent->m_rwObject == nil)
 		ent->CreateRwObject();
-	if(ent->m_rwObject == nil)
-		return VIS_INVISIBLE;
+	assert(ent->m_rwObject);
 	RpAtomic *rwobj = (RpAtomic*)ent->m_rwObject;
 	if(RpAtomicGetGeometry(a) != RpAtomicGetGeometry(rwobj))
 		RpAtomicSetGeometry(rwobj, RpAtomicGetGeometry(a), rpATOMICSAMEBOUNDINGSPHERE); // originally 5 (mistake?)

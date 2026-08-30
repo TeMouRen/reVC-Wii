@@ -2386,11 +2386,7 @@ CPed::LoadFightData(void)
 		if (strcmp(animName, "default") != 0) {
 			if (strcmp(animName, "null") != 0) {
 				animAssoc = CAnimManager::GetAnimAssociation(ASSOCGRP_STD, animName);
-				// GC: animAssoc may be nil if assoc groups not yet created
-				if (animAssoc)
-					tFightMoves[moveId].animId = (AnimationId)animAssoc->animId;
-				else
-					tFightMoves[moveId].animId = ANIM_STD_WALK;
+				tFightMoves[moveId].animId = (AnimationId)animAssoc->animId;
 			} else {
 				tFightMoves[moveId].animId = ANIM_STD_WALK;
 			}

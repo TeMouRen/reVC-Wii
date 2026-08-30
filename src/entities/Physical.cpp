@@ -20,55 +20,9 @@
 #include "Bike.h"
 #include "Pickups.h"
 #include "Physical.h"
-#include "CutsceneObject.h"
-#include "CutsceneMgr.h"
-#include "Game.h"
 
 #ifdef WALLCLIMB_CHEAT
 bool gGravityCheat;
-#endif
-
-#if REAL_GAMECUBE
-static uint32 gGcLastIntroHydrantIgnoreFrame;
-
-static bool
-GcIsScriptedIntroAdmiral(CPhysical *phys)
-{
-	if(phys == nil || !phys->IsVehicle())
-		return false;
-
-	CVehicle *veh = (CVehicle*)phys;
-	if(veh->GetModelIndex() != MI_ADMIRAL || veh->VehicleCreatedBy != MISSION_VEHICLE)
-		return false;
-	if(veh->GetStatus() == STATUS_PLAYER ||
-	   veh->GetStatus() == STATUS_PLAYER_REMOTE ||
-	   veh->GetStatus() == STATUS_PLAYER_DISABLED ||
-	   veh->GetStatus() == STATUS_WRECKED)
-		return false;
-
-	if(CGame::playingIntro || CCutsceneMgr::IsRunning() || CCutsceneMgr::ms_cutsceneLoadStatus != 0)
-		return true;
-
-	switch(veh->AutoPilot.m_nCarMission){
-	case MISSION_NONE:
-	case MISSION_WAITFORDELETION:
-	case MISSION_STOP_FOREVER:
-		return false;
-	default:
-		return true;
-	}
-}
-
-static bool
-GcShouldIgnoreScriptedIntroObject(CPhysical *veh, CPhysical *obj)
-{
-	bool ignore = GcIsScriptedIntroAdmiral(veh) &&
-		obj != nil && obj->IsObject() &&
-		obj->GetModelIndex() == MI_FIRE_HYDRANT;
-	if(ignore)
-		gGcLastIntroHydrantIgnoreFrame = CTimer::GetFrameCounter();
-	return ignore;
-}
 #endif
 
 
@@ -150,8 +104,10 @@ CPhysical::Add(void)
 	ystart = CWorld::GetSectorIndexY(bounds.top);
 	yend   = CWorld::GetSectorIndexY(bounds.bottom);
 	ymid   = CWorld::GetSectorIndexY((bounds.top + bounds.bottom)/2.0f);
-	if (xstart < 0 || xend >= NUMSECTORS_X || ystart < 0 || yend >= NUMSECTORS_Y)
-		return;
+	assert(xstart >= 0);
+	assert(xend < NUMSECTORS_X);
+	assert(ystart >= 0);
+	assert(yend < NUMSECTORS_Y);
 
 	for(y = ystart; y <= yend; y++)
 		for(x = xstart; x <= xend; x++){
@@ -213,8 +169,10 @@ CPhysical::RemoveAndAdd(void)
 	ystart = CWorld::GetSectorIndexY(bounds.top);
 	yend   = CWorld::GetSectorIndexY(bounds.bottom);
 	ymid   = CWorld::GetSectorIndexY((bounds.top + bounds.bottom)/2.0f);
-	if (xstart < 0 || xend >= NUMSECTORS_X || ystart < 0 || yend >= NUMSECTORS_Y)
-		return;
+	assert(xstart >= 0);
+	assert(xend < NUMSECTORS_X);
+	assert(ystart >= 0);
+	assert(yend < NUMSECTORS_Y);
 
 	// we'll try to recycle nodes from here
 	CEntryInfoNode *next = m_entryInfoList.first;
@@ -1323,10 +1281,6 @@ CPhysical::ProcessShiftSectorList(CPtrList *lists)
 			   (A->bHasHitWall && !canshift) ||
 			   !B->GetIsTouching(center, radius))
 				continue;
-#if REAL_GAMECUBE
-			if(GcShouldIgnoreScriptedIntroObject(A, B))
-				continue;
-#endif
 
 			// This could perhaps be done a bit nicer
 
@@ -1483,9 +1437,6 @@ CPhysical::ProcessCollisionSectorList_SimpleCar(CPtrList *lists)
 			B = (CPhysical*)listnode->item;
 			if(B != A &&
 			   !(B->IsObject() && ((CObject*)B)->bIsStreetLight && B->GetUp().z < 0.66f) &&
-#if REAL_GAMECUBE
-			   !GcShouldIgnoreScriptedIntroObject(A, B) &&
-#endif
 			   B->m_scanCode != CWorld::GetCurrentScanCode() &&
 			   B->bUsesCollision &&
 			   B->GetIsTouching(center, radius)){
@@ -1654,10 +1605,6 @@ CPhysical::ProcessCollisionSectorList(CPtrList *lists)
 			   B->m_scanCode == CWorld::GetCurrentScanCode() ||
 			   B == A)
 				continue;
-#if REAL_GAMECUBE
-			if(GcShouldIgnoreScriptedIntroObject(A, B))
-				continue;
-#endif
 			if(!B->GetIsTouching(center, radius)){
 				if(A->IsObject() && Aobj->m_pCollidingEntity == B)
 					Aobj->m_pCollidingEntity = nil;
@@ -2158,30 +2105,12 @@ CPhysical::ProcessCollision(void)
 	m_bIsVehicleBeingShifted = false;
 	bSkipLineCol = false;
 
-#if REAL_GAMECUBE
-	if(IsObject() && ((CObject*)this)->ObjectCreatedBy == CUTSCENE_OBJECT){
-		bIsStuck = false;
-		bIsInSafePosition = true;
-		RemoveAndAdd();
-		return;
-	}
-#endif
-
 	if(!bUsesCollision){
 		bIsStuck = false;
 		bIsInSafePosition = true;
 		RemoveAndAdd();
 		return;
 	}
-
-#if REAL_GAMECUBE
-	if(IsVehicle() && CCutsceneMgr::IsRunning() && GetStatus() == STATUS_SIMPLE){
-		bIsStuck = false;
-		bIsInSafePosition = true;
-		RemoveAndAdd();
-		return;
-	}
-#endif
 
 	if(GetStatus() == STATUS_SIMPLE){
 		if(CheckCollision_SimpleCar() && GetStatus() == STATUS_SIMPLE){
