@@ -8,54 +8,6 @@
 CPedType *CPedType::ms_apPedType[NUM_PEDTYPES];
 CPedStats *CPedStats::ms_apPedStats[NUM_PEDSTATS];
 
-struct GcPedStatNameMapEntry {
-	const char *name;
-	ePedStats type;
-};
-
-static const GcPedStatNameMapEntry gGcPedStatNameMap[] = {
-	{ "STAT_PLAYER", PEDSTAT_PLAYER },
-	{ "STAT_COP", PEDSTAT_COP },
-	{ "STAT_MEDIC", PEDSTAT_MEDIC },
-	{ "STAT_FIREMAN", PEDSTAT_FIREMAN },
-	{ "STAT_GANG1", PEDSTAT_GANG1 },
-	{ "STAT_GANG2", PEDSTAT_GANG2 },
-	{ "STAT_GANG3", PEDSTAT_GANG3 },
-	{ "STAT_GANG4", PEDSTAT_GANG4 },
-	{ "STAT_GANG5", PEDSTAT_GANG5 },
-	{ "STAT_GANG6", PEDSTAT_GANG6 },
-	{ "STAT_GANG7", PEDSTAT_GANG7 },
-	{ "STAT_STREET_GUY", PEDSTAT_STREET_GUY },
-	{ "STAT_SUIT_GUY", PEDSTAT_SUIT_GUY },
-	{ "STAT_SENSIBLE_GUY", PEDSTAT_SENSIBLE_GUY },
-	{ "STAT_GEEK_GUY", PEDSTAT_GEEK_GUY },
-	{ "STAT_OLD_GUY", PEDSTAT_OLD_GUY },
-	{ "STAT_TOUGH_GUY", PEDSTAT_TOUGH_GUY },
-	{ "STAT_STREET_GIRL", PEDSTAT_STREET_GIRL },
-	{ "STAT_SUIT_GIRL", PEDSTAT_SUIT_GIRL },
-	{ "STAT_SENSIBLE_GIRL", PEDSTAT_SENSIBLE_GIRL },
-	{ "STAT_GEEK_GIRL", PEDSTAT_GEEK_GIRL },
-	{ "STAT_OLD_GIRL", PEDSTAT_OLD_GIRL },
-	{ "STAT_TOUGH_GIRL", PEDSTAT_TOUGH_GIRL },
-	{ "STAT_TRAMP_MALE", PEDSTAT_TRAMP_MALE },
-	{ "STAT_TRAMP_FEMALE", PEDSTAT_TRAMP_FEMALE },
-	{ "STAT_TOURIST", PEDSTAT_TOURIST },
-	{ "STAT_PROSTITUTE", PEDSTAT_PROSTITUTE },
-	{ "STAT_CRIMINAL", PEDSTAT_CRIMINAL },
-	{ "STAT_BUSKER", PEDSTAT_BUSKER },
-	{ "STAT_TAXIDRIVER", PEDSTAT_TAXIDRIVER },
-	{ "STAT_PSYCHO", PEDSTAT_PSYCHO },
-	{ "STAT_STEWARD", PEDSTAT_STEWARD },
-	{ "STAT_SPORTSFAN", PEDSTAT_SPORTSFAN },
-	{ "STAT_SHOPPER", PEDSTAT_SHOPPER },
-	{ "STAT_OLDSHOPPER", PEDSTAT_OLDSHOPPER },
-	{ "STAT_BEACH_GUY", PEDSTAT_BEACH_GUY },
-	{ "STAT_BEACH_GIRL", PEDSTAT_BEACH_GIRL },
-	{ "STAT_SKATER", PEDSTAT_SKATER },
-	{ "STAT_STD_MISSION", PEDSTAT_STD_MISSION },
-	{ "STAT_COWARD", PEDSTAT_COWARD },
-};
-
 void
 CPedType::Initialise(void)
 {
@@ -75,7 +27,6 @@ CPedType::Initialise(void)
 	}
 	debug("Loading ped data...\n");
 	LoadPedData();
-	debug("Ped data loaded\n");
 	debug("CPedType ready\n");
 }
 
@@ -263,8 +214,8 @@ CPedStats::Initialise(void)
 	debug("Initialising CPedStats...\n");
 	for(i = 0; i < NUM_PEDSTATS; i++){
 		ms_apPedStats[i] = new CPedStats;
-		memset(ms_apPedStats[i], 0, sizeof(CPedStats));
-		ms_apPedStats[i]->m_type = (ePedStats)i;
+		ms_apPedStats[i]->m_type = PEDSTAT_PLAYER;
+		ms_apPedStats[i]->m_name[8] = 'R';	// WHAT?
 		ms_apPedStats[i]->m_fleeDistance = 20.0f;
 		ms_apPedStats[i]->m_headingChangeRate = 15.0f;
 		ms_apPedStats[i]->m_fear = 50;
@@ -308,16 +259,6 @@ CPedStats::LoadPedStats(void)
 	CFileMgr::SetDir("DATA");
 	buflen = CFileMgr::LoadFile("PEDSTATS.DAT", (uint8*)buf, 16 * 1024, "r");
 	CFileMgr::SetDir("");
-#ifdef GAMECUBE
-	printf("[PEDSTAT] load buflen=%d\n", (int)buflen);
-#endif
-	if (buflen <= 0) {
-#ifdef GAMECUBE
-		printf("[PEDSTAT] failed to load PEDSTATS.DAT, keeping default stats\n");
-#endif
-		delete[] buf;
-		return;
-	}
 
 	for(bp = 0; bp < buflen; ){
 		// read file line by line
@@ -348,11 +289,8 @@ CPedStats::LoadPedStats(void)
 			&attackStrength,
 			&defendWeakness,
 			&flags);
-		if (type >= NUM_PEDSTATS)
-			break;
 		ms_apPedStats[type]->m_type = (ePedStats)type;
 		strncpy(ms_apPedStats[type]->m_name, name, 24);	// FIX: game uses strcpy
-		ms_apPedStats[type]->m_name[23] = '\0';
 		ms_apPedStats[type]->m_fleeDistance = fleeDist;
 		ms_apPedStats[type]->m_headingChangeRate = headingChangeRate;
 		ms_apPedStats[type]->m_fear = fear;
@@ -364,13 +302,6 @@ CPedStats::LoadPedStats(void)
 		ms_apPedStats[type]->m_flags = flags;
 		type++;
 	}
-#ifdef GAMECUBE
-	printf("[PEDSTAT] loaded count=%d player=\"%.23s\" cop=\"%.23s\" stdMission=\"%.23s\"\n",
-		type,
-		ms_apPedStats[PEDSTAT_PLAYER]->m_name,
-		ms_apPedStats[PEDSTAT_COP]->m_name,
-		ms_apPedStats[PEDSTAT_STD_MISSION]->m_name);
-#endif
 
 	delete[] buf;
 }
@@ -378,35 +309,9 @@ CPedStats::LoadPedStats(void)
 ePedStats
 CPedStats::GetPedStatType(char *name)
 {
-#ifdef GAMECUBE
-	static bool s_dumpedPedStatSnapshot = false;
-	if (name == nil) {
-		printf("[PEDSTAT] null stat name passed to GetPedStatType\n");
-		return NUM_PEDSTATS;
-	}
-	if ((uintptr)name < 0x100) {
-		printf("[PEDSTAT] suspicious stat name ptr=%p passed to GetPedStatType\n", name);
-		return NUM_PEDSTATS;
-	}
-#endif
-	for (uint32 i = 0; i < ARRAY_SIZE(gGcPedStatNameMap); i++) {
-		if (!CGeneral::faststrcmp(gGcPedStatNameMap[i].name, name))
-			return gGcPedStatNameMap[i].type;
-	}
 	for(uint16 type = 0; type < NUM_PEDSTATS; type++)
 		if(!CGeneral::faststrcmp(ms_apPedStats[type]->m_name, name))
 			return (ePedStats) type;
 
-#ifdef GAMECUBE
-	if (!s_dumpedPedStatSnapshot) {
-		s_dumpedPedStatSnapshot = true;
-		printf("[PEDSTAT] snapshot player=\"%.23s\" cop=\"%.23s\" stdMission=\"%.23s\" coward=\"%.23s\"\n",
-			ms_apPedStats[PEDSTAT_PLAYER]->m_name,
-			ms_apPedStats[PEDSTAT_COP]->m_name,
-			ms_apPedStats[PEDSTAT_STD_MISSION]->m_name,
-			ms_apPedStats[PEDSTAT_COWARD]->m_name);
-	}
-	printf("[PEDSTAT] unknown stat name=\"%s\"\n", name);
-#endif
 	return NUM_PEDSTATS;
 }

@@ -9,17 +9,6 @@
 
 cBuoyancy mod_Buoyancy;
 
-static int
-BuoyancySampleSteps(float numSteps)
-{
-	int steps = (int)numSteps;
-	if(steps < 1)
-		steps = 1;
-	if(steps > 16)
-		steps = 16;
-	return steps;
-}
-
 float fVolMultiplier = 1.0f;
 // amount of boat volume in bounding box
 // 1.0-volume is the empty space in the bbox
@@ -78,9 +67,6 @@ cBuoyancy::ProcessBuoyancyBoat(CVehicle *veh, float buoyancy, CVector *point, CV
 	m_matrix = veh->GetMatrix();
 	PreCalcSetup(veh, buoyancy);
 
-	float height = m_dimMax.z - m_dimMin.z;
-	if(height <= 0.000001f)
-		return false;
 
 	float x, y;
 	int ix, i;
@@ -88,16 +74,11 @@ cBuoyancy::ProcessBuoyancyBoat(CVehicle *veh, float buoyancy, CVector *point, CV
 	CVector waterNormal;
 
 	// Floater is divided into 3x3 parts. Process and sum each of them
-	float volDiv = 1.0f/(height*sq(m_numSteps+1.0f));
-	int steps = BuoyancySampleSteps(m_numSteps);
-	if(steps > 2)
-		steps = 2; // boat volume distribution tables are 3x3
+	float volDiv = 1.0f/((m_dimMax.z - m_dimMin.z)*sq(m_numSteps+1.0f));
 	ix = 0;
-	for(int sx = 0; sx <= steps; sx++){
-		x = m_dimMin.x + m_step.x*sx;
+	for(x = m_dimMin.x; x <= m_dimMax.x; x += m_step.x){
 		i = ix;
-		for(int sy = 0; sy <= steps; sy++){
-			y = m_dimMin.y + m_step.y*sy;
+		for(y = m_dimMin.y; y <= m_dimMax.y; y += m_step.y){
 			CVector waterLevel(x, y, 0.0f);
 			FindWaterLevelNorm(m_positionZ, &waterLevel, &waterPosition, &waterNormal);
 			switch(veh->GetModelIndex()){
@@ -211,32 +192,18 @@ cBuoyancy::PreCalcSetup(CPhysical *phys, float buoyancy)
 
 	m_step = (m_dimMax - m_dimMin)/m_numSteps;
 
-#if REAL_GAMECUBE
-	static int degenerateStepLogCount;
-	if((m_step.x == 0.0f || m_step.y == 0.0f || m_step.z == 0.0f) && degenerateStepLogCount < 8){
-		printf("[BUOY-GUARD] degenerate step phys=%p model=%d type=%u min=%.3f,%.3f,%.3f max=%.3f,%.3f,%.3f step=%.3f,%.3f,%.3f\n",
-		       (void*)phys, phys->GetModelIndex(), phys->GetType(), m_dimMin.x, m_dimMin.y, m_dimMin.z,
-		       m_dimMax.x, m_dimMax.y, m_dimMax.z, m_step.x, m_step.y, m_step.z);
-		degenerateStepLogCount++;
-	}
-#endif
-
-	if(m_step.z > m_step.x && m_step.z > m_step.y && m_step.z != 0.0f){
+	if(m_step.z > m_step.x && m_step.z > m_step.y){
 		m_stepRatio.x = m_step.x/m_step.z;
 		m_stepRatio.y = m_step.y/m_step.z;
 		m_stepRatio.z = 1.0f;
-	}else if(m_step.y > m_step.x && m_step.y > m_step.z && m_step.y != 0.0f){
+	}else if(m_step.y > m_step.x && m_step.y > m_step.z){
 		m_stepRatio.x = m_step.x/m_step.y;
 		m_stepRatio.y = 1.0f;
 		m_stepRatio.z = m_step.z/m_step.y;
-	}else if(m_step.x != 0.0f){
+	}else{
 		m_stepRatio.x = 1.0f;
 		m_stepRatio.y = m_step.y/m_step.x;
 		m_stepRatio.z = m_step.z/m_step.x;
-	}else{
-		m_stepRatio.x = 1.0f;
-		m_stepRatio.y = 1.0f;
-		m_stepRatio.z = 1.0f;
 	}
 
 	m_haveVolume = false;
@@ -254,19 +221,10 @@ cBuoyancy::SimpleCalcBuoyancy(void)
 {
 	float x, y;
 	tWaterLevel waterPosition;
-	float height = m_dimMax.z - m_dimMin.z;
-	if(height <= 0.000001f){
-		m_haveVolume = false;
-		m_volumeUnderWater = 0.0f;
-		return;
-	}
 
 	// Floater is divided into 3x3 parts. Process and sum each of them
-	int steps = BuoyancySampleSteps(m_numSteps);
-	for(int sx = 0; sx <= steps; sx++){
-		x = m_dimMin.x + m_step.x*sx;
-		for(int sy = 0; sy <= steps; sy++){
-			y = m_dimMin.y + m_step.y*sy;
+	for(x = m_dimMin.x; x <= m_dimMax.x; x += m_step.x){
+		for(y = m_dimMin.y; y <= m_dimMax.y; y += m_step.y){
 			CVector waterLevel(x, y, 0.0f);
 			FindWaterLevel(m_positionZ, &waterLevel, &waterPosition);
 			fVolMultiplier = 1.0f;
@@ -275,7 +233,7 @@ cBuoyancy::SimpleCalcBuoyancy(void)
 		}
 	}
 
-	m_volumeUnderWater /= height*sq(m_numSteps+1.0f);
+	m_volumeUnderWater /= (m_dimMax.z - m_dimMin.z)*sq(m_numSteps+1.0f);
 }
 
 float
