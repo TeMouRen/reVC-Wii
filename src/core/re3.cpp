@@ -1406,16 +1406,6 @@ void re3_assert(const char *expr, const char *filename, unsigned int lineno, con
 void re3_debug(const char *format, ...)
 {
 #ifndef MASTER
-#ifdef WII
-	if(format != nil){
-		if(strncmp(format, "[DBG]: ", 7) == 0 ||
-		   strncmp(format, "[PED-OBJ]", 9) == 0 ||
-		   strncmp(format, "[SCR-WARP]", 10) == 0 ||
-		   strncmp(format, "[VEH-INIT]", 10) == 0 ||
-		   strncmp(format, "[TEX-FIND]", 10) == 0)
-			return;
-	}
-#endif
 	va_list va;
 	va_start(va, format);
 #ifdef _WIN32
