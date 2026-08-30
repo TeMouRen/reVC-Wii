@@ -261,14 +261,11 @@ SkinGetBonePositionsToTable(RpClump *clump, RwV3d *boneTable)
 		return;
 
 	atomic = GetFirstAtomic(clump);		// mobile, also VC
-	if(atomic == nil)
-		return;
+	assert(atomic);
 	skin = RpSkinGeometryGetSkin(RpAtomicGetGeometry(atomic));
-	if(skin == nil)
-		return;
+	assert(skin);
 	hier = GetAnimHierarchyFromSkinClump(clump);
-	if(hier == nil)
-		return;
+	assert(hier);
 	boneTable[0].x = 0.0f;
 	boneTable[0].y = 0.0f;
 	boneTable[0].z = 0.0f;
@@ -689,7 +686,7 @@ CameraCreate(RwInt32 width, RwInt32 height, RwBool zBuffer)
                 RwRasterCreate(0, 0, 0, rwRASTERTYPEZBUFFER));
         }
 
-#if defined(WII) || defined(GAMECUBE)
+#if 0
         // [GC-FIX] RW_NULL (null device) 涓?
         //   RwRasterCreate(rwRASTERTYPECAMERA)  鈫?杩斿洖 NULL (棰勬湡琛屼负)
         //   RwRasterCreate(rwRASTERTYPEZBUFFER) 鈫?杩斿洖 NULL (棰勬湡琛屼负)
