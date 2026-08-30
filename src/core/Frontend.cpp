@@ -4256,8 +4256,6 @@ CMenuManager::PrintRadioSelector(void)
 		rightMostStation = WAVE;
 	}
 
-	if (m_PrefsRadioStation >= NUM_RADIOS)
-		return;
 #ifdef THIS_IS_STUPID
 
 	// First radio
