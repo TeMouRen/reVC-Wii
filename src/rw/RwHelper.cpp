@@ -686,20 +686,6 @@ CameraCreate(RwInt32 width, RwInt32 height, RwBool zBuffer)
                 RwRasterCreate(0, 0, 0, rwRASTERTYPEZBUFFER));
         }
 
-#if 0
-        // [GC-FIX] RW_NULL (null device) 涓?
-        //   RwRasterCreate(rwRASTERTYPECAMERA)  鈫?杩斿洖 NULL (棰勬湡琛屼负)
-        //   RwRasterCreate(rwRASTERTYPEZBUFFER) 鈫?杩斿洖 NULL (棰勬湡琛屼负)
-        //   null device 涓嶅垎閰嶇湡瀹炲抚缂撳啿鍖?        //   RwRasterGetParent(NULL) 浼氬穿婧?        //   鈫?璺宠繃 raster nil 妫€鏌ワ紝鐩存帴杩斿洖 camera
-        if (RwCameraGetFrame(camera))
-        {
-            printf("[reVC-WII] CameraCreate: null-raster mode OK camera=%p\n",
-                   (void*)camera);
-            return (camera);
-        }
-        // frame 鍒涘缓澶辫触鎵嶇畻鐪熸澶辫触
-#else
-// 鈫戔啈鈫?鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹?GAMECUBE 璺緞缁撴潫 鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹?鈫戔啈鈫?
         /* now check that everything is valid */
         if (RwCameraGetFrame(camera) &&
             RwCameraGetRaster(camera) &&
@@ -711,7 +697,6 @@ CameraCreate(RwInt32 width, RwInt32 height, RwBool zBuffer)
             return (camera);
         }
 
-#endif  // GAMECUBE
     }
 
     /* if we're here then an error must have occurred so clean up */
