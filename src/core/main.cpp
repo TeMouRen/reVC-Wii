@@ -425,6 +425,11 @@ Error(char *fmt, ...)
 void
 ValidateVersion()
 {
+#if REAL_GAMECUBE
+	// The console collision archive does not carry the PC version marker.
+	// Avoid the pre-camera invalid-version loading path on Wii/GameCube.
+	return;
+#endif
     // 鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣
     // [GC-FIX] 璺宠繃鐗堟湰楠岃瘉
     //
