@@ -1337,20 +1337,6 @@ void CRadar::StreamRadarSections(const CVector &posn)
 		StreamRadarSections(Floor((RADAR_MAX_X + posn.x) / RADAR_TILE_SIZE), Ceil((RADAR_NUM_TILES - 1) - (RADAR_MAX_Y + posn.y) / RADAR_TILE_SIZE));
 }
 
-#ifdef WII
-void CRadar::RequestRadarSections(const CVector &posn)
-{
-	if(CStreaming::ms_disableStreaming)
-		return;
-
-	int32 x = Floor((RADAR_MAX_X + posn.x) / RADAR_TILE_SIZE);
-	int32 y = Ceil((RADAR_NUM_TILES - 1) - (RADAR_MAX_Y + posn.y) / RADAR_TILE_SIZE);
-	for(int32 tx = x - 1; tx <= x + 1; tx++)
-		for(int32 ty = y - 1; ty <= y + 1; ty++)
-			RequestMapSection(tx, ty);
-}
-#endif
-
 void CRadar::StreamRadarSections(int32 x, int32 y)
 {
 	for (int i = 0; i < RADAR_NUM_TILES; ++i) {

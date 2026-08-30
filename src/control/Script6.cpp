@@ -13,14 +13,11 @@
 #include "Fire.h"
 #include "Frontend.h"
 #include "Garages.h"
-#include "Game.h"
 #include "General.h"
 #ifdef MISSION_REPLAY
 #include "GenericGameStorage.h"
 #endif
 #include "Messages.h"
-#include "ModelIndices.h"
-#include "ModelInfo.h"
 #include "Pad.h"
 #include "Particle.h"
 #include "Phones.h"
@@ -32,43 +29,14 @@
 #include "SpecialFX.h"
 #include "Stats.h"
 #include "Streaming.h"
-#include "Timer.h"
 #include "Weather.h"
 #include "Zones.h"
-#include "Draw.h"
 #include "main.h"
 #include "GameLogic.h"
 #include "Sprite.h"
-#include "Sprite2d.h"
 #include "CarAI.h"
 #include "Pickups.h"
 #include "Fluff.h"
-
-#if REAL_GAMECUBE
-static void
-GcTraceMissionPassengerWarpIntent(const char *stage, CPed *ped, CVehicle *veh, int requestedSeat)
-{
-	if (ped == nil || veh == nil)
-		return;
-	if (veh->GetModelIndex() != MI_ADMIRAL || veh->VehicleCreatedBy != MISSION_VEHICLE)
-		return;
-
-	const CVector &pedPos = ped->GetPosition();
-	const CVector &vehPos = veh->GetPosition();
-	printf("[SCR-WARP-PASS] stage=%s frame=%u ped=%p player=%d veh=%p reqSeat=%d obj=%d pedState=%d inVeh=%d pedPos=(%f,%f,%f) vehPos=(%f,%f,%f)\n",
-		stage,
-		CTimer::GetFrameCounter(),
-		ped,
-		ped->IsPlayer() ? 1 : 0,
-		veh,
-		requestedSeat,
-		ped->m_objective,
-		ped->m_nPedState,
-		ped->bInVehicle ? 1 : 0,
-		pedPos.x, pedPos.y, pedPos.z,
-		vehPos.x, vehPos.y, vehPos.z);
-}
-#endif
 
 #ifdef USE_DEBUG_SCRIPT_LOADER
 extern const char* scriptfile;

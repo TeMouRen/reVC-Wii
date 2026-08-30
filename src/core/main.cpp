@@ -860,37 +860,6 @@ Terminate3D(void)
 CSprite2d splash;
 int splashTxdId = -1;
 
-#ifdef WII
-bool
-WiiPrepareIslandTransitionSplash(int level)
-{
-	(void)level;
-	return false;
-}
-
-void
-WiiBeginIslandTransitionSplash(int level)
-{
-	(void)level;
-}
-
-void
-WiiEndIslandTransitionSplash(void)
-{
-}
-
-bool
-WiiIsIslandTransitionSplashActive(void)
-{
-	return false;
-}
-
-void
-WiiDrawIslandTransitionSplash(void)
-{
-}
-#endif
-
 CSprite2d*
 LoadSplash(const char *name)
 {

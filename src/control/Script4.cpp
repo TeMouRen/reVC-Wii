@@ -26,7 +26,6 @@
 #include "Plane.h"
 #include "Pools.h"
 #include "Population.h"
-#include "ModelIndices.h"
 #include "Radar.h"
 #include "Record.h"
 #include "RpAnimBlend.h"
@@ -37,44 +36,10 @@
 #include "TxdStore.h"
 #include "User.h"
 #include "WaterLevel.h"
-#include "Timer.h"
 #include "World.h"
 #include "Zones.h"
 #include "Bike.h"
 #include "Wanted.h"
-
-#if REAL_GAMECUBE
-static void
-GcTraceMissionIntroWarp(const char *stage, const CRunningScript *script, uint32 opcodeIp, CPed *ped, CVehicle *veh, const CVector *targetPos = nil)
-{
-	if (ped == nil || veh == nil)
-		return;
-	if (veh->GetModelIndex() != MI_ADMIRAL || veh->VehicleCreatedBy != MISSION_VEHICLE)
-		return;
-
-	const CVector &pedPos = ped->GetPosition();
-	const CVector &vehPos = veh->GetPosition();
-	const CVector warpPos = targetPos ? *targetPos : CVector(0.0f, 0.0f, 0.0f);
-	printf("[SCR-WARP] stage=%s frame=%u script=%.8s mission=%d opIp=%u nextIp=%u ped=%p player=%d veh=%p obj=%d prevObj=%d pedState=%d inVeh=%d vehStatus=%u pedPos=(%f,%f,%f) vehPos=(%f,%f,%f) warpPos=(%f,%f,%f)\n",
-		stage,
-		CTimer::GetFrameCounter(),
-		script ? script->m_abScriptName : "noscript",
-		script ? (script->m_bIsMissionScript ? 1 : 0) : 0,
-		opcodeIp,
-		script ? script->m_nIp : 0,
-		ped,
-		ped->IsPlayer() ? 1 : 0,
-		veh,
-		ped->m_objective,
-		ped->m_prevObjective,
-		ped->m_nPedState,
-		ped->bInVehicle ? 1 : 0,
-		veh->GetStatus(),
-		pedPos.x, pedPos.y, pedPos.z,
-		vehPos.x, vehPos.y, vehPos.z,
-		warpPos.x, warpPos.y, warpPos.z);
-}
-#endif
 
 #ifdef FIX_BUGS
 static bool IsSlideObjectUsedWrongByScript(const CVector& posTarget, const CVector& slideBy)
@@ -809,17 +774,12 @@ int8 CRunningScript::ProcessCommands800To899(int32 command)
 	}
 	case COMMAND_WARP_CHAR_FROM_CAR_TO_COORD:
 	{
-		uint32 opcodeIp = m_nIp - 2;
 		CollectParameters(&m_nIp, 4);
 		CPed *pPed = CPools::GetPedPool()->GetAt(ScriptParams[0]);
 		script_assert(pPed);
 		CVector pos = *(CVector*)&ScriptParams[1];
-		CVehicle *warpVeh = pPed ? pPed->m_pMyVehicle : nil;
 		if (pos.z <= MAP_Z_LOW_LIMIT)
 			pos.z = CWorld::FindGroundZForCoord(pos.x, pos.y);
-#if REAL_GAMECUBE
-		GcTraceMissionIntroWarp("warp-char-from-car-begin", this, opcodeIp, pPed, warpVeh, &pos);
-#endif
 		if (pPed->bInVehicle){
 			if (pPed->m_pMyVehicle->bIsBus)
 				pPed->bRenderPedInCar = true;
@@ -831,9 +791,6 @@ int8 CRunningScript::ProcessCommands800To899(int32 command)
 				pPed->m_pMyVehicle->SetMoveSpeed(0.0f, 0.0f, -0.00001f);
 				pPed->m_pMyVehicle->SetTurnSpeed(0.0f, 0.0f, 0.0f);
 			}else{
-#if REAL_GAMECUBE
-				GcTraceMissionIntroWarp("warp-char-from-car-remove-passenger", this, opcodeIp, pPed, pPed->m_pMyVehicle, &pos);
-#endif
 				pPed->m_pMyVehicle->RemovePassenger(pPed);
 			}
 			if (pPed->m_vehDoor) {
@@ -885,9 +842,6 @@ int8 CRunningScript::ProcessCommands800To899(int32 command)
 		CAnimManager::BlendAnimation(pPed->GetClump(), pPed->m_animGroup, ANIM_STD_IDLE, 1000.0f);
 		pos.z += pPed->GetDistanceFromCentreOfMassToBaseOfModel();
 		pPed->Teleport(pos);
-#if REAL_GAMECUBE
-		GcTraceMissionIntroWarp("warp-char-from-car-after-teleport", this, opcodeIp, pPed, warpVeh, &pos);
-#endif
 		CTheScripts::ClearSpaceForMissionEntity(pos, pPed);
 		return 0;
 	}
@@ -984,38 +938,24 @@ int8 CRunningScript::ProcessCommands800To899(int32 command)
 	*/
 	case COMMAND_WARP_PLAYER_INTO_CAR:
 	{
-		uint32 opcodeIp = m_nIp - 2;
 		CollectParameters(&m_nIp, 2);
 		CPed* pPed = CWorld::Players[ScriptParams[0]].m_pPed;
 		script_assert(pPed);
 		CVehicle* pVehicle = CPools::GetVehiclePool()->GetAt(ScriptParams[1]);
 		script_assert(pVehicle);
 		pPed->SetObjective(OBJECTIVE_ENTER_CAR_AS_DRIVER, pVehicle);
-#if REAL_GAMECUBE
-		GcTraceMissionIntroWarp("warp-player-driver-before", this, opcodeIp, pPed, pVehicle);
-#endif
 		pPed->WarpPedIntoCar(pVehicle);
-#if REAL_GAMECUBE
-		GcTraceMissionIntroWarp("warp-player-driver-after", this, opcodeIp, pPed, pVehicle);
-#endif
 		return 0;
 	}
 	case COMMAND_WARP_CHAR_INTO_CAR:
 	{
-		uint32 opcodeIp = m_nIp - 2;
 		CollectParameters(&m_nIp, 2);
 		CPed* pPed = CPools::GetPedPool()->GetAt(ScriptParams[0]);
 		script_assert(pPed);
 		CVehicle* pVehicle = CPools::GetVehiclePool()->GetAt(ScriptParams[1]);
 		script_assert(pVehicle);
 		pPed->SetObjective(OBJECTIVE_ENTER_CAR_AS_DRIVER, pVehicle);
-#if REAL_GAMECUBE
-		GcTraceMissionIntroWarp("warp-char-driver-before", this, opcodeIp, pPed, pVehicle);
-#endif
 		pPed->WarpPedIntoCar(pVehicle);
-#if REAL_GAMECUBE
-		GcTraceMissionIntroWarp("warp-char-driver-after", this, opcodeIp, pPed, pVehicle);
-#endif
 		return 0;
 	}
 	//case COMMAND_SWITCH_CAR_RADIO:
@@ -1073,8 +1013,6 @@ int8 CRunningScript::ProcessCommands800To899(int32 command)
 		CollectParameters(&m_nIp, 1);
 		TheCamera.SetMotionBlur(0, 0, 0, 0, ScriptParams[0]);
 		return 0;
-	*/
-	/*
 	case COMMAND_PRINT_STRING_IN_STRING:
 	{
 		wchar* text = CTheScripts::GetTextByKeyFromScript(&m_nIp);

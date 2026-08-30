@@ -9,7 +9,6 @@
 #include "CutsceneMgr.h"
 #include "DMAudio.h"
 #include "Explosion.h"
-#include "Game.h"
 #include "GameLogic.h"
 #include "General.h"
 #include "Glass.h"
@@ -31,74 +30,6 @@
 #include "User.h"
 #include "World.h"
 #include "Zones.h"
-#include "ModelIndices.h"
-
-#if REAL_GAMECUBE
-static bool
-GcShouldPreserveMissionWakeHeading(CVehicle *car)
-{
-	return car != nil &&
-		car->GetModelIndex() == MI_ADMIRAL &&
-		car->VehicleCreatedBy == MISSION_VEHICLE;
-}
-
-static void
-GcWakeMissionCarForScriptDrive(CVehicle *car)
-{
-	if(car == nil)
-		return;
-
-	const bool wasStaticWaiting = car->bIsStaticWaitingForCollision;
-	const bool wasStatic = car->GetIsStatic();
-	const bool wasFrozen = car->bIsFrozen;
-	const float speed2dBeforeWake = car->GetMoveSpeed().Magnitude2D();
-	const bool preservePlacedHeading = GcShouldPreserveMissionWakeHeading(car);
-	const bool shouldResetDynamics =
-		car->VehicleCreatedBy == MISSION_VEHICLE &&
-		(wasStaticWaiting || wasStatic || wasFrozen || speed2dBeforeWake < 0.02f);
-
-	car->bIsStaticWaitingForCollision = false;
-	car->SetIsStatic(false);
-	car->bIsFrozen = false;
-	car->bInfiniteMass = false;
-	car->AddToMovingList();
-	car->bEngineOn = true;
-	if (shouldResetDynamics) {
-		// Scripted retargets often arrive while the vehicle is already moving.
-		// Resetting dynamics on every CAR_GOTO_COORDINATES call causes the
-		// one-frame stall and heading snap seen on the intro Admiral.
-		car->SetMoveSpeed(0.0f, 0.0f, 0.0f);
-		car->SetTurnSpeed(0.0f, 0.0f, 0.0f);
-		car->m_vecMoveFriction = CVector(0.0f, 0.0f, 0.0f);
-		car->m_vecTurnFriction = CVector(0.0f, 0.0f, 0.0f);
-		car->m_vecMoveSpeedAvg = CVector(0.0f, 0.0f, 0.0f);
-		car->m_vecTurnSpeedAvg = CVector(0.0f, 0.0f, 0.0f);
-		car->m_fSteerAngle = 0.0f;
-		car->m_fGasPedal = 0.0f;
-		car->m_fBrakePedal = 0.0f;
-		car->bIsHandbrakeOn = false;
-		if (!preservePlacedHeading) {
-			CVector2D toDest = car->AutoPilot.m_vecDestinationCoors - car->GetPosition();
-			if (toDest.MagnitudeSqr() > 0.01f)
-				car->SetHeading(toDest.Heading());
-		}
-	}
-	car->AutoPilot.m_nAntiReverseTimer = CTimer::GetTimeInMilliseconds();
-	if (CGame::playingIntro || (wasStaticWaiting && car->VehicleCreatedBy == MISSION_VEHICLE)) {
-		car->AutoPilot.m_nDrivingStyle = DRIVINGSTYLE_PLOUGH_THROUGH;
-		car->AutoPilot.m_bIgnorePathfinding = false;
-	}
-
-	if(CGame::playingIntro || wasStaticWaiting ||
-	   (car->VehicleCreatedBy == MISSION_VEHICLE && speed2dBeforeWake > 0.05f))
-		printf("[SCR-CAR] wake veh=%p model=%d intro=%d wasStatic=%d waitCol=%d reset=%d keepHeading=%d speed2d=%f status=%u mission=%u pos=(%f,%f,%f)\n",
-			(void*)car, car->GetModelIndex(), CGame::playingIntro ? 1 : 0,
-			wasStatic ? 1 : 0, wasStaticWaiting ? 1 : 0,
-			shouldResetDynamics ? 1 : 0, preservePlacedHeading ? 1 : 0, speed2dBeforeWake,
-			car->GetStatus(), (uint32)car->AutoPilot.m_nCarMission,
-			car->GetPosition().x, car->GetPosition().y, car->GetPosition().z);
-}
-#endif
 
 int8 CRunningScript::ProcessCommands1200To1299(int32 command)
 {
@@ -920,15 +851,7 @@ int8 CRunningScript::ProcessCommands1300To1399(int32 command)
 	case COMMAND_ATTACH_CUTSCENE_OBJECT_TO_BONE:
 	{
 		CollectParameters(&m_nIp, 3);
-#if REAL_GAMECUBE
-		CObject *obj1 = CPools::GetObjectPool()->GetAt(ScriptParams[0]);
-		CObject *obj2 = CPools::GetObjectPool()->GetAt(ScriptParams[1]);
-		printf("[SCR-CUT] attach_bone childSlot=%d child=%p parentSlot=%d parent=%p bone=%d ip=%u\n",
-			ScriptParams[0], obj1, ScriptParams[1], obj2, ScriptParams[2], m_nIp);
-		CCutsceneMgr::AttachObjectToBone(obj1, obj2, ScriptParams[2]);
-#else
 		CCutsceneMgr::AttachObjectToBone(CPools::GetObjectPool()->GetAt(ScriptParams[0]), CPools::GetObjectPool()->GetAt(ScriptParams[1]), ScriptParams[2]);
-#endif
 		return 0;
 	}
 	case COMMAND_ATTACH_CUTSCENE_OBJECT_TO_COMPONENT:
@@ -941,10 +864,6 @@ int8 CRunningScript::ProcessCommands1300To1399(int32 command)
 		CTheScripts::ReadTextLabelFromScript(&m_nIp, key);
 		m_nIp += KEY_LENGTH_IN_SCRIPT;
 
-#if REAL_GAMECUBE
-		printf("[SCR-CUT] attach_component childSlot=%d child=%p parentSlot=%d parent=%p frame=%.8s ip=%u\n",
-			ScriptParams[0], obj1, ScriptParams[1], obj2, key, m_nIp);
-#endif
 		CCutsceneMgr::AttachObjectToFrame(obj1, obj2, key);
 		return 0;
 	}
@@ -1157,22 +1076,13 @@ int8 CRunningScript::ProcessCommands1300To1399(int32 command)
 	case COMMAND_ATTACH_CUTSCENE_OBJECT_TO_VEHICLE:
 	{
 		CollectParameters(&m_nIp, 2);
-#if REAL_GAMECUBE
-		CObject *obj = CPools::GetObjectPool()->GetAt(ScriptParams[0]);
-		CVehicle *veh = CPools::GetVehiclePool()->GetAt(ScriptParams[1]);
-		printf("[SCR-CUT] attach_vehicle objSlot=%d obj=%p vehSlot=%d veh=%p ip=%u\n",
-			ScriptParams[0], obj, ScriptParams[1], veh, m_nIp);
-		CCutsceneMgr::AttachObjectToParent(obj, veh);
-#else
 		CCutsceneMgr::AttachObjectToParent(CPools::GetObjectPool()->GetAt(ScriptParams[0]), CPools::GetVehiclePool()->GetAt(ScriptParams[1]));
-#endif
 		return 0;
 	}
 	case COMMAND_LOAD_MISSION_TEXT:
 	{
-		char key[KEY_LENGTH_IN_SCRIPT + 1] = { 0 };
+		char key[8];
 		CTheScripts::ReadTextLabelFromScript(&m_nIp, key);
-		key[KEY_LENGTH_IN_SCRIPT] = '\0';
 		m_nIp += KEY_LENGTH_IN_SCRIPT;
 		TheText.LoadMissionText(key);
 		return 0;
@@ -1293,9 +1203,6 @@ int8 CRunningScript::ProcessCommands1300To1399(int32 command)
 		if (pVehicle->m_vehType == VEHICLE_TYPE_BOAT)
 			pVehicle->AutoPilot.m_nCarMission = MISSION_CRUISE;
 		pVehicle->bEngineOn = true;
-#if REAL_GAMECUBE
-		GcWakeMissionCarForScriptDrive(pVehicle);
-#endif
 		pVehicle->m_nZoneLevel = CTheZones::GetLevelFromPosition(&pVehicle->GetPosition());
 		CPopulation::ms_nTotalMissionPeds++;
 		ScriptParams[0] = CPools::GetPedPool()->GetIndex(pPed);

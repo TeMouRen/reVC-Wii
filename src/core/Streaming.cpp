@@ -2866,11 +2866,6 @@ CStreaming::LoadBigBuildingsWhenNeeded(void)
 	{
 		DMAudio.SetEffectsFadeVol(0);
 		CPad::StopPadsShaking();
-#ifdef WII
-		// Load the destination splash before Collision presents the first
-		// loading frame so it cannot draw an empty or stale texture.
-		WiiPrepareIslandTransitionSplash(CGame::currLevel);
-#endif
 		CCollision::LoadCollisionScreen(CGame::currLevel);
 		DMAudio.Service();
 

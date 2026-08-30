@@ -12,80 +12,12 @@
 #include "Pools.h"
 #include "Population.h"
 #include "RpAnimBlend.h"
-#include "ModelIndices.h"
 #include "SaveBuf.h"
 #include "Shadows.h"
 #include "SpecialFX.h"
 #include "World.h"
 #include "main.h"
 #include "SaveBuf.h"
-
-#if REAL_GAMECUBE
-static bool
-GcIsScriptedIntroCarProbe(const CRunningScript *script, const CVehicle *veh)
-{
-	return script != nil &&
-		veh != nil &&
-		script->m_bIsMissionScript &&
-		!strncmp(script->m_abScriptName, "intro", 5) &&
-		veh->GetModelIndex() == MI_ADMIRAL &&
-		veh->VehicleCreatedBy == MISSION_VEHICLE;
-}
-
-static const char *
-GcGetScriptCarCheckCommandName(int32 command)
-{
-	switch (command) {
-	case COMMAND_LOCATE_CAR_2D: return "LOCATE_CAR_2D";
-	case COMMAND_LOCATE_STOPPED_CAR_2D: return "LOCATE_STOPPED_CAR_2D";
-	case COMMAND_LOCATE_CAR_3D: return "LOCATE_CAR_3D";
-	case COMMAND_LOCATE_STOPPED_CAR_3D: return "LOCATE_STOPPED_CAR_3D";
-	case COMMAND_IS_CAR_IN_AREA_2D: return "IS_CAR_IN_AREA_2D";
-	case COMMAND_IS_CAR_IN_AREA_3D: return "IS_CAR_IN_AREA_3D";
-	case COMMAND_IS_CAR_STOPPED_IN_AREA_2D: return "IS_CAR_STOPPED_IN_AREA_2D";
-	case COMMAND_IS_CAR_STOPPED_IN_AREA_3D: return "IS_CAR_STOPPED_IN_AREA_3D";
-	default: return "UNKNOWN_CAR_CHECK";
-	}
-}
-
-static void
-GcTraceScriptedIntroCarCheck(const char *stage, const CRunningScript *script, uint32 opcodeIp,
-	int32 command, CVehicle *veh, bool result, bool stoppedNow,
-	float p1, float p2, float p3, float p4, float p5, float p6, bool hasZ, bool boxed)
-{
-	if (!GcIsScriptedIntroCarProbe(script, veh))
-		return;
-
-	const CVector &vehPos = veh->GetPosition();
-	const CVector &dest = veh->AutoPilot.m_vecDestinationCoors;
-	CVector2D toFinal(dest.x - vehPos.x, dest.y - vehPos.y);
-	float finalDistance = toFinal.Magnitude();
-	if (!result && !stoppedNow && finalDistance > 8.0f)
-		return;
-
-	printf("[SCR-CARCHK] stage=%s frame=%u script=%.8s mission=%d opIp=%u nextIp=%u cmd=%s(%d) result=%d stopped=%d distTravel=%f speed2d=%f vehStatus=%u carMission=%u cruise=%u pos=(%f,%f,%f) dest=(%f,%f,%f) params=(%f,%f,%f,%f,%f,%f) hasZ=%d boxed=%d\n",
-		stage,
-		CTimer::GetFrameCounter(),
-		script->m_abScriptName,
-		script->m_bIsMissionScript ? 1 : 0,
-		opcodeIp,
-		script->m_nIp,
-		GcGetScriptCarCheckCommandName(command),
-		command,
-		result ? 1 : 0,
-		stoppedNow ? 1 : 0,
-		veh->m_fDistanceTravelled,
-		veh->GetMoveSpeed().Magnitude2D(),
-		veh->GetStatus(),
-		(uint32)veh->AutoPilot.m_nCarMission,
-		(uint32)veh->AutoPilot.m_nCruiseSpeed,
-		vehPos.x, vehPos.y, vehPos.z,
-		dest.x, dest.y, dest.z,
-		p1, p2, p3, p4, p5, p6,
-		hasZ ? 1 : 0,
-		boxed ? 1 : 0);
-}
-#endif
 
 void CRunningScript::UpdateCompareFlag(bool flag)
 {
@@ -732,7 +664,6 @@ void CRunningScript::LocateCharObjectCommand(int32 command, uint32* pIp)
 void CRunningScript::LocateCarCommand(int32 command, uint32* pIp)
 {
 	bool b3D, result, debug, decided = false;
-	uint32 opcodeIp = *pIp - 2;
 	float X, Y, Z, dX, dY, dZ;
 	switch (command) {
 	case COMMAND_LOCATE_CAR_3D:
@@ -791,11 +722,6 @@ void CRunningScript::LocateCarCommand(int32 command, uint32* pIp)
 		}
 		result = in_area;
 	}
-#if REAL_GAMECUBE
-	GcTraceScriptedIntroCarCheck("locate-car", this, opcodeIp, command, pVehicle, result,
-		CTheScripts::IsVehicleStopped(pVehicle),
-		X, Y, b3D ? Z : 0.0f, dX, dY, b3D ? dZ : 0.0f, b3D, false);
-#endif
 	UpdateCompareFlag(result);
 	if (debug)
 		CTheScripts::HighlightImportantArea((uintptr)this + m_nIp, X - dX, Y - dY, X + dX, Y + dY, b3D ? Z : MAP_Z_LOW_LIMIT);
@@ -1267,7 +1193,6 @@ void CRunningScript::CharInAreaCheckCommand(int32 command, uint32* pIp)
 void CRunningScript::CarInAreaCheckCommand(int32 command, uint32* pIp)
 {
 	bool b3D, result, debug, decided = false;
-	uint32 opcodeIp = *pIp - 2;
 	float infX, infY, infZ, supX, supY, supZ;
 	switch (command) {
 	case COMMAND_IS_CAR_IN_AREA_3D:
@@ -1352,11 +1277,6 @@ void CRunningScript::CarInAreaCheckCommand(int32 command, uint32* pIp)
 			}
 		}
 	}
-#if REAL_GAMECUBE
-	GcTraceScriptedIntroCarCheck("car-in-area", this, opcodeIp, command, pVehicle, result,
-		CTheScripts::IsVehicleStopped(pVehicle),
-		infX, infY, b3D ? infZ : 0.0f, supX, supY, b3D ? supZ : 0.0f, b3D, true);
-#endif
 	UpdateCompareFlag(result);
 	if (debug)
 		CTheScripts::HighlightImportantArea((uintptr)this + m_nIp, infX, infY, supX, supY, b3D ? (infZ + supZ) / 2 : MAP_Z_LOW_LIMIT);

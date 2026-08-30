@@ -4,7 +4,6 @@
 #include "ScriptCommands.h"
 
 #include "Camera.h"
-#include "Draw.h"
 #include "CarCtrl.h"
 #include "CarGen.h"
 #include "CivilianPed.h"
@@ -15,7 +14,6 @@
 #include "Garages.h"
 #include "General.h"
 #include "Messages.h"
-#include "ModelIndices.h"
 #include "Pad.h"
 #include "PedRoutes.h"
 #include "Pools.h"
@@ -29,48 +27,6 @@
 #include "Weather.h"
 #include "World.h"
 #include "Zones.h"
-
-#if REAL_GAMECUBE
-static bool
-GcIsScriptedIntroCarProbe(const CRunningScript *script, const CVehicle *veh)
-{
-	return script != nil &&
-		veh != nil &&
-		script->m_bIsMissionScript &&
-		!strncmp(script->m_abScriptName, "intro", 5) &&
-		veh->GetModelIndex() == MI_ADMIRAL &&
-		veh->VehicleCreatedBy == MISSION_VEHICLE;
-}
-
-static void
-GcTraceScriptedIntroCarStoppedCheck(const CRunningScript *script, uint32 opcodeIp, CVehicle *veh, bool stopped)
-{
-	if (!GcIsScriptedIntroCarProbe(script, veh))
-		return;
-
-	const CVector &vehPos = veh->GetPosition();
-	const CVector &dest = veh->AutoPilot.m_vecDestinationCoors;
-	CVector2D toFinal(dest.x - vehPos.x, dest.y - vehPos.y);
-	float finalDistance = toFinal.Magnitude();
-	if (!stopped && finalDistance > 8.0f)
-		return;
-
-	printf("[SCR-CARCHK] stage=is-car-stopped frame=%u script=%.8s mission=%d opIp=%u nextIp=%u result=%d distTravel=%f speed2d=%f vehStatus=%u carMission=%u cruise=%u pos=(%f,%f,%f) dest=(%f,%f,%f)\n",
-		CTimer::GetFrameCounter(),
-		script->m_abScriptName,
-		script->m_bIsMissionScript ? 1 : 0,
-		opcodeIp,
-		script->m_nIp,
-		stopped ? 1 : 0,
-		veh->m_fDistanceTravelled,
-		veh->GetMoveSpeed().Magnitude2D(),
-		veh->GetStatus(),
-		(uint32)veh->AutoPilot.m_nCarMission,
-		(uint32)veh->AutoPilot.m_nCruiseSpeed,
-		vehPos.x, vehPos.y, vehPos.z,
-		dest.x, dest.y, dest.z);
-}
-#endif
 
 int8 CRunningScript::ProcessCommands300To399(int32 command)
 {
@@ -1080,15 +1036,10 @@ int8 CRunningScript::ProcessCommands400To499(int32 command)
 	}
 	case COMMAND_IS_CAR_STOPPED:
 	{
-		uint32 opcodeIp = m_nIp - 2;
 		CollectParameters(&m_nIp, 1);
 		CVehicle* pVehicle = CPools::GetVehiclePool()->GetAt(ScriptParams[0]);
 		script_assert(pVehicle);
-		bool stopped = CTheScripts::IsVehicleStopped(pVehicle);
-#if REAL_GAMECUBE
-		GcTraceScriptedIntroCarStoppedCheck(this, opcodeIp, pVehicle, stopped);
-#endif
-		UpdateCompareFlag(stopped);
+		UpdateCompareFlag(CTheScripts::IsVehicleStopped(pVehicle));
 		return 0;
 	}
 	case COMMAND_MARK_CHAR_AS_NO_LONGER_NEEDED:

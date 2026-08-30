@@ -33,77 +33,8 @@
 #include "Weather.h"
 #include "Zones.h"
 #include "GameLogic.h"
-#include "Game.h"
 #include "Bike.h"
-#include "ModelIndices.h"
 #include "Wanted.h"
-
-#if REAL_GAMECUBE
-static bool
-GcShouldPreserveMissionWakeHeading(CVehicle *car)
-{
-	return car != nil &&
-		car->GetModelIndex() == MI_ADMIRAL &&
-		car->VehicleCreatedBy == MISSION_VEHICLE;
-}
-
-static void
-GcWakeMissionCarForScriptDrive(CVehicle *car)
-{
-	if(car == nil)
-		return;
-
-	const bool wasStaticWaiting = car->bIsStaticWaitingForCollision;
-	const bool wasStatic = car->GetIsStatic();
-	const bool wasFrozen = car->bIsFrozen;
-	const float speed2dBeforeWake = car->GetMoveSpeed().Magnitude2D();
-	const bool preservePlacedHeading = GcShouldPreserveMissionWakeHeading(car);
-	const bool shouldResetDynamics =
-		car->VehicleCreatedBy == MISSION_VEHICLE &&
-		(wasStaticWaiting || wasStatic || wasFrozen || speed2dBeforeWake < 0.02f);
-
-	car->bIsStaticWaitingForCollision = false;
-	car->SetIsStatic(false);
-	car->bIsFrozen = false;
-	car->bInfiniteMass = false;
-	car->AddToMovingList();
-	car->bEngineOn = true;
-	if (shouldResetDynamics) {
-		// Scripted retargets often arrive while the vehicle is already moving.
-		// Resetting dynamics on every CAR_GOTO_COORDINATES call causes the
-		// one-frame stall and heading snap seen on the intro Admiral.
-		car->SetMoveSpeed(0.0f, 0.0f, 0.0f);
-		car->SetTurnSpeed(0.0f, 0.0f, 0.0f);
-		car->m_vecMoveFriction = CVector(0.0f, 0.0f, 0.0f);
-		car->m_vecTurnFriction = CVector(0.0f, 0.0f, 0.0f);
-		car->m_vecMoveSpeedAvg = CVector(0.0f, 0.0f, 0.0f);
-		car->m_vecTurnSpeedAvg = CVector(0.0f, 0.0f, 0.0f);
-		car->m_fSteerAngle = 0.0f;
-		car->m_fGasPedal = 0.0f;
-		car->m_fBrakePedal = 0.0f;
-		car->bIsHandbrakeOn = false;
-		if (!preservePlacedHeading) {
-			CVector2D toDest = car->AutoPilot.m_vecDestinationCoors - car->GetPosition();
-			if (toDest.MagnitudeSqr() > 0.01f)
-				car->SetHeading(toDest.Heading());
-		}
-	}
-	car->AutoPilot.m_nAntiReverseTimer = CTimer::GetTimeInMilliseconds();
-	if (CGame::playingIntro || (wasStaticWaiting && car->VehicleCreatedBy == MISSION_VEHICLE)) {
-		car->AutoPilot.m_nDrivingStyle = DRIVINGSTYLE_PLOUGH_THROUGH;
-		car->AutoPilot.m_bIgnorePathfinding = false;
-	}
-
-	if(CGame::playingIntro || wasStaticWaiting ||
-	   (car->VehicleCreatedBy == MISSION_VEHICLE && speed2dBeforeWake > 0.05f))
-		printf("[SCR-CAR] wake veh=%p model=%d intro=%d wasStatic=%d waitCol=%d reset=%d keepHeading=%d speed2d=%f status=%u mission=%u pos=(%f,%f,%f)\n",
-			(void*)car, car->GetModelIndex(), CGame::playingIntro ? 1 : 0,
-			wasStatic ? 1 : 0, wasStaticWaiting ? 1 : 0,
-			shouldResetDynamics ? 1 : 0, preservePlacedHeading ? 1 : 0, speed2dBeforeWake,
-			car->GetStatus(), (uint32)car->AutoPilot.m_nCarMission,
-			car->GetPosition().x, car->GetPosition().y, car->GetPosition().z);
-}
-#endif
 
 int8 CRunningScript::ProcessCommands500To599(int32 command)
 {
@@ -1670,9 +1601,6 @@ int8 CRunningScript::ProcessCommands700To799(int32 command)
 		pVehicle->bEngineOn = true;
 		pVehicle->AutoPilot.m_nCruiseSpeed = Max(1, pVehicle->AutoPilot.m_nCruiseSpeed);
 		pVehicle->AutoPilot.m_nAntiReverseTimer = CTimer::GetTimeInMilliseconds();
-#if REAL_GAMECUBE
-		GcWakeMissionCarForScriptDrive(pVehicle);
-#endif
 		return 0;
 	}
 	/*
@@ -2050,7 +1978,7 @@ int8 CRunningScript::ProcessCommands700To799(int32 command)
 	{
 		CollectParameters(&m_nIp, 1);
 		CCutsceneObject* pCutObj = CCutsceneMgr::CreateCutsceneObject(ScriptParams[0]);
-		ScriptParams[0] = pCutObj ? CPools::GetObjectPool()->GetIndex(pCutObj) : -1;
+		ScriptParams[0] = CPools::GetObjectPool()->GetIndex(pCutObj);
 		StoreParameters(&m_nIp, 1);
 		return 0;
 	}
@@ -2059,10 +1987,9 @@ int8 CRunningScript::ProcessCommands700To799(int32 command)
 		CollectParameters(&m_nIp, 1);
 		char name[KEY_LENGTH_IN_SCRIPT];
 		CObject* pObject = CPools::GetObjectPool()->GetAt(ScriptParams[0]);
+		script_assert(pObject);
 		strncpy(name, (const char*)&CTheScripts::ScriptSpace[m_nIp], KEY_LENGTH_IN_SCRIPT);
 		m_nIp += KEY_LENGTH_IN_SCRIPT;
-		if(pObject == nil)
-			return 0;
 		CCutsceneMgr::SetCutsceneAnim(name, pObject);
 		return 0;
 	}

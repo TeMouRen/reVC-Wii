@@ -58,13 +58,6 @@ extern int8 gLoadingScreenMode;
 #endif
 Const char *GetLevelSplashScreen(int level);
 Const char *GetRandomSplashScreen(void);
-#ifdef WII
-bool WiiPrepareIslandTransitionSplash(int level);
-void WiiBeginIslandTransitionSplash(int level);
-void WiiEndIslandTransitionSplash(void);
-bool WiiIsIslandTransitionSplashActive(void);
-void WiiDrawIslandTransitionSplash(void);
-#endif
 void LittleTest(void);
 void ValidateVersion();
 void ResetLoadingScreenBar(void);
