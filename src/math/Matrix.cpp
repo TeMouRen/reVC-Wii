@@ -1,11 +1,5 @@
 #include "common.h"
 
-static bool
-IsLikelyBadRwMatrixPtr(const RwMatrix *matrix)
-{
-	return (uintptr_t)matrix < 0x1000;
-}
-
 CMatrix::CMatrix(void)
 {
 	m_attachment = nil;
@@ -39,54 +33,33 @@ CMatrix::Attach(RwMatrix *matrix, bool owner)
 #else
 	if (m_hasRwMatrix && m_attachment)
 #endif
-		if (!IsLikelyBadRwMatrixPtr(m_attachment))
-			RwMatrixDestroy(m_attachment);
-	if (IsLikelyBadRwMatrixPtr(matrix)) {
-		printf("[RW-GUARD] CMatrix::Attach rejected suspicious matrix=%p\n", (void*)matrix);
-		matrix = nil;
-		owner = false;
-	}
+		RwMatrixDestroy(m_attachment);
 	m_attachment = matrix;
 	m_hasRwMatrix = owner;
-	if (m_attachment)
-		Update();
+	Update();
 }
 
 void
 CMatrix::AttachRW(RwMatrix *matrix, bool owner)
 {
 	if (m_hasRwMatrix && m_attachment)
-		if (!IsLikelyBadRwMatrixPtr(m_attachment))
-			RwMatrixDestroy(m_attachment);
-	if (IsLikelyBadRwMatrixPtr(matrix)) {
-		printf("[RW-GUARD] CMatrix::AttachRW rejected suspicious matrix=%p\n", (void*)matrix);
-		matrix = nil;
-		owner = false;
-	}
+		RwMatrixDestroy(m_attachment);
 	m_attachment = matrix;
 	m_hasRwMatrix = owner;
-	if (m_attachment)
-		UpdateRW();
+	UpdateRW();
 }
 
 void
 CMatrix::Detach(void)
 {
 	if (m_hasRwMatrix && m_attachment)
-		if (!IsLikelyBadRwMatrixPtr(m_attachment))
-			RwMatrixDestroy(m_attachment);
+		RwMatrixDestroy(m_attachment);
 	m_attachment = nil;
 }
 
 void
 CMatrix::Update(void)
 {
-	if (m_attachment == nil || IsLikelyBadRwMatrixPtr(m_attachment)) {
-		if (m_attachment)
-			printf("[RW-GUARD] CMatrix::Update rejected suspicious attachment=%p\n", (void*)m_attachment);
-		m_attachment = nil;
-		return;
-	}
 	GetRight() = m_attachment->right;
 	GetForward() = m_attachment->up;
 	GetUp() = m_attachment->at;
@@ -96,15 +69,12 @@ CMatrix::Update(void)
 void
 CMatrix::UpdateRW(void)
 {
-	if (m_attachment && !IsLikelyBadRwMatrixPtr(m_attachment)) {
+	if (m_attachment) {
 		m_attachment->right = GetRight();
 		m_attachment->up = GetForward();
 		m_attachment->at = GetUp();
 		m_attachment->pos = GetPosition();
 		RwMatrixUpdate(m_attachment);
-	} else if (m_attachment) {
-		printf("[RW-GUARD] CMatrix::UpdateRW rejected suspicious attachment=%p\n", (void*)m_attachment);
-		m_attachment = nil;
 	}
 }
 
@@ -618,10 +588,6 @@ Invert(const CMatrix &src, CMatrix &dst)
 void
 CMatrix::CopyToRwMatrix(RwMatrix* matrix)
 {
-	if (matrix == nil || IsLikelyBadRwMatrixPtr(matrix)) {
-		printf("[RW-GUARD] CMatrix::CopyToRwMatrix rejected suspicious matrix=%p\n", (void*)matrix);
-		return;
-	}
 	matrix->right = GetRight();
 	matrix->up = GetForward();
 	matrix->at = GetUp();
