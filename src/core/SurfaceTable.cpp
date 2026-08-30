@@ -154,4 +154,3 @@ CSurfaceTable::IsSoftLanding(uint8 surf)
 {
 	return surf == SURFACE_GRASS || surf == SURFACE_SAND || surf == SURFACE_SAND_BEACH;
 }
-

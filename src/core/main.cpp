@@ -95,16 +95,7 @@ void gxMemGetPoolStats(uint32 *capacityBytes, uint32 *usedBytes,
 #include "GitSHA1.h"
 #endif
 
-#if REAL_GAMECUBE
-#define DEMO_RESTART_TIMEOUT_MS ((10*60)*1000)
-// [OLD-GC-FRAME] Per-frame Idle cutscene timing trace from intro /
-// collision bring-up. Disabled to keep Dolphin log focused on texture and
-// material diagnostics.
-#define GC_IDLE_CUT_LOG(stage) ((void)0)
-#else
 #define DEMO_RESTART_TIMEOUT_MS ((3*60 + 30)*1000)
-#define GC_IDLE_CUT_LOG(stage) ((void)0)
-#endif
 
 GlobalScene Scene;
 #ifdef WII
@@ -444,11 +435,6 @@ ValidateVersion()
     // 鐨?Step 4 鎵?CameraCreate锛夛紝LoadingScreen 璇曞浘璁块棶
     // NULL camera 鈫?瑙﹀彂 0x00000008 绯诲垪宕╂簝
     // 鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣
-#if REAL_GAMECUBE
-    printf("[reVC-WII] ValidateVersion: SKIPPED on GC\n");
-    return;
-#endif
-
 	int32 file = CFileMgr::OpenFile("models\\coll\\peds.col", "rb");
 	char buff[128];
 
@@ -1948,11 +1934,6 @@ Idle(void *arg)
 	WiiResetFrameDiagnostics();
 	gWiiFrameDiag.diagLogMs = RsTimer() - wiiDiagLogStartMs;
 #endif
-	GC_IDLE_CUT_LOG("begin");
-
-#if REAL_GAMECUBE
-	((void)0); // [GC-DEBUG-DISABLED]
-#endif
 	tbInit();
 
 	CSprite2d::InitPerFrame();
@@ -1961,21 +1942,14 @@ Idle(void *arg)
 	PUSH_MEMID(MEMID_GAME_PROCESS);
 	CPointLights::InitPerFrame();
 
-#if REAL_GAMECUBE
-	((void)0); // [GC-DEBUG-DISABLED]
-#endif
 	tbStartTimer(0, "CGame::Process");
 	CGame::Process();
 	tbEndTimer("CGame::Process");
 #ifdef WII
 	wiiStageAfterProcessMs = RsTimer();
 #endif
-	GC_IDLE_CUT_LOG("after-process");
 	POP_MEMID();
 
-#if REAL_GAMECUBE
-	((void)0); // [GC-DEBUG-DISABLED]
-#endif
 	tbStartTimer(0, "DMAudio.Service");
 	DMAudio.Service();
 	tbEndTimer("DMAudio.Service");
@@ -1988,15 +1962,7 @@ Idle(void *arg)
 	wiiStageAfterMotionBlurMs = wiiStageAfterAudioMs;
 	wiiStageAfterRender2dMs = wiiStageAfterAudioMs;
 #endif
-	GC_IDLE_CUT_LOG("after-audio");
-
 	if(CGame::bDemoMode && CTimer::GetTimeInMilliseconds() > DEMO_RESTART_TIMEOUT_MS && !CCutsceneMgr::IsCutsceneProcessing()){
-#if REAL_GAMECUBE
-		printf("[GC-DEMO] timeout restart time=%d limit=%d cut=%s status=%u running=%d\n",
-		       CTimer::GetTimeInMilliseconds(), DEMO_RESTART_TIMEOUT_MS,
-		       CCutsceneMgr::GetCutsceneName(), CCutsceneMgr::ms_cutsceneLoadStatus,
-		       CCutsceneMgr::IsRunning());
-#endif
 		WANT_TO_LOAD = false;
 		FrontEndMenuManager.m_bWantToRestart = true;
 		return;
@@ -2025,7 +1991,6 @@ Idle(void *arg)
 #endif
 
 		tbStartTimer(0, "CnstrRenderList");
-		GC_IDLE_CUT_LOG("before-render-list");
 #ifdef PC_WATER
 	CWaterLevel::PreCalcWaterGeometry();
 #endif
@@ -2040,7 +2005,6 @@ Idle(void *arg)
 #ifdef WII
 		wiiStageAfterRenderListMs = RsTimer();
 #endif
-		GC_IDLE_CUT_LOG("after-render-list");
 
 		tbStartTimer(0, "PreRender");
 		CRenderer::PreRender();
@@ -2048,7 +2012,6 @@ Idle(void *arg)
 #ifdef WII
 		wiiStageAfterPreRenderMs = RsTimer();
 #endif
-		GC_IDLE_CUT_LOG("after-prerender");
 
 #ifdef FIX_BUGS
 		RwRenderStateSet(rwRENDERSTATEZWRITEENABLE, (void *)FALSE); // TODO: temp? this fixes OpenGL render but there should be a better place for this
@@ -2075,13 +2038,11 @@ Idle(void *arg)
 #endif
 
 		tbStartTimer(0, "RenderScene");
-		GC_IDLE_CUT_LOG("before-render-scene");
 		RenderScene();
 		tbEndTimer("RenderScene");
 #ifdef WII
 		wiiStageAfterRenderSceneMs = RsTimer();
 #endif
-		GC_IDLE_CUT_LOG("after-render-scene");
 
 #ifdef EXTENDED_PIPELINES
 		CustomPipes::EnvMapRender();
@@ -2092,7 +2053,6 @@ Idle(void *arg)
 #ifdef WII
 		wiiStageAfterEffectsMs = RsTimer();
 #endif
-		GC_IDLE_CUT_LOG("after-effects");
 
 		if((TheCamera.m_BlurType == MOTION_BLUR_NONE || TheCamera.m_BlurType == MOTION_BLUR_LIGHT_SCENE) &&
 		   TheCamera.m_ScreenReductionPercentage > 0.0f)
@@ -2110,7 +2070,6 @@ Idle(void *arg)
 #ifdef WII
 		wiiStageAfterMotionBlurMs = RsTimer();
 #endif
-		GC_IDLE_CUT_LOG("after-motion-blur");
 
 		tbStartTimer(0, "Render2dStuff");
 		Render2dStuff();
@@ -2118,7 +2077,6 @@ Idle(void *arg)
 #ifdef WII
 		wiiStageAfterRender2dMs = RsTimer();
 #endif
-		GC_IDLE_CUT_LOG("after-render-2d");
 	}else{
 		CDraw::CalculateAspectRatio();
 #ifdef ASPECT_RATIO_SCALE
@@ -2141,7 +2099,6 @@ Idle(void *arg)
 #ifdef WII
 	wiiStageAfterMenusMs = RsTimer();
 #endif
-	GC_IDLE_CUT_LOG("after-menus");
 
 #ifdef PS2_MENU
 	if ( TheMemoryCard.m_bWantToLoad )
@@ -2161,7 +2118,6 @@ Idle(void *arg)
 #ifdef WII
 	wiiStageAfterRender2dFadeMs = RsTimer();
 #endif
-	GC_IDLE_CUT_LOG("after-render-2d-fade");
 	// CCredits::Render(); // They added it to function above and also forgot it here
 #ifdef XBOX_MESSAGE_SCREEN
 	FrontEndMenuManager.DrawOverlays();
@@ -2170,7 +2126,6 @@ Idle(void *arg)
 	if (gbShowTimebars)
 		tbDisplay();
 
-	GC_IDLE_CUT_LOG("before-end-frame");
 	DoRWStuffEndOfFrame();
 #ifdef WII
 	wiiStageAfterEndFrameMs = RsTimer();
@@ -2201,7 +2156,6 @@ Idle(void *arg)
 		Max(0.0, wiiStageAfterEndFrameMs - wiiStageAfterProcessMs);
 	gWiiPrevFrameDiag = gWiiFrameDiag;
 #endif
-	GC_IDLE_CUT_LOG("end");
 
 	POP_MEMID();	// MEMID_RENDER
 
@@ -2428,12 +2382,6 @@ void TheGame(void)
 
 			if (CGame::bDemoMode && CTimer::GetTimeInMilliseconds() > DEMO_RESTART_TIMEOUT_MS && !CCutsceneMgr::IsCutsceneProcessing())
 			{
-#if REAL_GAMECUBE
-				printf("[GC-DEMO] timeout restart time=%d limit=%d cut=%s status=%u running=%d\n",
-				       CTimer::GetTimeInMilliseconds(), DEMO_RESTART_TIMEOUT_MS,
-				       CCutsceneMgr::GetCutsceneName(), CCutsceneMgr::ms_cutsceneLoadStatus,
-				       CCutsceneMgr::IsRunning());
-#endif
 				WANT_TO_LOAD = false;
 				FrontEndMenuManager.m_bWantToRestart = true;
 				break;

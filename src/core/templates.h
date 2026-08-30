@@ -47,6 +47,8 @@ public:
 		m_flags = new uint8[size];
 		m_size = size;
 		m_allocPtr = -1;
+
+#if GX_CONSOLE
 		// [GC-FIX] If alloc failed on embedded heap, zero-out and bail.
 		// Writing to NULL (addr 0x0) on GameCube corrupts interrupt vectors.
 		if (m_entries == nil || m_flags == nil) {
@@ -61,6 +63,7 @@ public:
 		// Without this, entities get garbage bounding boxes.
 		memset(m_entries, 0, sizeof(U)*size);
 		memset(m_flags, 0, size);
+#endif
 		for(int i = 0; i < size; i++){
 			SetId(i, 0);
 			SetIsFree(i, true);
@@ -105,16 +108,12 @@ public:
 	int32 GetSize(void) const { return m_size; }
 	T *New(void){
 		bool wrapped = false;
-		int checked = 0;
-		do {
+		do
 #ifdef FIX_BUGS
 			if (++m_allocPtr >= m_size) {
 				m_allocPtr = 0;
-				if (wrapped) {
-					printf("[POOL] EXHAUSTED: %d/%d used, checked %d\n",
-					       GetNoOfUsedSpaces(), m_size, checked);
+				if (wrapped)
 					return nil;
-				}
 				wrapped = true;
 			}
 #else
@@ -125,8 +124,7 @@ public:
 				m_allocPtr = 0;
 			}
 #endif
-			checked++;
-		} while(!GetIsFree(m_allocPtr));
+		while(!GetIsFree(m_allocPtr));
 		SetIsFree(m_allocPtr, false);
 		SetId(m_allocPtr, GetId(m_allocPtr)+1);
 		return (T*)&m_entries[m_allocPtr];

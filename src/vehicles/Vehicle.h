@@ -14,12 +14,6 @@ class CPlayerPed;
 class CCopPed;
 class CFire;
 
-#if REAL_GAMECUBE
-class CVehicle;
-void GcVehicleInitHandlingSnapshots(void);
-void GcVehicleDiag(CVehicle *veh, const char *stage);
-#endif
-
 enum {
 	RANDOM_VEHICLE = 1,
 	MISSION_VEHICLE = 2,

@@ -21,7 +21,6 @@
 #include "SpecialFX.h"
 #include "Font.h"
 #include "SaveBuf.h"
-#include "Timer.h"
 
 float CRadar::m_radarRange;
 sRadarTrace CRadar::ms_RadarTrace[NUMRADARBLIPS];
@@ -713,6 +712,7 @@ void CRadar::DrawRadarMap()
 	RwRenderStateSet(rwRENDERSTATEVERTEXALPHAENABLE, (void*)FALSE);
 	RwRenderStateSet(rwRENDERSTATETEXTUREADDRESS, (void*)rwTEXTUREADDRESSCLAMP);
 	RwRenderStateSet(rwRENDERSTATETEXTUREPERSPECTIVE, (void*)FALSE);
+
 	DrawRadarSection(x - 1, y - 1);
 	DrawRadarSection(x, y - 1);
 	DrawRadarSection(x + 1, y - 1);
@@ -748,6 +748,7 @@ void CRadar::DrawRadarMask()
 	RwRenderStateSet(rwRENDERSTATESRCBLEND, (void*)rwBLENDZERO);
 	RwRenderStateSet(rwRENDERSTATEDESTBLEND, (void*)rwBLENDONE);
 #endif
+
 	CVector2D out[8];
 	CVector2D in;
 
@@ -808,6 +809,7 @@ void CRadar::DrawRadarSection(int32 x, int32 y)
 		TransformRealWorldToTexCoordSpace(texCoords[i], worldPoly[i], x, y);
 		TransformRadarPointToScreenSpace(screenPoly[i], radarPoly[i]);
 	}
+
 	if (CTheScripts::bPlayerIsInTheStatium) {
 		RwRenderStateSet(rwRENDERSTATETEXTURERASTER, nil);
 		CSprite2d::SetVertices(numVertices, (float*)screenPoly, (float*)texCoords, CRGBA(204, 204, 204, 255));
