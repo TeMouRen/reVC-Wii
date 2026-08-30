@@ -205,8 +205,6 @@ CVehicleModelInfo::CreateInstance(void)
 	int32 comp1, comp2;
 
 	clump = (RpClump*)CClumpModelInfo::CreateInstance();
-	if(clump == nil)
-		return nil;
 	if(m_numComps != 0){
 		clumpframe = RpClumpGetFrame(clump);
 
@@ -738,10 +736,7 @@ GetListOfComponentsNotUsedByRules(uint32 comprules, int32 numComps, int32 *comps
 	return n;
 }
 
-int32 wheelIds[] = {
-	CAR_WHEEL_LF, CAR_WHEEL_LB, CAR_WHEEL_RF, CAR_WHEEL_RB,
-	CAR_WHEEL_LM, CAR_WHEEL_RM
-};
+int32 wheelIds[] = { CAR_WHEEL_LF, CAR_WHEEL_LB, CAR_WHEEL_RF, CAR_WHEEL_RB };
 
 void
 CVehicleModelInfo::GetWheelPosn(int32 n, CVector &pos)

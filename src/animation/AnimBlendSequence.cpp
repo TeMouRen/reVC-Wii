@@ -32,13 +32,13 @@ CAnimBlendSequence::SetNumFrames(int numFrames, bool translation, bool compresse
 	if(translation){
 		type |= KF_ROT | KF_TRANS;
 		if(compressed)
-			keyFramesCompressed = RwMalloc(sizeof(KeyFrameTransCompressed) * numFrames);
+			keyFramesCompressed = RwMalloc(sizeof(KeyFrameTrans) * numFrames);
 		else
 			keyFrames = RwMalloc(sizeof(KeyFrameTrans) * numFrames);
 	}else{
 		type |= KF_ROT;
 		if(compressed)
-			keyFramesCompressed = RwMalloc(sizeof(KeyFrameCompressed) * numFrames);
+			keyFramesCompressed = RwMalloc(sizeof(KeyFrame) * numFrames);
 		else
 			keyFrames = RwMalloc(sizeof(KeyFrame) * numFrames);
 	}

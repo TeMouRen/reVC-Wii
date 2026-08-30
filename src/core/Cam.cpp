@@ -2791,8 +2791,8 @@ CCam::Process_1rstPersonPedOnPC(const CVector&, float TargetOrientation, float, 
 		{
 			float xdir = LookLeftRight < 0.0f ? -1.0f : 1.0f;
 			float ydir = LookUpDown < 0.0f ? -1.0f : 1.0f;
-		Beta += SQR(LookLeftRight/100.0f)*xdir*0.8f/14.0f * FOV/80.0f * CTimer::GetTimeStep();
-		Alpha += SQR(LookUpDown/150.0f)*ydir*1.0f/14.0f * FOV/80.0f * CTimer::GetTimeStep();
+			Beta += SQR(LookLeftRight/100.0f)*xdir*0.8f/14.0f * FOV/80.0f * CTimer::GetTimeStep();
+			Alpha += SQR(LookUpDown/150.0f)*ydir*1.0f/14.0f * FOV/80.0f * CTimer::GetTimeStep();
 		}
 		while(Beta >= PI) Beta -= 2*PI;
 		while(Beta < -PI) Beta += 2*PI;
@@ -4952,21 +4952,19 @@ CCam::Process_FollowCar_SA(const CVector& CameraTarget, float TargetOrientation,
 	CA_MAX_DISTANCE = newDistance;
 	CA_MIN_DISTANCE = 3.5f;
 
-	float cameraStep = CTimer::GetTimeStep();
-
 	if (ResetStatics) {
 		FOV = DefaultFOV;
 	} else {
 		if (isCar || isBike) {
 			// 0.4f: CAR_FOV_START_SPEED
-			float forwardSpeed = DotProduct(car->GetForward(), car->m_vecMoveSpeed);
-			if (forwardSpeed > 0.4f)
-				FOV += (forwardSpeed - 0.4f) * cameraStep;
+			if (DotProduct(car->GetForward(), car->m_vecMoveSpeed) > 0.4f)
+				FOV += (DotProduct(car->GetForward(), car->m_vecMoveSpeed) - 0.4f) * CTimer::GetTimeStep();
 		}
 
 		if (FOV > DefaultFOV)
 			// 0.98f: CAR_FOV_FADE_MULT
-			FOV = Pow(0.98f, cameraStep) * (FOV - DefaultFOV) + DefaultFOV;
+			FOV = Pow(0.98f, CTimer::GetTimeStep()) * (FOV - DefaultFOV) + DefaultFOV;
+
 		FOV = Clamp(FOV, DefaultFOV, DefaultFOV + 30.0f);
 	}
 
@@ -4981,8 +4979,7 @@ CCam::Process_FollowCar_SA(const CVector& CameraTarget, float TargetOrientation,
 			TheCamera.m_bCamDirectlyBehind = true;
 
 	// Called when we just entered the car, just started to look behind or returned back from looking left, right or behind
-	bool vehicleCamReset = ResetStatics || TheCamera.m_bCamDirectlyBehind || TheCamera.m_bCamDirectlyInFront;
-	if (vehicleCamReset) {
+	if (ResetStatics || TheCamera.m_bCamDirectlyBehind || TheCamera.m_bCamDirectlyInFront) {
 		ResetStatics = false;
 		Rotating = false;
 		m_bCollisionChecksOn = true;
@@ -5031,8 +5028,8 @@ CCam::Process_FollowCar_SA(const CVector& CameraTarget, float TargetOrientation,
 	else if (velocityRightHeading > camRightHeading + PI)
 		velocityRightHeading = velocityRightHeading - TWOPI;
 
-	float betaChangeMult1 = cameraStep * CARCAM_SET[camSetArrPos][10];
-	float betaChangeLimit = cameraStep * CARCAM_SET[camSetArrPos][11];
+	float betaChangeMult1 = CTimer::GetTimeStep() * CARCAM_SET[camSetArrPos][10];
+	float betaChangeLimit = CTimer::GetTimeStep() * CARCAM_SET[camSetArrPos][11];
 
 	float betaChangeMult2 = (car->m_vecMoveSpeed - DotProduct(car->m_vecMoveSpeed, Front) * Front).Magnitude();
 
@@ -5094,8 +5091,8 @@ CCam::Process_FollowCar_SA(const CVector& CameraTarget, float TargetOrientation,
 	} else {
 		targetAlpha = maxAlphaAllowed;
 	}
-	float maxAlphaBlendAmount = cameraStep * CARCAM_SET[camSetArrPos][6];
-	float targetAlphaBlendAmount = (1.0f - Pow(CARCAM_SET[camSetArrPos][5], cameraStep)) * (targetAlpha - Alpha);
+	float maxAlphaBlendAmount = CTimer::GetTimeStep() * CARCAM_SET[camSetArrPos][6];
+	float targetAlphaBlendAmount = (1.0f - Pow(CARCAM_SET[camSetArrPos][5], CTimer::GetTimeStep())) * (targetAlpha - Alpha);
 	if (targetAlphaBlendAmount <= maxAlphaBlendAmount) {
 		if (targetAlphaBlendAmount < -maxAlphaBlendAmount)
 			targetAlphaBlendAmount = -maxAlphaBlendAmount;
@@ -5173,7 +5170,7 @@ CCam::Process_FollowCar_SA(const CVector& CameraTarget, float TargetOrientation,
 			yMovement = 0.0;
 			xMovement = 0.0;
 			targetAlpha = Alpha;
-			stepsLeftToChangeBetaByMouse = Max(0.0f, stepsLeftToChangeBetaByMouse - cameraStep);
+			stepsLeftToChangeBetaByMouse = Max(0.0f, stepsLeftToChangeBetaByMouse - CTimer::GetTimeStep());
 			mouseChangesBeta = true;
 		}
 	}
@@ -5192,8 +5189,8 @@ CCam::Process_FollowCar_SA(const CVector& CameraTarget, float TargetOrientation,
 	float betaSpeedFromStickX = xMovement * CARCAM_SET[camSetArrPos][12];
 
 	float newAngleSpeedMaxBlendAmount = CARCAM_SET[camSetArrPos][9];
-	float angleChangeStep = Pow(CARCAM_SET[camSetArrPos][8], cameraStep);
-	float targetBetaWithStickBlendAmount = betaSpeedFromStickX + (targetBeta - Beta) / Max(cameraStep, 1.0f);
+	float angleChangeStep = Pow(CARCAM_SET[camSetArrPos][8], CTimer::GetTimeStep());
+	float targetBetaWithStickBlendAmount = betaSpeedFromStickX + (targetBeta - Beta) / Max(CTimer::GetTimeStep(), 1.0f);
 
 	if (targetBetaWithStickBlendAmount < -newAngleSpeedMaxBlendAmount)
 		targetBetaWithStickBlendAmount = -newAngleSpeedMaxBlendAmount;
@@ -5209,7 +5206,7 @@ CCam::Process_FollowCar_SA(const CVector& CameraTarget, float TargetOrientation,
 	if (mouseChangesBeta)
 		betaChangePerFrame = betaSpeedFromStickX;
 	else
-		betaChangePerFrame = cameraStep * BetaSpeed;
+		betaChangePerFrame = CTimer::GetTimeStep() * BetaSpeed;
 	Beta = betaChangePerFrame + Beta;
 
 	if (TheCamera.m_bJustCameOutOfGarage) {
@@ -5251,7 +5248,7 @@ CCam::Process_FollowCar_SA(const CVector& CameraTarget, float TargetOrientation,
 			alphaWithSpeedAccounted = alphaSpeedFromStickY + targetAlpha;
 				Alpha += alphaSpeedFromStickY;
 		} else {
-			alphaWithSpeedAccounted = cameraStep * AlphaSpeed + targetAlpha;
+			alphaWithSpeedAccounted = CTimer::GetTimeStep() * AlphaSpeed + targetAlpha;
 			Alpha += targetAlphaBlendAmount;
 		}
 
@@ -5307,7 +5304,7 @@ CCam::Process_FollowCar_SA(const CVector& CameraTarget, float TargetOrientation,
 		// LCS uses exactly the same collision code as FollowPedWithMouse, so we will do so.
 
 		// This is only in LCS!
-		float timestepFactor = Pow(0.99f, cameraStep);
+		float timestepFactor = Pow(0.99f, CTimer::GetTimeStep());
 		dontCollideWithCars = (timestepFactor * dontCollideWithCars) + ((1.0f - timestepFactor) * car->m_vecMoveSpeed.Magnitude());
 
 		// Our addition
@@ -5419,7 +5416,7 @@ CCam::Process_FollowCar_SA(const CVector& CameraTarget, float TargetOrientation,
 		}
 
 		float neededTurn = angleToFace - carGunLR;
-		float turnPerFrame = cameraStep * (car->GetModelIndex() == MI_FIRETRUCK ? 0.05f : 0.015f);
+		float turnPerFrame = CTimer::GetTimeStep() * (car->GetModelIndex() == MI_FIRETRUCK ? 0.05f : 0.015f);
 		if (neededTurn <= turnPerFrame) {
 			if (neededTurn < -turnPerFrame)
 				angleToFace = carGunLR - turnPerFrame;
@@ -5444,7 +5441,7 @@ CCam::Process_FollowCar_SA(const CVector& CameraTarget, float TargetOrientation,
 
 			float alphaToFace = Atan2(hi.z, hi.Magnitude2D()) + DEGTORAD(15.0f);
 			float neededAlphaTurn = alphaToFace - carGunUD;
-			float alphaTurnPerFrame = cameraStep / 50.0f;
+			float alphaTurnPerFrame = CTimer::GetTimeStepInSeconds();
 
 			if (neededAlphaTurn > alphaTurnPerFrame) {
 				neededTurn = alphaTurnPerFrame;
