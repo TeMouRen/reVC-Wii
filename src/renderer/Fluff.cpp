@@ -70,9 +70,6 @@ CPlaneTrail::Render(float visibility)
 		}
 	}
 	if(numVerts > 1){
-		RwRenderStateSet(rwRENDERSTATEZWRITEENABLE, (void*)FALSE);
-		RwRenderStateSet(rwRENDERSTATEZTESTENABLE, (void*)TRUE);
-		RwRenderStateSet(rwRENDERSTATEFOGENABLE, (void*)TRUE);
 		RwRenderStateSet(rwRENDERSTATEVERTEXALPHAENABLE, (void*)TRUE);
 		RwRenderStateSet(rwRENDERSTATESRCBLEND, (void*)rwBLENDSRCALPHA);
 		RwRenderStateSet(rwRENDERSTATEDESTBLEND, (void*)rwBLENDINVSRCALPHA);
@@ -82,10 +79,6 @@ CPlaneTrail::Render(float visibility)
 			RwIm3DRenderIndexedPrimitive(rwPRIMTYPELINELIST, TrailIndices, (numVerts-1)*2);
 			RwIm3DEnd();
 		}
-
-		RwRenderStateSet(rwRENDERSTATEZWRITEENABLE, (void*)TRUE);
-		RwRenderStateSet(rwRENDERSTATEFOGENABLE, (void*)FALSE);
-		RwRenderStateSet(rwRENDERSTATEVERTEXALPHAENABLE, (void*)FALSE);
 	}
 }
 

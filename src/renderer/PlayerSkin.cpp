@@ -71,13 +71,8 @@ LoadPlayerDff(void)
 	mem.length = size << 11;
 	stream = RwStreamOpen(rwSTREAMMEMORY, rwSTREAMREAD, &mem);
 
-	if (RwStreamFindChunk(stream, rwID_CLUMP, nil, nil)) {
+	if (RwStreamFindChunk(stream, rwID_CLUMP, nil, nil))
 		gpPlayerClump = RpClumpStreamRead(stream);
-		printf("[SKIN] gpPlayerClump=%p stream OK\n", (void*)gpPlayerClump);
-	} else {
-		printf("[SKIN] rwID_CLUMP not found in DFF stream!\n");
-		gpPlayerClump = nil;
-	}
 
 	RwStreamClose(stream, &mem);
 	RwFreeAlign(buffer);
@@ -158,7 +153,7 @@ CPlayerSkin::RenderFrontendSkinEdit(void)
 {
 	static float rotation = 0.0f;
 	RwRGBAReal AmbientColor = { 0.65f, 0.65f, 0.65f, 1.0f };
-	const RwV3d pos = { -1.35f, -0.15f, 7.725f };
+	const RwV3d pos = { 1.35f, 0.35f, 7.725f };
 	const RwV3d axis = { 0.0f, 1.0f, 0.0f };
 	static uint32 LastFlash = 0;
 

@@ -35,7 +35,7 @@ NodeNameCopy(void *dstObject, const void *srcObject, RwInt32 offsetInObject, RwI
 RwStream*
 NodeNameStreamRead(RwStream *stream, RwInt32 binaryLength, void *object, RwInt32 offsetInObject, RwInt32 sizeInObject)
 {
-	((rw::Stream*)stream)->read8(NODENAMEEXT(object), binaryLength);
+	RwStreamRead(stream, NODENAMEEXT(object), binaryLength);
 	NODENAMEEXT(object)[binaryLength] = '\0';
 	return stream;
 }
