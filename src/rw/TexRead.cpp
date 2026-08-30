@@ -31,117 +31,10 @@
 float texLoadTime;
 int32 texNumLoaded;
 
-static char
-txdLogLowerAscii(char c)
-{
-	return (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
-}
-
-static bool
-txdLogContainsNoCase(const char *name, const char *needle)
-{
-	if(name == nil || needle == nil || needle[0] == '\0')
-		return false;
-
-	for(const char *p = name; *p; p++){
-		const char *a = p;
-		const char *b = needle;
-		while(*a && *b && txdLogLowerAscii(*a) == txdLogLowerAscii(*b)){
-			a++;
-			b++;
-		}
-		if(*b == '\0')
-			return true;
-	}
-	return false;
-}
-
-static bool
-shouldLogFocusedTxdSource(const char *name)
-{
-	if(name == nil || name[0] == '\0')
-		return false;
-
-	return strcmp(name, "kbtree4_test") == 0 ||
-	       strcmp(name, "kbtree3_test") == 0 ||
-	       strcmp(name, "planta256") == 0 ||
-	       strcmp(name, "plantb256") == 0 ||
-	       strcmp(name, "plantc256") == 0 ||
-	       strcmp(name, "foliage256") == 0 ||
-	       strcmp(name, "fuzzyplant256") == 0 ||
-	       strcmp(name, "newtreeleaves128") == 0 ||
-	       strcmp(name, "newtreeleavesb128") == 0 ||
-	       strncmp(name, "htl_", 4) == 0 ||
-	       strncmp(name, "ht_", 3) == 0 ||
-	       strncmp(name, "hot_", 4) == 0 ||
-	       strncmp(name, "mob_", 4) == 0 ||
-	       strncmp(name, "nt_wall", 7) == 0 ||
-	       strncmp(name, "nt_floor", 8) == 0 ||
-	       strncmp(name, "nt_woodwall", 11) == 0 ||
-	       txdLogContainsNoCase(name, "hotel") ||
-	       txdLogContainsNoCase(name, "lobby") ||
-	       txdLogContainsNoCase(name, "tree") ||
-	       txdLogContainsNoCase(name, "plant") ||
-	       txdLogContainsNoCase(name, "leaf") ||
-	       txdLogContainsNoCase(name, "foliage") ||
-	       txdLogContainsNoCase(name, "grass");
-}
-
 #ifdef LIBRW
 #define READNATIVE(stream, tex, size) rwNativeTextureHackRead(stream, tex, size)
 #else
 #define READNATIVE(stream, tex, size) RWSRCGLOBAL(stdFunc[rwSTANDARDNATIVETEXTUREREAD](stream, tex, size))
-#endif
-
-#ifdef LIBRW
-struct TxdChunkHeader
-{
-	int32 type;
-	int32 size;
-	uint32 id;
-};
-
-static bool
-FindTextureNativeChunkWithPaddingScan(RwStream *stream, RwUInt32 *sizeOut, RwUInt32 *versionOut)
-{
-	rw::Stream *rwStream = (rw::Stream*)stream;
-	const uint32 originalPos = rwStream->tell();
-	const uint32 scanStart = originalPos >= 8 ? originalPos - 8 : 0;
-	TxdChunkHeader header, innerHeader;
-
-	rwStream->seek(scanStart, 0);
-	while(!rwStream->eof()){
-		const uint32 pos = rwStream->tell();
-		if(rwStream->read32(&header, sizeof(header)) != sizeof(header))
-			break;
-
-		if(header.type == rwID_TEXTURENATIVE &&
-		   header.size > 0){
-			const uint32 afterHeaderPos = rwStream->tell();
-			if(rwStream->read32(&innerHeader, sizeof(innerHeader)) == sizeof(innerHeader) &&
-			   innerHeader.type == rwID_STRUCT &&
-			   innerHeader.size >= 4){
-				rwStream->seek(afterHeaderPos, 0);
-				if(sizeOut)
-					*sizeOut = header.size;
-				if(versionOut)
-					*versionOut = 0;
-				printf("[TXD-SCAN] recovered TEXTURENATIVE txd=%s slot=%d from=%d to=%d size=%u\n",
-				       CTxdStore::GetLoadingTxdName(),
-				       CTxdStore::GetLoadingTxdSlot(),
-				       (int)originalPos,
-				       (int)afterHeaderPos,
-				       (unsigned)header.size);
-				return true;
-			}
-		}
-
-		rwStream->seek(pos + 4, 0);
-	}
-
-	rwStream->seek(originalPos, 0);
-	return false;
-}
 #endif
 
 RwTexture*
@@ -150,43 +43,15 @@ RwTextureGtaStreamRead(RwStream *stream)
 	RwUInt32 size, version;
 	RwTexture *tex;
 
-	if(!RwStreamFindChunk(stream, rwID_TEXTURENATIVE, &size, &version)){
-#ifdef LIBRW
-		if(FindTextureNativeChunkWithPaddingScan(stream, &size, &version))
-			goto found_texture_native;
-#endif
-		printf("[TXD-FAIL] RwStreamFindChunk(rwID_TEXTURENATIVE) failed txd=%s slot=%d pos=%d\n",
-		       CTxdStore::GetLoadingTxdName(),
-		       CTxdStore::GetLoadingTxdSlot(),
-		       (int)STREAMPOS(stream));
+	if(!RwStreamFindChunk(stream, rwID_TEXTURENATIVE, &size, &version))
 		return nil;
-	}
-found_texture_native:
 
 #ifdef GTA_PC
 	float preloadTime = (float)CTimer::GetCurrentTimeInCycles() / (float)CTimer::GetCyclesPerMillisecond();
 #endif
 
-	if(!READNATIVE(stream, &tex, size)){
-		printf("[TXD-FAIL] READNATIVE failed txd=%s slot=%d size=%u pos=%d\n",
-		       CTxdStore::GetLoadingTxdName(),
-		       CTxdStore::GetLoadingTxdSlot(),
-		       size,
-		       (int)STREAMPOS(stream));
+	if(!READNATIVE(stream, &tex, size))
 		return nil;
-	}
-
-	#if 0 // [TXD-SRC] focused source tracing disabled for normal runs.
-	if(tex && shouldLogFocusedTxdSource(tex->name)){
-		printf("[TXD-SRC] txd=%s slot=%d tex=%s plat=%d raster=%dx%d\n",
-		       CTxdStore::GetLoadingTxdName(),
-		       CTxdStore::GetLoadingTxdSlot(),
-		       tex->name,
-		       tex->raster ? tex->raster->platform : -1,
-		       tex->raster ? tex->raster->width : 0,
-		       tex->raster ? tex->raster->height : 0);
-	}
-	#endif
 
 #ifdef GTA_PC
 	if (gGameState == GS_INIT_PLAYING_GAME) {
@@ -220,32 +85,16 @@ RwTexDictionaryGtaStreamRead(RwStream *stream)
 
 	if(!RwStreamFindChunk(stream, rwID_STRUCT, &size, &version))
 		return nil;
-	// RwStreamRead uses read8 (no byte-swap). Use read32 so big-endian GC
-	// correctly interprets the little-endian numTextures field from PC TXDs.
 	((rw::Stream*)stream)->read32(&numTextures, sizeof(numTextures));
 	(void)size;
 
-	/* [OLD-TXD-INFO] TXD dictionary count trace used during endian / stream
-	 * bring-up. Disabled to reduce TXD load spam in Dolphin log.
-	printf("[TXD-INFO] numTextures=%d size=%u\n", (int)numTextures, (unsigned)size); */
 	texDict = RwTexDictionaryCreate();
 	if(texDict == nil)
 		return nil;
 
-		while(numTextures--){
-		/* [OLD-TXD-LOOP] Per-texture TXD progress trace used during stream
-		 * bring-up. Disabled to reduce TXD load spam in Dolphin log.
-		static int txCnt = 0;
-		txCnt++;
-		if (txCnt % 10 == 0 || numTextures < 5)
-			printf("[TXD-LOOP] tex %d of ~%d remaining=%d\n", txCnt, txCnt + numTextures, numTextures); */
+	while(numTextures--){
 		tex = RwTextureGtaStreamRead(stream);
 		if(tex == nil){
-			printf("[TXD-FAIL] RwTextureGtaStreamRead failed txd=%s slot=%d countdown=%d pos=%d\n",
-			       CTxdStore::GetLoadingTxdName(),
-			       CTxdStore::GetLoadingTxdSlot(),
-			       numTextures,
-			       (int)STREAMPOS(stream));
 			RwTexDictionaryForAllTextures(texDict, destroyTexture, nil);
 			RwTexDictionaryDestroy(texDict);
 			return nil;
@@ -253,13 +102,10 @@ RwTexDictionaryGtaStreamRead(RwStream *stream)
 		RwTexDictionaryAddTexture(texDict, tex);
 	}
 
-	/* [OLD-TXD-INFO] TXD dictionary completion trace used during stream
-	 * bring-up. Disabled to reduce TXD load spam in Dolphin log.
-	printf("[TXD-INFO] while loop EXITED, returning texDict=%p\n", texDict); */
 	return texDict;
 }
 
-	static int32 numberTextures = -1;
+static int32 numberTextures = -1;
 static int32 streamPosition;
 
 RwTexDictionary*
@@ -288,11 +134,6 @@ RwTexDictionaryGtaStreamRead1(RwStream *stream)
 
 		tex = RwTextureGtaStreamRead(stream);
 		if(tex == nil){
-				printf("[TXD-FAIL] RwTextureGtaStreamRead failed txd=%s slot=%d countdown=%d pos=%d\n",
-				       CTxdStore::GetLoadingTxdName(),
-				       CTxdStore::GetLoadingTxdSlot(),
-				       numTextures,
-				       (int)STREAMPOS(stream));
 			RwTexDictionaryForAllTextures(texDict, destroyTexture, nil);
 			RwTexDictionaryDestroy(texDict);
 			return nil;
@@ -316,11 +157,6 @@ RwTexDictionaryGtaStreamRead2(RwStream *stream, RwTexDictionary *texDict)
 	while(numberTextures--){
 		tex = RwTextureGtaStreamRead(stream);
 		if(tex == nil){
-				printf("[TXD-FAIL] RwTextureGtaStreamRead failed txd=%s slot=%d countdown=%d pos=%d\n",
-				       CTxdStore::GetLoadingTxdName(),
-				       CTxdStore::GetLoadingTxdSlot(),
-				       numberTextures,
-				       (int)STREAMPOS(stream));
 			RwTexDictionaryForAllTextures(texDict, destroyTexture, nil);
 			RwTexDictionaryDestroy(texDict);
 			return nil;
