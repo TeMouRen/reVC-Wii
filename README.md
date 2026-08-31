@@ -30,6 +30,8 @@ Not the same things as  [reVC-Wii](https://github.com/OptiJuegos/reVC-Wii)
 ![4-display setup](res/4-display%20setup.png)
 ![5-font setup1](res/5-font%20setup1.png)
 ![6-font setup2](res/6-font%20setup2.png)
+![7-ps2 loading](res/7-ps2%20loading.png)
+
 
 ## Intro
 
