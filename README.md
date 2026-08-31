@@ -63,7 +63,7 @@
 8. `C:\devkitPro\msys2\usr\bin\ninja.exe`
 
 `build.sh` 直接使用这些路径。`build.ps1` 只是无参数兼容包装，最终仍执行 `bash ./build.sh`。
-默认构建启用流送内存诊断，五秒驻留摘要由 `WII_STREAM_MEMORY_DIAGNOSTICS` 控制；事件级调试日志保持关闭。
+默认构建关闭特殊角色流送、流送内存驻留和大建筑 LOD 诊断，避免正常运行刷屏；需要排查时可分别显式设置 `WII_SPECIAL_STREAM_DIAGNOSTICS=ON`、`WII_STREAM_MEMORY_DIAGNOSTICS=ON` 或 `WII_STREAM_BIG_BUILDING_PROBE=ON`。事件级调试日志保持关闭。
 
 ## 快速构建
 

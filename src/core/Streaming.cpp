@@ -1622,6 +1622,7 @@ CStreaming::RequestSpecialModel(int32 modelId, const char *modelName, int32 flag
 		}
 	}
 #ifdef WII
+	#if WII_SPECIAL_STREAM_DIAGNOSTICS
 	printf("[SPEC-WII] request_special modelId=%d slot=%d req=%s resolved=%s current=%s flags=0x%02X refs=%d state=%s\n",
 		modelId,
 		modelId - MI_SPECIAL01 + 1,
@@ -1631,16 +1632,19 @@ CStreaming::RequestSpecialModel(int32 modelId, const char *modelName, int32 flag
 		flags,
 		mi->GetNumRefs(),
 		WiiStreamStateName(ms_aInfoForModel[modelId].m_loadState));
+	#endif
 #endif
 	if(!CGeneral::faststrcmp(mi->GetModelName(), modelName)){
 		// Already have the correct name, just request it
 #ifdef WII
+		#if WII_SPECIAL_STREAM_DIAGNOSTICS
 		printf("[SPEC-WII] request_special reuse modelId=%d slot=%d model=%s flags=0x%02X state=%s\n",
 			modelId,
 			modelId - MI_SPECIAL01 + 1,
 			modelName,
 			flags,
 			WiiStreamStateName(ms_aInfoForModel[modelId].m_loadState));
+		#endif
 #endif
 		RequestModel(modelId, flags);
 		return;
@@ -1698,6 +1702,7 @@ CStreaming::RequestSpecialModel(int32 modelId, const char *modelName, int32 flag
 		mi->SetTexDictionary(modelName);
 	ms_aInfoForModel[modelId].SetCdPosnAndSize(pos, size);
 #ifdef WII
+	#if WII_SPECIAL_STREAM_DIAGNOSTICS
 	printf("[SPEC-WII] request_special queued modelId=%d slot=%d old=%s new=%s txd=%s txdSlot=%d cdPos=%u size=%u flags=0x%02X\n",
 		modelId,
 		modelId - MI_SPECIAL01 + 1,
@@ -1708,6 +1713,7 @@ CStreaming::RequestSpecialModel(int32 modelId, const char *modelName, int32 flag
 		pos,
 		size,
 		flags);
+	#endif
 #endif
 	RequestModel(modelId, flags);
 }
@@ -1724,6 +1730,7 @@ CStreaming::HasSpecialCharLoaded(int32 id)
 	int32 modelId = id + MI_SPECIAL01;
 	bool loaded = HasModelLoaded(modelId);
 #ifdef WII
+	#if WII_SPECIAL_STREAM_DIAGNOSTICS
 	if(id >= 0 && id <= MI_SPECIAL21 - MI_SPECIAL01){
 		static bool s_init = false;
 		static uint8 s_lastModelState[MI_SPECIAL21 - MI_SPECIAL01 + 1];
@@ -1764,6 +1771,7 @@ CStreaming::HasSpecialCharLoaded(int32 id)
 			s_lastTxdState[id] = txdState;
 		}
 	}
+	#endif
 #endif
 	return loaded;
 }

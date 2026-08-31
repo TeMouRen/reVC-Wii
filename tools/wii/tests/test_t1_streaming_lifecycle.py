@@ -247,8 +247,13 @@ class T1StreamingLifecycleTests(unittest.TestCase):
             'option(WII_STREAM_LIFECYCLE_AUDIT "Emit bounded Wii streaming lifecycle audit events" OFF)',
             CMAKE_SOURCE,
         )
+        self.assertIn(
+            'option(WII_SPECIAL_STREAM_DIAGNOSTICS "Emit detailed special-character streaming diagnostics" OFF)',
+            CMAKE_SOURCE,
+        )
+        self.assertIn('WII_SPECIAL_STREAM_DIAGNOSTICS="${WII_SPECIAL_STREAM_DIAGNOSTICS:-OFF}"', BUILD_SOURCE)
         self.assertIn('WII_STREAM_LIFECYCLE_AUDIT="${WII_STREAM_LIFECYCLE_AUDIT:-OFF}"', BUILD_SOURCE)
-        self.assertIn('WII_STREAM_BIG_BUILDING_PROBE="${WII_STREAM_BIG_BUILDING_PROBE:-ON}"', BUILD_SOURCE)
+        self.assertIn('WII_STREAM_BIG_BUILDING_PROBE="${WII_STREAM_BIG_BUILDING_PROBE:-OFF}"', BUILD_SOURCE)
         self.assertIn('-DWII_STREAM_LIFECYCLE_AUDIT="$WII_STREAM_LIFECYCLE_AUDIT"', BUILD_SOURCE)
         self.assertIn("#define WII_STREAM_LIFECYCLE_AUDIT 0", CONFIG_SOURCE)
         for marker in (
