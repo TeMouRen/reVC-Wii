@@ -1,144 +1,232 @@
-# reVC-Wii
+<img src="https://github.com/mrxenginner/reVC/blob/miami/res/images/logo_1024.png?raw=true" alt="reVC logo" width="200">
 
-[English](README.en.md) | 简体中文
+[![Build Status](https://img.shields.io/endpoint.svg?url=https%3A%2F%2Factions-badge.atrox.dev%2Fmrxenginner%2FreVC%2Fbadge%3Fref%3Dmiami&style=flat)](https://actions-badge.atrox.dev/mrxenginner/reVC/goto?ref=miami)
+<a href="https://discord.gg/RFNbjsUMGg"><img src="https://img.shields.io/badge/discord-join-7289DA.svg?logo=discord&longCache=true&style=flat" /></a>
+## reVC-Wii
 
-这是一个为 `reVC` 整理的、以 Nintendo Wii 为主目标的精简上传版本。
+是一份Vice City的Wii移植版本，提供优化过的汉化以及相关设置。
 
-它继承了此前 GameCube GX 分支已经验证过的 PowerPC、大端序和 GX 渲染路径。Wii 原生目标、MEM2 分区和 GX 驻留账本已经落地；当前工作集中在流送验证、静态纹理内存优化、渲染兼容和资产构建。
+## 编译
 
-## 仓库定位
+还不完善，不提供编译脚本教程，目前需要进一步优化流式加载，以及完善控制器菜单画面。
+同时移除了其余平台的构建，目前只能编译Wii的dol，代码内部可能残留GameCube的相关逻辑，属于早期早期GameCube的遗留，现已放弃。
 
-- 当前主目标平台：Nintendo Wii
-- 保留对照平台：Nintendo GameCube
-- 当前渲染后端：`vendor/librw/` 下的 GX 后端
-- 当前代码基线：`reVC` + 已落地的 GC 移植工作 + 当前 Wii 迁移工作
+### 要求文件
+- 一份本地的游戏副本
+- 一份PS2版本的游戏副本（V1.4），自行dump
 
-## 文档索引
+## 声明
 
-- `README.md` - 中文总览
-- `README.en.md` - 英文总览
-- `docs/README-WII-MIGRATION.md` - 当前 Wii 文档入口
-- `docs/wii-memory-streaming-performance-analysis.md` - Wii 内存、流送与性能参考
-- `docs/PS2_WII_STREAMING_HANDOFF.md` - PS2 对照证据与已实现的驻留账本记录
-- `docs/WII_STATIC_TEXTURE_OPTIMIZATION_PLAN.md` - 当前静态纹理优化方向
-- `docs/wii-gx-rendering-lessons.md` - 当前 GX 渲染与 alpha 经验
-- `docs/WII_ISO打包与提取.md` - Wii 提取 / 回封装说明
-- `tools/README.md` - 当前仓库内工具说明
-- `vendor/librw/README.md` - vendored librw 上游说明
+跟 [reVC-Wii](https://github.com/OptiJuegos/reVC-Wii) 的移植版本不是同一个东西。 
 
-## 这份副本保留了什么
+Not the same things as  [reVC-Wii](https://github.com/OptiJuegos/reVC-Wii)
 
-- `src/` 下当前有效的 GX / PowerPC / Wii 相关移植代码
-- `src/skel/wii/` 下的 Wii 启动、兼容和诊断代码
-- `src/skel/gamecube/` 下仍然有参考价值的 GC 控制台路径代码
-- 为当前控制台构建保留的 `vendor/librw/`
-- `cmake/Wii.cmake` 与 `cmake/GameCube.cmake`
-- `build.sh`、`build.ps1`、`pack_iso.ps1`
-- `tools/wii/` 下当前仍在用的 Wii 资源 / 探针脚本
+## 预览
 
-## 这份副本为什么没有完全删光 GC 痕迹
+（Dolphin内分辨率拉高了 图片效果仅供参考）
+![1-preview](res/1-preview.png)
+![2-Trilogy font preview](res/2-Trilogy%20font%20preview.png)
+![3-menu](res/3-menu.png)
+![4-display setup](res/4-display%20setup.png)
+![5-font setup1](res/5-font%20setup1.png)
+![6-font setup2](res/6-font%20setup2.png)
 
-需要注意：
+## Intro
 
-`GAMECUBE` 宏、`src/skel/gamecube/` 目录，以及 `vendor/librw/src/` 里部分名字看起来像其他平台的文件，并不都代表“这个仓库还在做多平台完整支持”。
+In this repository you'll find the fully reversed source code for GTA VC ([miami](https://github.com/mrxenginner/reVC/tree/miami/) branch).
 
-它们现在留下来的主要原因有两个：
+It has been tested and works on Windows, Android, Linux, MacOS and FreeBSD, on x86, amd64, arm and arm64.\
+Rendering is handled either by original RenderWare (D3D8)
+or the reimplementation [librw](https://github.com/aap/librw) (D3D9, OpenGL 2.1 or above, OpenGL ES 2.0 or above).\
+Audio is done with MSS (using dlls from original GTA) or OpenAL.
 
-- 当前 Wii 版本仍然复用了部分 GC 控制台路径和大端序前提
-- librw 的公共代码在编译时仍会引用一些平台公共文件
+We cannot build for PS2 or Xbox yet. If you're interested in doing so, get in touch with us.
 
-当前真正的主目标仍然是 Wii + GX。
+## Installation
 
-## 构建环境要求
+- reVC requires game assets to work, so you **must** own [a copy of GTA Vice City](https://store.steampowered.com/app/12110/Grand_Theft_Auto_Vice_City/).
+- Build reVC or download the latest build:
+  - [Windows D3D9 MSS 32bit](https://nightly.link/mrxenginner/reVC/workflows/reVC_msvc_x86/miami/reVC_Release_win-x86-librw_d3d9-mss.zip)
+  - [Windows D3D9 64bit](https://nightly.link/mrxenginner/reVC/workflows/reVC_msvc_amd64/miami/reVC_Release_win-amd64-librw_d3d9-oal.zip)
+  - [Windows OpenGL 64bit](https://nightly.link/mrxenginner/reVC/workflows/reVC_msvc_amd64/miami/reVC_Release_win-amd64-librw_gl3_glfw-oal.zip)
+  - [Linux 64bit](https://nightly.link/mrxenginner/reVC/workflows/build-cmake-conan/miami/ubuntu-18.04-gl3.zip)
+  - [MacOS 64bit x86-64](https://nightly.link/mrxenginner/reVC/workflows/build-cmake-conan/miami/macos-latest-gl3.zip)
+  - [Android armeabi-v7a and arm64-v8a](https://nightly.link/mrxenginner/reVC/workflows/build-android/miami/revc-release.zip)
+  
+- Extract the downloaded zip over your GTA VC directory and run reVC. The zip includes the binary, updated and additional gamefiles and in case of OpenAL the required dlls.
 
-这份仓库默认要求本机存在 Windows 版 `devkitPro` 环境：
+## Screenshots
 
-1. `C:\devkitPro`
-2. `C:\devkitPro\devkitPPC`
-3. `C:\devkitPro\libogc2\include`
-4. `C:\devkitPro\libogc2\lib\wii`
-5. `C:\devkitPro\tools\bin\elf2dol.exe`
-6. `C:\devkitPro\msys2\usr\bin\bash.exe`
-7. `C:\devkitPro\msys2\usr\bin\cmake.exe`
-8. `C:\devkitPro\msys2\usr\bin\ninja.exe`
+![screen_ 1613087332](https://user-images.githubusercontent.com/1521437/107714111-f84f3200-6ccc-11eb-902e-d757481d579a.png)
+![screen_ 1613086852](https://user-images.githubusercontent.com/1521437/107714115-fa18f580-6ccc-11eb-9de5-eb4cd04865d3.png)
+![screen_ 1613086989](https://user-images.githubusercontent.com/1521437/107714103-f38a7e00-6ccc-11eb-88a3-c8c2033c51d6.png)
+![screen_ 1613087193](https://user-images.githubusercontent.com/1521437/107714106-f4bbab00-6ccc-11eb-96a9-13821d9b9684.png)
 
-`build.sh` 直接使用这些路径。`build.ps1` 只是无参数兼容包装，最终仍执行 `bash ./build.sh`。
-默认构建关闭特殊角色流送、流送内存驻留和大建筑 LOD 诊断，避免正常运行刷屏；需要排查时可分别显式设置 `WII_SPECIAL_STREAM_DIAGNOSTICS=ON`、`WII_STREAM_MEMORY_DIAGNOSTICS=ON` 或 `WII_STREAM_BIG_BUILDING_PROBE=ON`。事件级调试日志保持关闭。
+## Improvements
 
-## 快速构建
+We have implemented a number of changes and improvements to the original game.
+They can be configured in `core/config.h`.
+Some of them can be toggled at runtime, some cannot.
 
-标准 Wii 构建只使用：
+* Fixed a lot of smaller and bigger bugs
+* User files (saves and settings) stored in GTA root directory
+* Settings stored in reVC.ini file instead of gta_vc.set
+* Debug menu to do and change various things (Ctrl-M to open)
+* Debug camera (Ctrl-B to toggle)
+* Rotatable camera
+* XInput controller support (Windows)
+* No loading screens between islands ("map memory usage" in menu)
+* Rendering
+  * Widescreen support (properly scaled HUD, Menu and FOV)
+  * PS2 MatFX (vehicle reflections)
+  * PS2 alpha test (better rendering of transparency)
+  * Xbox vehicle rendering
+  * Xbox world lightmap rendering (needs Xbox map)
+  * Xbox ped rim light
+  * Xbox screen rain droplets
+  * More customizable colourfilter
+* Menu
+  * More options
+  * Controller configuration menu
+  * ...
+* Can load DFFs and TXDs from other platforms, possibly with a performance penalty
+* ...
 
-```bash
-bash ./build.sh
+## To-Do
+
+The following things would be nice to have/do:
+
+* Fix physics for high FPS
+* Improve performance on lower end devices, especially the OpenGL layer on the Raspberry Pi (if you have experience with this, please get in touch)
+* [PS2 port](https://github.com/mrxenginner/reVC/wiki/PS2-port)
+* Xbox port (not quite as important)
+* reverse remaining unused/debug functions
+* compare CodeWarrior build with original binary for more accurate code (very tedious)
+
+## Modding
+
+Asset modifications (models, texture, handling, script, ...) should work the same way as with original GTA for the most part.
+
+Mods that make changes to the code (dll/asi, CLEO, limit adjusters) will *not* work.
+Some things these mods do are already implemented in re3 (much of SkyGFX, GInput, SilentPatch, Widescreen fix),
+others can easily be achieved (increasing limis, see `config.h`),
+others will simply have to be rewritten and integrated into the code directly.
+Sorry for the inconvenience.
+
+## Building from Source  
+
+When using premake, you may want to point GTA_VC_RE_DIR environment variable to GTA Vice City root folder if you want the executable to be moved there via post-build script.
+
+Clone the repository with `git clone --recursive -b miami https://github.com/mrxenginner/reVC.git reVC`. Then `cd reVC` into the cloned repository.
+
+<details><summary>Android</summary>
+
+For Android using Android Studio, proceed: [Building on Android](https://github.com/mrxenginner/reVC/wiki/Building-on-Android)
+
+</details>
+
+<details><summary>Linux Premake</summary>
+
+For Linux using premake, proceed: [Building on Linux](https://github.com/mrxenginner/reVC/wiki/Building-on-Linux)
+
+</details>
+
+<details><summary>Linux Conan</summary>
+
+Install python and conan, and then run build.
 ```
-
-在 PowerShell 中可以无参数运行 `.\build.ps1`，它只会转发到同一命令；自定义参数会被拒绝。
-
-## 输出文件
-
-构建成功后，主要产物是：
-
-- `build\src\reVC`
-- `build\src\main.dol`
-- `F:\Wii Work\提取测试\reVC\sys\main.dol`
-
-`build.sh` 会把 `main.dol` 部署到上面的固定 extracted-disc `sys` 目录。
-
-## 运行与资源说明
-
-- 这份仓库不包含游戏资源。
-- 如果你要本地运行或封装 ISO，请从你自己的合法来源准备资源。
-- 当前常见的工作目录形态是一个提取后的光盘目录，例如：
-  - `reVC/sys`
-  - `reVC/files`
-- 仅更新程序时，通常只需要替换 `sys/main.dol`。
-
-## ISO 打包
-
-仓库根目录提供了：
-
-- `pack_iso.ps1`
-
-示例：
-
-```powershell
-.\pack_iso.ps1 -SourceDir "F:\path\to\extracted\reVC" -OutputIso ".\out\reVC-wii.iso"
+conan export vendor/librw librw/master@
+mkdir build
+cd build
+conan install .. reVC/miami@ -if build -o reVC:audio=openal -o librw:platform=gl3 -o librw:gl3_gfxlib=glfw --build missing -s reVC:build_type=RelWithDebInfo -s librw:build_type=RelWithDebInfo
+conan build .. -if build -bf build -pf package
 ```
+</details>
 
-默认依赖：
+<details><summary>MacOS Premake</summary>
 
-- `C:\Program Files\Wiimm\WIT\wit.exe`
+For MacOS using premake, proceed: [Building on MacOS](https://github.com/mrxenginner/reVC/wiki/Building-on-MacOS)
 
-更完整的提取与回封装说明见：
+</details>
 
-- `docs/WII_ISO打包与提取.md`
+<details><summary>FreeBSD</summary>
 
-## 工具说明
+For FreeBSD using premake, proceed: [Building on FreeBSD](https://github.com/mrxenginner/reVC/wiki/Building-on-FreeBSD)
 
-当前仓库里仍保留并建议继续使用的工具主要在：
+</details>
 
-- `tools/`
+<details><summary>Windows</summary>
 
-总览说明见：
+Assuming you have Visual Studio 2015/2017/2019:
+- Run one of the `premake-vsXXXX.cmd` variants on root folder.
+- Open build/reVC.sln with Visual Studio and compile the solution.
+    
+Microsoft recently discontinued its downloads of the DX9 SDK. You can download an archived version here: https://archive.org/details/dxsdk_jun10
 
-- `tools/README.md`
+**If you choose OpenAL on Windows** You must read [Running OpenAL build on Windows](https://github.com/mrxenginner/reVC/wiki/Running-OpenAL-build-on-Windows).
+</details>
 
-## 当前状态
+> :information_source: premake has an `--with-lto` option if you want the project to be compiled with Link Time Optimization.
 
-这份上传版的重点不是“已经做完的最终 Wii 发布版”，而是“当前可继续推进的 Wii 基线”。
+> :information_source: There are various settings in [config.h](https://github.com/mrxenginner/reVC/tree/miami/src/core/config.h), you may want to take a look there.
 
-当前已落地：
+> :information_source: reVC uses completely homebrew RenderWare-replacement rendering engine; [librw](https://github.com/aap/librw/). librw comes as submodule of re3, but you also can use LIBRW enviorenment variable to specify path to your own librw.
 
-- 保留 GX 渲染主线
-- Wii 原生构建入口和 `src/skel/wii/`
-- MEM2 generic/newlib/GX 分区与驻留归因日志
-- `bash ./build.sh` 的固定构建、DOL 转换和部署流程
+If you feel the need, you can also use CodeWarrior 7 to compile reVC using the supplied codewarrior/reVC.mcp project - this requires the original RW34 libraries, and the DX8 SDK. The build is unstable compared to the MSVC builds though, and is mostly meant to serve as a reference.
 
-当前推进方向：
+## Contributing
+As long as it's not linux/cross-platform skeleton/compatibility layer, all of the code on the repo that's not behind a preprocessor condition(like FIX_BUGS) are **completely** reversed code from original binaries.  
 
-- 用 run-specific 日志验证高速移动下的流送和驻留压力
-- 通过离线逐纹理格式选择降低 GX 驻留，而不改 admission/淘汰策略
-- 保持 MatFX、材质查找和资产 fallback 行为可验证
+We **don't** accept custom codes, as long as it's not wrapped via preprocessor conditions, or it's linux/cross-platform skeleton/compatibility layer.
 
-如果你接手继续做，建议先从 `docs/README-WII-MIGRATION.md` 开始读。
+We accept only these kinds of PRs;
+
+- A new feature that exists in at least one of the GTAs (if it wasn't in III/VC then it doesn't have to be decompilation)  
+- Game, UI or UX bug fixes (if it's a fix to original code, it should be behind FIX_BUGS)
+- Platform-specific and/or unused code that's not been reversed yet
+- Makes reversed code more understandable/accurate, as in "which code would produce this assembly".
+- A new cross-platform skeleton/compatibility layer, or improvements to them
+- Translation fixes, for languages original game supported
+- Code that increase maintainability  
+
+We have a [Coding Style](https://github.com/mrxenginner/reVC/blob/miami/CODING_STYLE.md) document that isn't followed or enforced very well.
+
+Do not use features from C++11 or later.
+
+
+## History
+
+re3 was started sometime in the spring of 2018,
+initially as a way to test reversed collision and physics code
+inside the game.
+This was done by replacing single functions of the game
+with their reversed counterparts using a dll.
+
+After a bit of work the project lay dormant for about a year
+and was picked up again and pushed to github in May 2019.
+At the time I (aap) had reversed around 10k lines of code and estimated
+the final game to have around 200-250k.
+Others quickly joined the effort (Fire_Head, shfil, erorcun and Nick007J
+in time order, and Serge a bit later) and we made very quick progress
+throughout the summer of 2019
+after which the pace slowed down a bit.
+
+Due to everyone staying home during the start of the Corona pandemic
+everybody had a lot of time to work on re3 again and
+we finally got a standalone exe in April 2020 (around 180k lines by then).
+
+After the initial excitement and fixing and polishing the code further,
+reVC was started in early May 2020 by starting from re3 code,
+not by starting from scratch replacing functions with a dll.
+After a few months of mostly steady progress we considered reVC
+finished in December.
+
+Since then we have started reLCS, which is currently work in progress.
+
+
+## License
+
+We don't feel like we're in a position to give this code a license.\
+The code should only be used for educational, documentation and modding purposes.\
+We do not encourage piracy or commercial use.\
+Please keep derivate work open source and give proper credit.
