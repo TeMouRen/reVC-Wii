@@ -68,6 +68,31 @@ static GXColor s_clearColor = { 0, 0, 0, 255 };
 
 static bool    s_fullbrightDebug = true;
 
+void
+gxMatFXBeginFog(void)
+{
+    if(!gxState.fog)
+        return;
+
+    GXColor black = { 0, 0, 0, 0 };
+    GX_SetFog(GX_FOG_LIN,
+              s_fogStart, s_fogEnd,
+              engine->device.zNear, engine->device.zFar,
+              black);
+}
+
+void
+gxMatFXEndFog(void)
+{
+    if(!gxState.fog)
+        return;
+
+    GX_SetFog(GX_FOG_LIN,
+              s_fogStart, s_fogEnd,
+              engine->device.zNear, engine->device.zFar,
+              s_fogColor);
+}
+
 static void
 load2DProjection(void)
 {

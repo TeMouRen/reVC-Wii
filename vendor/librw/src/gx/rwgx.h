@@ -143,6 +143,10 @@ extern GxState gxState;
 
 void gxSetTexture(void *tex, int32_t unit);
 void gxGetFramebufferSize(uint16_t *fbWidth, uint16_t *efbHeight);
+// MatFX's PS2 effect pass uses a black fog colour while retaining the
+// existing fog range and enable state. These helpers bracket that pass.
+void gxMatFXBeginFog(void);
+void gxMatFXEndFog(void);
 bool gxFullbrightDebugActive(void);
 void rwMatToGxMtx(Mtx dst, const void *rwMat);
 void convertRGBA8_to_GX(void *dst, const void *src, int w, int h, int srcStride = 0);

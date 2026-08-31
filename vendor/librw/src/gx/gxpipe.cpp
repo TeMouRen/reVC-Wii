@@ -1578,11 +1578,11 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
         const bool matFXEnvReady = matFXPipeline &&
                                    gxMatFXEnvReady(md->material,
                                                    inst->hasNormals);
+        // The PS2 MatFX callback selects source-alpha blending only from the
+        // explicit envFBalpha flag. Base/vertex alpha still controls the
+        // ordinary material pass, but must not change the reflection blend.
         const bool matFXEnvUsesAlpha = matFXEnvReady &&
-                                       (gxMatFXEnvUsesAlpha(md->material) ||
-                                        effectiveVertexAlpha ||
-                                        (md->material &&
-                                         md->material->color.alpha != 255));
+                                       gxMatFXEnvUsesAlpha(md->material);
         bool matFXBaseTextured = false;
         if(matFXEnvReady && inst->numTexCoords > 0 &&
            md->material && md->material->texture &&
@@ -1710,6 +1710,7 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
             if(envOnlyDiag){
                 gxMatFXRecordEnvUVStats(md->material, geo, meshIdx, numIdx,
                                         modelView, m, 0);
+                gxMatFXBeginFog();
                 setZCompLocCached(&stateCache, GX_FALSE);
                 setZModeCached(&stateCache,
                                gxState.zTest ? GX_TRUE : GX_FALSE,
@@ -1722,6 +1723,7 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
                 drawPipeMesh(geo, meshIdx, numIdx,
                              inst->hasNormals, inst->hasColors,
                              inst->numTexCoords, prim, trace, m, 0);
+                gxMatFXEndFog();
                 gxSetTexture(nil, 1);
                 setMaterial(md->material, effectiveVertexAlpha, inst->hasColors,
                             (geo->flags & Geometry::MODULATE) != 0, lights, 0,
@@ -1740,9 +1742,11 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
                                matFXEnvUsesAlpha ? GX_BL_SRCALPHA : GX_BL_ONE,
                                GX_BL_ONE,
                                GX_LO_CLEAR, true);
+            gxMatFXBeginFog();
             drawPipeMesh(geo, meshIdx, numIdx,
                          inst->hasNormals, inst->hasColors,
                          inst->numTexCoords, prim, trace, m, 2);
+            gxMatFXEndFog();
 
             gxSetTexture(nil, 1);
             setMaterial(md->material, effectiveVertexAlpha, inst->hasColors,

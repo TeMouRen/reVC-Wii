@@ -520,6 +520,62 @@ setEnvTextureStage(uint8 stage)
                      GX_TRUE, GX_TEVPREV);
 }
 
+static void
+setEnvLightingStages(uint8 &stageCount)
+{
+    // The PS2/D3D MatFX vertex path feeds the environment contribution with
+    // the clamped prelight colour plus the dynamic light colour. Keep both GX
+    // raster channels until the sum is formed, then multiply the reflection
+    // texture by that sum.
+    GX_SetTevOrder(stageCount, GX_TEXCOORDNULL,
+                   GX_TEXMAP_NULL, GX_COLOR0A0);
+    GX_SetTevColorIn(stageCount,
+                     GX_CC_ZERO, GX_CC_RASC,
+                     GX_CC_ONE, GX_CC_ZERO);
+    GX_SetTevColorOp(stageCount,
+                     GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
+                     GX_TRUE, GX_TEVREG1);
+    GX_SetTevAlphaIn(stageCount,
+                     GX_CA_ZERO, GX_CA_ZERO,
+                     GX_CA_ZERO, GX_CA_APREV);
+    GX_SetTevAlphaOp(stageCount,
+                     GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
+                     GX_TRUE, GX_TEVREG1);
+    stageCount++;
+
+    GX_SetTevOrder(stageCount, GX_TEXCOORDNULL,
+                   GX_TEXMAP_NULL, GX_COLOR1A1);
+    GX_SetTevColorIn(stageCount,
+                     GX_CC_ZERO, GX_CC_RASC,
+                     GX_CC_ONE, GX_CC_C1);
+    GX_SetTevColorOp(stageCount,
+                     GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
+                     GX_TRUE, GX_TEVREG2);
+    GX_SetTevAlphaIn(stageCount,
+                     GX_CA_ZERO, GX_CA_ZERO,
+                     GX_CA_ZERO, GX_CA_APREV);
+    GX_SetTevAlphaOp(stageCount,
+                     GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
+                     GX_TRUE, GX_TEVREG2);
+    stageCount++;
+
+    GX_SetTevOrder(stageCount, GX_TEXCOORDNULL,
+                   GX_TEXMAP_NULL, GX_COLORNULL);
+    GX_SetTevColorIn(stageCount,
+                     GX_CC_ZERO, GX_CC_C2,
+                     GX_CC_CPREV, GX_CC_ZERO);
+    GX_SetTevColorOp(stageCount,
+                     GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
+                     GX_TRUE, GX_TEVPREV);
+    GX_SetTevAlphaIn(stageCount,
+                     GX_CA_ZERO, GX_CA_ZERO,
+                     GX_CA_ZERO, GX_CA_APREV);
+    GX_SetTevAlphaOp(stageCount,
+                     GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
+                     GX_TRUE, GX_TEVPREV);
+    stageCount++;
+}
+
 bool
 gxMatFXSetupEnv(Material *mat, bool baseTextured, bool vertexAlpha,
                 bool modulateMaterialColor, const Mtx modelView)
@@ -551,27 +607,14 @@ gxMatFXSetupEnv(Material *mat, bool baseTextured, bool vertexAlpha,
                        GX_TG_NRM, GX_TEXMTX0,
                        GX_TRUE, GX_DTTMTX0);
 
-    // The effect is drawn after the base material. Keep this pass deliberately
-    // small: env texture * K0, with blending/depth policy owned by gxpipe.
-    // This avoids carrying the base pass's TEV registers across a primitive.
+    // The effect is drawn after the base material. Keep the reflection TEV
+    // chain self-contained: env texture * K0, followed by the optional
+    // prelight/dynamic-light contribution. Blending and depth policy remain
+    // owned by gxpipe.
     setEnvTextureStage(GX_TEVSTAGE0);
     uint8 stageCount = 1;
     if(MatFX::envMapApplyLight){
-        GX_SetTevOrder(GX_TEVSTAGE1, GX_TEXCOORDNULL,
-                       GX_TEXMAP_NULL, GX_COLOR1A1);
-        GX_SetTevColorIn(GX_TEVSTAGE1,
-                         GX_CC_ZERO, GX_CC_CPREV,
-                         GX_CC_RASC, GX_CC_ZERO);
-        GX_SetTevColorOp(GX_TEVSTAGE1,
-                         GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
-                         GX_TRUE, GX_TEVPREV);
-        GX_SetTevAlphaIn(GX_TEVSTAGE1,
-                         GX_CA_ZERO, GX_CA_ZERO,
-                         GX_CA_ZERO, GX_CA_APREV);
-        GX_SetTevAlphaOp(GX_TEVSTAGE1,
-                         GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1,
-                         GX_TRUE, GX_TEVPREV);
-        stageCount++;
+        setEnvLightingStages(stageCount);
     }
     // The D3D framebuffer-alpha path samples the environment texture after
     // replacing texture unit 0; diffuse/base alpha is not part of this pass.
